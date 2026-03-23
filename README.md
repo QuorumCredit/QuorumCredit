@@ -263,6 +263,31 @@ Borrower
 
 ---
 
+## 💰 Yield Accounting & Solvency
+
+QuorumCredit uses a **Sustainable Pre-funding Model** for yield distribution. Unlike many DeFi protocols, yield is not "minted" into existence, ensuring no inflationary pressure on the underlying XLM asset.
+
+### Funding Source
+Yield is sourced from a dedicated **Yield Reserve** within the contract. For vouchers to earn their 2% yield (`YIELD_BPS = 200`), the contract must be pre-funded by the protocol admin or through external revenue streams (e.g., protocol fees). 
+
+> [!IMPORTANT]
+> The contract must hold sufficient XLM to cover both the principal repayment and the 2% yield. If the reserve is empty, the protocol cannot disburse rewards.
+
+### Solvency & "Hard-Cap" Logic
+To ensure the protocol never owes more than it holds, a **Hard-Cap Solvency** model is enforced:
+1. **Reserve Check**: The protocol only allows loan disbursement if the contract has sufficient liquidity to cover the loan amount.
+2. **Yield Protection**: If the Yield Reserve is depleted, the $2.0\%$ yield accrual effectively halts. In the current implementation, any attempt to pay out yield without sufficient funds will trigger a Soroban `InsufficientFunds` panic, protecting the protocol's integrity.
+
+### Yield Flow Diagram
+
+```mermaid
+graph LR
+    A[Admin/Revenue Source] -->|Pre-funds| B(Yield Reserve)
+    B -->|Allocates| C{Yield Accrual}
+    C -->|Repayment Event| D[Voucher Stake + 2% Yield]
+    D -->|Withdrawal| E(User Wallet)
+```
+
 ## Contributing
 
 Pull requests are welcome. For major changes, open an issue first.
