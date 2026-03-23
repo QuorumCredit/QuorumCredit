@@ -18,6 +18,7 @@ const MAX_VOUCHERS_PER_LOAN: u32 = 100;
 pub enum ContractError {
     InsufficientFunds = 1,
     DuplicateVouch = 2,
+    DuplicateAttestation = 3,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ pub enum ContractError {
 pub enum DataKey {
     Loan(Address),    // borrower → LoanRecord
     Vouches(Address), // borrower → Vec<VouchRecord>
+    Attestations(Address), // credential → Vec<Address> (attestors)
     Admin,            // Address allowed to call slash
     Token,            // XLM token contract address
     Deployer,         // Address that deployed the contract; guards initialize
@@ -111,6 +113,33 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::Vouches(borrower), &vouches);
+        
+        Ok(())
+    }
+
+    /// Attest to a credential, preventing duplicate attestations from the same attestor.
+    pub fn attest(env: Env, attestor: Address, credential: Address) -> Result<(), ContractError> {
+        attestor.require_auth();
+
+        assert!(attestor != credential, "attestor cannot attest to self");
+
+        let mut attestations: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attestations(credential.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        // Check for duplicate attestation
+        for existing_attestor in attestations.iter() {
+            if existing_attestor.clone() == attestor {
+                return Err(ContractError::DuplicateAttestation);
+            }
+        }
+
+        attestations.push_back(attestor);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Attestations(credential), &attestations);
         
         Ok(())
     }
@@ -247,6 +276,13 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .get(&DataKey::Vouches(borrower))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    pub fn get_attestations(env: Env, credential: Address) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Attestations(credential))
             .unwrap_or(Vec::new(&env))
     }
 
@@ -428,6 +464,9 @@ mod tests {
         
         // This should panic due to zero amount
         client.request_loan(&borrower, &0, &1_000_000);
+    }
+
+    #[test]
     fn test_repay_with_max_vouchers() {
         let env = Env::default();
         env.budget().reset_unlimited();
@@ -484,5 +523,40 @@ mod tests {
         let extra_voucher = Address::generate(&env);
         token_admin.mint(&extra_voucher, &10_000_000);
         client.vouch(&extra_voucher, &borrower, &1_000_000);
+    }
+
+    #[test]
+    fn test_duplicate_attestation_should_fail() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        
+        let credential = Address::generate(&env);
+
+        // First attestation should succeed
+        client.attest(&voucher, &credential);
+
+        // Second attestation from same attestor for same credential should fail
+        let result = client.try_attest(&voucher, &credential);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::DuplicateAttestation)),
+            "expected DuplicateAttestation error when same attestor tries to attest twice for same credential"
+        );
+
+        // Verify only one attestation record exists
+        let attestations = client.get_attestations(&credential);
+        assert_eq!(attestations.len(), 1);
+        assert_eq!(attestations.get(0).unwrap(), voucher);
+    }
+
+    #[test]
+    #[should_panic(expected = "attestor cannot attest to self")]
+    fn test_attest_self_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.attest(&voucher, &voucher);
     }
 }
