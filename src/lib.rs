@@ -77,6 +77,8 @@ impl QuorumCreditContract {
     pub fn vouch(env: Env, voucher: Address, borrower: Address, stake: i128) {
         voucher.require_auth();
 
+        assert!(voucher != borrower, "voucher cannot vouch for self");
+
         // Transfer stake from voucher into the contract.
         let token = Self::token(&env);
         token.transfer(&voucher, &env.current_contract_address(), &stake);
@@ -286,6 +288,16 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "voucher cannot vouch for self")]
+    fn test_vouch_self_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&borrower, &borrower, &1_000_000);
+    }
+
+    #[test]
     fn test_repay_gives_voucher_yield() {
         let env = Env::default();
         let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
@@ -333,7 +345,7 @@ mod tests {
         // Request a loan larger than the contract balance to trigger InsufficientFunds.
 
         QuorumCreditContractClient::new(&env, &contract_id)
-            .initialize(&admin, &token_id.address());
+            .initialize(&admin, &admin, &token_id.address());
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         // Stake 1_000_000 — contract now holds exactly 1_000_000.
