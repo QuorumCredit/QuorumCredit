@@ -93,6 +93,20 @@ QuorumCredit/
 
 ---
 
+## 🛡️ Access Control Matrix
+
+| Function | Role Required | Description | Impact |
+|---|---|---|---|
+| `initialize` | **Deployer** | One-time setup of Admin and Token addresses. | Sets security foundation. |
+| `vouch` | **Voucher** | Stake XLM to back a borrower. | Increases borrower trust score. |
+| `request_loan` | **Borrower** | Withdraw loan funds to borrower wallet. | Disburses capital. |
+| `repay` | **Borrower** | Clear debt and distribute yield to vouchers. | Restores trust and rewards vouchers. |
+| `slash` | **Admin** | Signal default and burn 50% of voucher stakes. | Penalizes default; enforces risk. |
+| `get_loan` | **Anyone** | Read active loan records. | Transparency. |
+| `get_vouches` | **Anyone** | Read voucher lists for a borrower. | Transparency. |
+
+---
+
 ## Setup Instructions
 
 ### Requirements
@@ -263,29 +277,40 @@ Borrower
 
 ---
 
-## Contributing
+## 💰 Yield Accounting & Solvency
 
-Pull requests are welcome. For major changes, open an issue first.
+QuorumCredit uses a **Sustainable Pre-funding Model** for yield distribution. Unlike many DeFi protocols, yield is not "minted" into existence, ensuring no inflationary pressure on the underlying XLM asset.
 
-```bash
-# Fork and create a branch
-git checkout -b feature/your-feature
+### Funding Source
+Yield is sourced from a dedicated **Yield Reserve** within the contract. For vouchers to earn their 2% yield (`YIELD_BPS = 200`), the contract must be pre-funded by the protocol admin or through external revenue streams (e.g., protocol fees). 
 
-# Format code
-cargo fmt --all
+> [!IMPORTANT]
+> The contract must hold sufficient XLM to cover both the principal repayment and the 2% yield. If the reserve is empty, the protocol cannot disburse rewards.
 
-# Ensure tests pass
-cargo test
+### Solvency & "Hard-Cap" Logic
+To ensure the protocol never owes more than it holds, a **Hard-Cap Solvency** model is enforced:
+1. **Reserve Check**: The protocol only allows loan disbursement if the contract has sufficient liquidity to cover the loan amount.
+2. **Yield Protection**: If the Yield Reserve is depleted, the $2.0\%$ yield accrual effectively halts. In the current implementation, any attempt to pay out yield without sufficient funds will trigger a Soroban `InsufficientFunds` panic, protecting the protocol's integrity.
 
-# Commit and push
-git commit -m "Add: description of changes"
+### Yield Flow Diagram
+
+```mermaid
+graph LR
+    A[Admin/Revenue Source] -->|Pre-funds| B(Yield Reserve)
+    B -->|Allocates| C{Yield Accrual}
+    C -->|Repayment Event| D[Voucher Stake + 2% Yield]
+    D -->|Withdrawal| E(User Wallet)
 ```
 
-**Standards:**
-- All new features must include tests
-- Run `cargo fmt --all` before committing
-- Update this README for any interface changes
-- Security implications must be reviewed before merging
+## Contributing
+
+Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+
+Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for our full guidelines on:
+- Branch naming conventions
+- Commit message formats (Conventional Commits)
+- Pull Request workflow
+- Testing and Style guides
 
 ---
 
