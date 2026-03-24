@@ -1126,7 +1126,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn test_slash_bps_boundary() {
         // SLASH_BPS == 10_000 would slash 100% of stake; returned == 0, no underflow.
         // We verify the arithmetic holds at the boundary without going negative.
@@ -1139,7 +1138,9 @@ mod tests {
         // SLASH_BPS == 0 means no slash; full stake returned.
         let slash_amount_zero = stake * 0 / 10_000;
         assert_eq!(stake - slash_amount_zero, stake);
-=======
+    }
+
+    #[test]
     fn test_is_initialized() {
         let env = Env::default();
         env.mock_all_auths();
@@ -1152,7 +1153,6 @@ mod tests {
         assert!(!client.is_initialized());
         client.initialize(&admin, &admin, &token_id.address(), &150);
         assert!(client.is_initialized());
->>>>>>> c1f08ec (feat: implement is_initialized view function (#42))
     }
 
     #[test]
