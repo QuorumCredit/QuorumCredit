@@ -582,6 +582,18 @@ impl QuorumCreditContract {
         env.storage().persistent().get(&DataKey::Vouches(borrower))
     }
 
+    /// Returns the total staked amount across all vouchers for a given borrower.
+    /// Returns 0 if the borrower has no vouches.
+    pub fn total_vouched(env: Env, borrower: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Vec<VouchRecord>>(&DataKey::Vouches(borrower))
+            .unwrap_or(Vec::new(&env))
+            .iter()
+            .map(|v| v.stake)
+            .sum()
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn require_not_paused(env: &Env) -> Result<(), ContractError> {
@@ -897,6 +909,27 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert!(client.get_vouches(&borrower).is_none());
+    }
+
+    #[test]
+    fn test_total_vouched_returns_sum_of_all_stakes() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token_admin = StellarAssetClient::new(&env, &token_addr);
+
+        // No vouches yet — should return 0.
+        assert_eq!(client.total_vouched(&borrower), 0);
+
+        // First voucher stakes 1_000_000.
+        client.vouch(&voucher, &borrower, &1_000_000);
+        assert_eq!(client.total_vouched(&borrower), 1_000_000);
+
+        // Second voucher stakes 2_500_000.
+        let voucher2 = Address::generate(&env);
+        token_admin.mint(&voucher2, &10_000_000);
+        client.vouch(&voucher2, &borrower, &2_500_000);
+        assert_eq!(client.total_vouched(&borrower), 3_500_000);
     }
 
     #[test]
