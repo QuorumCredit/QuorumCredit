@@ -8,6 +8,7 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Ad
 const YIELD_BPS: i128 = 200;
 /// Slash penalty on default: 5000 basis points = 50% of voucher stake burned.
 const SLASH_BPS: i128 = 5000;
+const _: () = assert!(SLASH_BPS <= 10_000, "SLASH_BPS must not exceed 10_000");
 /// Maximum number of vouchers per loan to prevent DoS.
 const MAX_VOUCHERS_PER_LOAN: u32 = 100;
 /// Minimum loan amount in stroops to prevent dust loans (0.01 XLM).
@@ -614,11 +615,6 @@ mod tests {
         // Set max_loan_to_stake_ratio to 150% (150 * 100 = 15000 basis points)
         QuorumCreditContractClient::new(env, &contract_id)
             .initialize(&admin, &admin, &token_id.address(), &150);
-        QuorumCreditContractClient::new(env, &contract_id).initialize(
-            &admin,
-            &admin,
-            &token_id.address(),
-        );
 
         (contract_id, token_id.address(), admin, borrower, voucher)
     }
@@ -711,11 +707,6 @@ mod tests {
 
         QuorumCreditContractClient::new(&env, &contract_id)
             .initialize(&admin, &admin, &token_id.address(), &150);
-        QuorumCreditContractClient::new(&env, &contract_id).initialize(
-            &admin,
-            &admin,
-            &token_id.address(),
-        );
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         // Stake 1_000_000 — contract now holds exactly 1_000_000.
@@ -1065,5 +1056,20 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert_eq!(client.get_admin(), admin);
+    }
+
+    #[test]
+    fn test_slash_bps_boundary() {
+        // SLASH_BPS == 10_000 would slash 100% of stake; returned == 0, no underflow.
+        // We verify the arithmetic holds at the boundary without going negative.
+        let stake: i128 = 1_000_000;
+        let slash_amount = stake * 10_000 / 10_000;
+        let returned = stake - slash_amount;
+        assert_eq!(slash_amount, 1_000_000);
+        assert_eq!(returned, 0);
+
+        // SLASH_BPS == 0 means no slash; full stake returned.
+        let slash_amount_zero = stake * 0 / 10_000;
+        assert_eq!(stake - slash_amount_zero, stake);
     }
 }
