@@ -32,15 +32,15 @@ pub enum ContractError {
 
 #[contracttype]
 pub enum DataKey {
-    Loan(Address),    // borrower → LoanRecord
-    Vouches(Address), // borrower → Vec<VouchRecord>
-    Admin,            // Address allowed to call slash
-    Token,            // XLM token contract address
-    Deployer,         // Address that deployed the contract; guards initialize
+    Loan(Address),       // borrower → LoanRecord
+    Vouches(Address),    // borrower → Vec<VouchRecord>
+    Admin,               // Address allowed to call slash
+    Token,               // XLM token contract address
+    Deployer,            // Address that deployed the contract; guards initialize
     MaxLoanToStakeRatio, // Maximum loan-to-stake ratio (percentage * 100)
-    SlashTreasury,    // i128 accumulated slashed funds
-    Paused,           // bool: true when contract is paused
-    LoanDuration,     // u64 configurable loan duration in seconds
+    SlashTreasury,       // i128 accumulated slashed funds
+    Paused,              // bool: true when contract is paused
+    LoanDuration,        // u64 configurable loan duration in seconds
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -79,7 +79,13 @@ impl QuorumCreditContract {
     ///
     /// `max_loan_to_stake_ratio` is the maximum loan amount as a percentage of stake.
     /// For example, 150 means loan can be at most 150% of total vouched stake.
-    pub fn initialize(env: Env, deployer: Address, admin: Address, token: Address, max_loan_to_stake_ratio: u32) {
+    pub fn initialize(
+        env: Env,
+        deployer: Address,
+        admin: Address,
+        token: Address,
+        max_loan_to_stake_ratio: u32,
+    ) {
         // Require the deployer's signature — only they can authorise this call.
         deployer.require_auth();
 
@@ -91,7 +97,9 @@ impl QuorumCreditContract {
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::MaxLoanToStakeRatio, &max_loan_to_stake_ratio);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxLoanToStakeRatio, &max_loan_to_stake_ratio);
     }
 
     /// Stake XLM to vouch for a borrower.
@@ -176,7 +184,10 @@ impl QuorumCreditContract {
             .get(&DataKey::MaxLoanToStakeRatio)
             .expect("not initialized");
         let max_allowed_loan = total_stake * max_ratio as i128 / 100;
-        assert!(amount <= max_allowed_loan, "loan amount exceeds maximum collateral ratio");
+        assert!(
+            amount <= max_allowed_loan,
+            "loan amount exceeds maximum collateral ratio"
+        );
 
         // Verify the contract holds enough XLM to cover the loan.
         let token = Self::token(&env);
@@ -613,8 +624,12 @@ mod tests {
         // deployer == admin for test convenience; the key point is that
         // deployer.require_auth() is satisfied via mock_all_auths().
         // Set max_loan_to_stake_ratio to 150% (150 * 100 = 15000 basis points)
-        QuorumCreditContractClient::new(env, &contract_id)
-            .initialize(&admin, &admin, &token_id.address(), &150);
+        QuorumCreditContractClient::new(env, &contract_id).initialize(
+            &admin,
+            &admin,
+            &token_id.address(),
+            &150,
+        );
 
         (contract_id, token_id.address(), admin, borrower, voucher)
     }
@@ -705,8 +720,12 @@ mod tests {
         // Contract balance starts at 0; after vouch it will hold 1_000_000.
         // Request a loan larger than the contract balance to trigger InsufficientFunds.
 
-        QuorumCreditContractClient::new(&env, &contract_id)
-            .initialize(&admin, &admin, &token_id.address(), &150);
+        QuorumCreditContractClient::new(&env, &contract_id).initialize(
+            &admin,
+            &admin,
+            &token_id.address(),
+            &150,
+        );
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         // Stake 1_000_000 — contract now holds exactly 1_000_000.
@@ -776,7 +795,10 @@ mod tests {
 
         // This should fail - exceeds 150% ratio (2_000_000 > 1_500_000)
         let result = client.try_request_loan(&borrower, &2_000_000, &1_000_000);
-        assert!(result.is_err(), "expected error when loan amount exceeds maximum collateral ratio");
+        assert!(
+            result.is_err(),
+            "expected error when loan amount exceeds maximum collateral ratio"
+        );
     }
 
     #[test]
