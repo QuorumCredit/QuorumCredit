@@ -25,6 +25,7 @@ pub enum ContractError {
     NoActiveLoan = 3,
     ContractPaused = 4,
     LoanPastDeadline = 5,
+    UnauthorizedRepay = 6,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
@@ -220,6 +221,10 @@ impl QuorumCreditContract {
             .persistent()
             .get(&DataKey::Loan(borrower.clone()))
             .ok_or(ContractError::NoActiveLoan)?;
+
+        if borrower != loan.borrower {
+            return Err(ContractError::UnauthorizedRepay);
+        }
 
         assert!(!loan.defaulted, "loan already defaulted");
         assert!(!loan.repaid, "loan already repaid");
@@ -614,11 +619,6 @@ mod tests {
         // Set max_loan_to_stake_ratio to 150% (150 * 100 = 15000 basis points)
         QuorumCreditContractClient::new(env, &contract_id)
             .initialize(&admin, &admin, &token_id.address(), &150);
-        QuorumCreditContractClient::new(env, &contract_id).initialize(
-            &admin,
-            &admin,
-            &token_id.address(),
-        );
 
         (contract_id, token_id.address(), admin, borrower, voucher)
     }
@@ -711,18 +711,13 @@ mod tests {
 
         QuorumCreditContractClient::new(&env, &contract_id)
             .initialize(&admin, &admin, &token_id.address(), &150);
-        QuorumCreditContractClient::new(&env, &contract_id).initialize(
-            &admin,
-            &admin,
-            &token_id.address(),
-        );
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         // Stake 1_000_000 — contract now holds exactly 1_000_000.
         client.vouch(&voucher, &borrower, &1_000_000);
 
-        // Request 2_000_000 which exceeds the contract's 1_000_000 balance.
-        let result = client.try_request_loan(&borrower, &2_000_000, &1_000_000);
+        // Request 1_200_000: within 150% collateral ratio (max=1_500_000) but exceeds contract balance.
+        let result = client.try_request_loan(&borrower, &1_200_000, &1_000_000);
         assert_eq!(
             result,
             Err(Ok(ContractError::InsufficientFunds)),
@@ -836,6 +831,35 @@ mod tests {
             Err(Ok(ContractError::NoActiveLoan)),
             "expected NoActiveLoan error when repaying non-existent loan"
         );
+    }
+
+    #[test]
+    fn test_repay_mismatched_borrower_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        // Tamper: overwrite the loan record so loan.borrower points to a different address
+        let real_borrower = borrower.clone();
+        let impostor = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            let mut loan: LoanRecord = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Loan(real_borrower.clone()))
+                .unwrap();
+            loan.borrower = impostor.clone();
+            env.storage()
+                .persistent()
+                .set(&DataKey::Loan(real_borrower.clone()), &loan);
+        });
+
+        // borrower authenticates and calls repay, but loan.borrower is now impostor
+        let result = client.try_repay(&borrower);
+        assert_eq!(result, Err(Ok(ContractError::UnauthorizedRepay)));
     }
 
     #[test]
