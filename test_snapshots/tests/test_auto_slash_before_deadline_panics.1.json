@@ -90,6 +90,9 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                },
+                {
+                  "u32": 150
                 }
               ]
             }
@@ -694,6 +697,18 @@
                         },
                         "val": {
                           "u64": 1000
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MaxLoanToStakeRatio"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 150
                         }
                       },
                       {
@@ -1399,6 +1414,9 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                },
+                {
+                  "u32": 150
                 }
               ]
             }
@@ -1875,7 +1893,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'loan deadline has not passed' from contract function 'Symbol(obj#489)'"
+                  "string": "caught panic 'loan deadline has not passed' from contract function 'Symbol(obj#509)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"

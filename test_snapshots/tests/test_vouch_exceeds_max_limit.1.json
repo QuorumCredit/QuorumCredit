@@ -90,6 +90,9 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                },
+                {
+                  "u32": 150
                 }
               ]
             }
@@ -13725,6 +13728,18 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "MaxLoanToStakeRatio"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 150
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Token"
                             }
                           ]
@@ -25024,6 +25039,9 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                },
+                {
+                  "u32": 150
                 }
               ]
             }

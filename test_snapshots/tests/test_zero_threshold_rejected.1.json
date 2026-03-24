@@ -90,6 +90,9 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                },
+                {
+                  "u32": 150
                 }
               ]
             }
@@ -469,6 +472,18 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "MaxLoanToStakeRatio"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 150
                         }
                       },
                       {
@@ -1101,6 +1116,9 @@
                 },
                 {
                   "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
+                },
+                {
+                  "u32": 150
                 }
               ]
             }
@@ -1339,7 +1357,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'threshold must be greater than zero' from contract function 'Symbol(obj#327)'"
+                  "string": "caught panic 'threshold must be greater than zero' from contract function 'Symbol(obj#335)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
