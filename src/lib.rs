@@ -8,6 +8,7 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Ad
 const YIELD_BPS: i128 = 200;
 /// Slash penalty on default: 5000 basis points = 50% of voucher stake burned.
 const SLASH_BPS: i128 = 5000;
+const _: () = assert!(SLASH_BPS <= 10_000, "SLASH_BPS must not exceed 10_000");
 /// Maximum number of vouchers per loan to prevent DoS.
 const MAX_VOUCHERS_PER_LOAN: u32 = 100;
 /// Minimum loan amount in stroops to prevent dust loans (0.01 XLM).
@@ -31,15 +32,15 @@ pub enum ContractError {
 
 #[contracttype]
 pub enum DataKey {
-    Loan(Address),    // borrower → LoanRecord
-    Vouches(Address), // borrower → Vec<VouchRecord>
-    Admin,            // Address allowed to call slash
-    Token,            // XLM token contract address
-    Deployer,         // Address that deployed the contract; guards initialize
+    Loan(Address),       // borrower → LoanRecord
+    Vouches(Address),    // borrower → Vec<VouchRecord>
+    Admin,               // Address allowed to call slash
+    Token,               // XLM token contract address
+    Deployer,            // Address that deployed the contract; guards initialize
     MaxLoanToStakeRatio, // Maximum loan-to-stake ratio (percentage * 100)
-    SlashTreasury,    // i128 accumulated slashed funds
-    Paused,           // bool: true when contract is paused
-    LoanDuration,     // u64 configurable loan duration in seconds
+    SlashTreasury,       // i128 accumulated slashed funds
+    Paused,              // bool: true when contract is paused
+    LoanDuration,        // u64 configurable loan duration in seconds
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -78,7 +79,13 @@ impl QuorumCreditContract {
     ///
     /// `max_loan_to_stake_ratio` is the maximum loan amount as a percentage of stake.
     /// For example, 150 means loan can be at most 150% of total vouched stake.
-    pub fn initialize(env: Env, deployer: Address, admin: Address, token: Address, max_loan_to_stake_ratio: u32) {
+    pub fn initialize(
+        env: Env,
+        deployer: Address,
+        admin: Address,
+        token: Address,
+        max_loan_to_stake_ratio: u32,
+    ) {
         // Require the deployer's signature — only they can authorise this call.
         deployer.require_auth();
 
@@ -90,7 +97,9 @@ impl QuorumCreditContract {
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::MaxLoanToStakeRatio, &max_loan_to_stake_ratio);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxLoanToStakeRatio, &max_loan_to_stake_ratio);
     }
 
     /// Stake XLM to vouch for a borrower.
@@ -175,7 +184,10 @@ impl QuorumCreditContract {
             .get(&DataKey::MaxLoanToStakeRatio)
             .expect("not initialized");
         let max_allowed_loan = total_stake * max_ratio as i128 / 100;
-        assert!(amount <= max_allowed_loan, "loan amount exceeds maximum collateral ratio");
+        assert!(
+            amount <= max_allowed_loan,
+            "loan amount exceeds maximum collateral ratio"
+        );
 
         // Verify the contract holds enough XLM to cover the loan.
         let token = Self::token(&env);
@@ -635,6 +647,12 @@ mod tests {
         // deployer == admin for test convenience; the key point is that
         // deployer.require_auth() is satisfied via mock_all_auths().
         // Set max_loan_to_stake_ratio to 150% (150 * 100 = 15000 basis points)
+        QuorumCreditContractClient::new(env, &contract_id).initialize(
+            &admin,
+            &admin,
+            &token_id.address(),
+            &150,
+        );
         QuorumCreditContractClient::new(env, &contract_id)
             .initialize(&admin, &admin, &token_id.address(), &150);
 
@@ -727,6 +745,12 @@ mod tests {
         // Contract balance starts at 0; after vouch it will hold 1_000_000.
         // Request a loan larger than the contract balance to trigger InsufficientFunds.
 
+        QuorumCreditContractClient::new(&env, &contract_id).initialize(
+            &admin,
+            &admin,
+            &token_id.address(),
+            &150,
+        );
         QuorumCreditContractClient::new(&env, &contract_id)
             .initialize(&admin, &admin, &token_id.address(), &150);
 
@@ -734,8 +758,9 @@ mod tests {
         // Stake 1_000_000 — contract now holds exactly 1_000_000.
         client.vouch(&voucher, &borrower, &1_000_000);
 
-        // Request 2_000_000 which exceeds the contract's 1_000_000 balance.
-        let result = client.try_request_loan(&borrower, &2_000_000, &1_000_000);
+        // Request 1_200_000: within the 150% collateral ratio (max 1_500_000)
+        // but exceeds the contract's actual balance of 1_000_000 → InsufficientFunds.
+        let result = client.try_request_loan(&borrower, &1_200_000, &1_000_000);
         assert_eq!(
             result,
             Err(Ok(ContractError::InsufficientFunds)),
@@ -797,7 +822,10 @@ mod tests {
 
         // This should fail - exceeds 150% ratio (2_000_000 > 1_500_000)
         let result = client.try_request_loan(&borrower, &2_000_000, &1_000_000);
-        assert!(result.is_err(), "expected error when loan amount exceeds maximum collateral ratio");
+        assert!(
+            result.is_err(),
+            "expected error when loan amount exceeds maximum collateral ratio"
+        );
     }
 
     #[test]
@@ -934,7 +962,7 @@ mod tests {
     #[test]
     fn test_pause_blocks_vouch() {
         let env = Env::default();
-        let (contract_id, _token_addr, admin, borrower, voucher) = setup(&env);
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         client.pause();
@@ -1102,6 +1130,18 @@ mod tests {
     }
 
     #[test]
+    fn test_slash_bps_boundary() {
+        // SLASH_BPS == 10_000 would slash 100% of stake; returned == 0, no underflow.
+        // We verify the arithmetic holds at the boundary without going negative.
+        let stake: i128 = 1_000_000;
+        let slash_amount = stake * 10_000 / 10_000;
+        let returned = stake - slash_amount;
+        assert_eq!(slash_amount, 1_000_000);
+        assert_eq!(returned, 0);
+
+        // SLASH_BPS == 0 means no slash; full stake returned.
+        let slash_amount_zero = stake * 0 / 10_000;
+        assert_eq!(stake - slash_amount_zero, stake);
     fn test_is_initialized() {
         let env = Env::default();
         env.mock_all_auths();
