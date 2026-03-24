@@ -44,16 +44,6 @@ pub enum LoanStatus {
 
 #[contracttype]
 pub enum DataKey {
-    Loan(Address),       // borrower → LoanRecord
-    Vouches(Address),    // borrower → Vec<VouchRecord>
-    Admin,               // Address allowed to call slash
-    Token,               // XLM token contract address
-    Deployer,            // Address that deployed the contract; guards initialize
-    MaxLoanToStakeRatio, // Maximum loan-to-stake ratio (percentage * 100)
-    SlashTreasury,       // i128 accumulated slashed funds
-    Paused,              // bool: true when contract is paused
-    LoanDuration,        // u64 configurable loan duration in seconds
-    ReputationNft,       // Address of the ReputationNftContract
     Loan(Address),    // borrower → LoanRecord
     Vouches(Address), // borrower → Vec<VouchRecord>
     Admin,            // Address allowed to call slash
@@ -61,6 +51,7 @@ pub enum DataKey {
     Deployer,         // Address that deployed the contract; guards initialize
     SlashTreasury,    // i128 accumulated slashed funds
     Paused,           // bool: true when contract is paused
+    ReputationNft,    // Address of the ReputationNftContract
     Config,           // Config struct: all configurable protocol parameters
 }
 
@@ -866,7 +857,7 @@ mod tests {
         token_admin.mint(&contract_id, &50_000_000);
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &admin, &token_id.address(), &150);
+        client.initialize(&admin, &admin, &token_id.address());
 
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
@@ -908,7 +899,7 @@ mod tests {
 
         let contract_id = env.register_contract(None, QuorumCreditContract);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &admin, &token_id.address(), &150);
+        client.initialize(&admin, &admin, &token_id.address());
 
         client.vouch(&voucher, &borrower, &1_000_000);
 
@@ -1577,6 +1568,13 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         // Default immediately with score = 0 — should not underflow.
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+
+        assert_eq!(client.get_reputation(&borrower), 0);
+    }
+
     // ── Config Tests ──────────────────────────────────────────────────────────
 
     #[test]
@@ -1666,7 +1664,5 @@ mod tests {
 
         // No NFT contract configured — should return 0 gracefully.
         assert_eq!(client.get_reputation(&borrower), 0);
-        // voucher started with 10_000_000, staked 1_000_000, gets back 750_000
-        assert_eq!(token.balance(&voucher), 9_750_000);
     }
 }
