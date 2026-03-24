@@ -542,6 +542,13 @@ impl QuorumCreditContract {
 
     // ── Views ─────────────────────────────────────────────────────────────────
 
+    pub fn get_token(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("not initialized")
+    }
+
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -1094,5 +1101,14 @@ mod tests {
         // SLASH_BPS == 0 means no slash; full stake returned.
         let slash_amount_zero = stake * 0 / 10_000;
         assert_eq!(stake - slash_amount_zero, stake);
+    }
+
+    #[test]
+    fn test_get_token_returns_token_address() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_token(), token_addr);
     }
 }
