@@ -105,6 +105,7 @@ pub enum DataKey {
     YieldBps,         // i128 yield in basis points
     SlashBps,         // i128 slash penalty in basis points
     PendingAdmin,     // Address of the pending admin (two-step transfer)
+    ProtocolFeeBps,   // u32: protocol fee in basis points
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -934,6 +935,25 @@ impl QuorumCreditContract {
     /// Returns the current protocol config.
     pub fn get_config(env: Env) -> Config {
         Self::config(&env)
+    }
+
+    // ── Admin: Protocol Fee ───────────────────────────────────────────────────
+
+    /// Admin sets the protocol fee applied to interactions (in basis points).
+    pub fn set_protocol_fee(env: Env, admin_signers: Vec<Address>, fee_bps: u32) {
+        Self::require_admin_approval(&env, &admin_signers);
+        assert!(fee_bps <= 10_000, "fee_bps must not exceed 10000");
+        env.storage()
+            .instance()
+            .set(&DataKey::ProtocolFeeBps, &fee_bps);
+    }
+
+    /// Returns the current protocol fee (0 if not set).
+    pub fn get_protocol_fee(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ProtocolFeeBps)
+            .unwrap_or(0)
     }
 
     // ── Admin: Pause / Unpause ────────────────────────────────────────────────
@@ -3090,6 +3110,34 @@ mod tests {
         client.set_config(&cfg);
 
         assert_eq!(client.get_config().slash_bps, 10_000);
+    }
+
+    #[test]
+    fn test_set_protocol_fee() {
+        let env = Env::default();
+        let (contract_id, _token_addr, admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_protocol_fee(), 0);
+
+        let mut signers = Vec::new(&env);
+        signers.push_back(admin.clone());
+
+        client.set_protocol_fee(&signers, &200);
+        assert_eq!(client.get_protocol_fee(), 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "fee_bps must not exceed 10000")]
+    fn test_set_protocol_fee_exceeds_max() {
+        let env = Env::default();
+        let (contract_id, _token_addr, admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut signers = Vec::new(&env);
+        signers.push_back(admin.clone());
+
+        client.set_protocol_fee(&signers, &10_001);
     }
 }
 
