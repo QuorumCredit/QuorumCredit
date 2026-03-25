@@ -225,9 +225,17 @@ impl QuorumCreditContract {
     ) -> Result<(), ContractError> {
         voucher.require_auth();
         Self::require_not_paused(&env)?;
+        Self::do_vouch(&env, voucher, borrower, stake)
+    }
 
+    fn do_vouch(
+        env: &Env,
+        voucher: Address,
+        borrower: Address,
+        stake: i128,
+    ) -> Result<(), ContractError> {
         // Validate numeric input: stake must be strictly positive.
-        Self::require_positive_amount(&env, stake)?;
+        Self::require_positive_amount(env, stake)?;
 
         assert!(voucher != borrower, "voucher cannot vouch for self");
 
@@ -243,7 +251,7 @@ impl QuorumCreditContract {
 
         // Enforce minimum yield stake: reject stakes that would produce zero yield
         // due to integer division truncation (stake * yield_bps / 10_000 == 0).
-        let cfg = Self::config(&env);
+        let cfg = Self::config(env);
         assert!(
             stake >= cfg.min_yield_stake,
             "stake too small: would produce zero yield due to integer truncation; \
@@ -255,7 +263,7 @@ impl QuorumCreditContract {
             .storage()
             .persistent()
             .get(&DataKey::Vouches(borrower.clone()))
-            .unwrap_or(Vec::new(&env));
+            .unwrap_or(Vec::new(env));
 
         // Check for duplicate vouch before any state mutation or transfer.
         for v in vouches.iter() {
@@ -265,12 +273,12 @@ impl QuorumCreditContract {
         }
 
         assert!(
-            vouches.len() < Self::config(&env).max_vouchers,
+            vouches.len() < Self::config(env).max_vouchers,
             "maximum vouchers per loan exceeded"
         );
 
         // Transfer stake from voucher into the contract.
-        let token = Self::token(&env);
+        let token = Self::token(env);
         token.transfer(&voucher, &env.current_contract_address(), &stake);
 
         // Track voucher → borrowers history.
@@ -278,7 +286,7 @@ impl QuorumCreditContract {
             .storage()
             .persistent()
             .get(&DataKey::VoucherHistory(voucher.clone()))
-            .unwrap_or(Vec::new(&env));
+            .unwrap_or(Vec::new(env));
         history.push_back(borrower.clone());
         env.storage()
             .persistent()
@@ -297,6 +305,34 @@ impl QuorumCreditContract {
             (symbol_short!("vouch"), symbol_short!("added")),
             (voucher, borrower, stake),
         );
+
+        Ok(())
+    }
+
+    /// Vouch for multiple borrowers in a single transaction.
+    /// `borrowers` and `stakes` must have the same length.
+    /// Each entry is processed identically to a single `vouch` call —
+    /// any failure (duplicate, min-stake, paused, etc.) aborts the whole batch.
+    pub fn batch_vouch(
+        env: Env,
+        voucher: Address,
+        borrowers: Vec<Address>,
+        stakes: Vec<i128>,
+    ) -> Result<(), ContractError> {
+        voucher.require_auth();
+        Self::require_not_paused(&env)?;
+
+        assert!(
+            borrowers.len() == stakes.len(),
+            "borrowers and stakes length mismatch"
+        );
+        assert!(!borrowers.is_empty(), "batch cannot be empty");
+
+        for i in 0..borrowers.len() {
+            let borrower = borrowers.get(i).unwrap();
+            let stake = stakes.get(i).unwrap();
+            Self::do_vouch(&env, voucher.clone(), borrower, stake)?;
+        }
 
         Ok(())
     }
@@ -2445,6 +2481,83 @@ mod tests {
         let vouches = client.get_vouches(&borrower).unwrap();
         assert_eq!(vouches.len(), 1);
         assert_eq!(vouches.get(0).unwrap().stake, 1_000_000);
+    }
+
+    // ── Batch Vouch Tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_batch_vouch_vouches_multiple_borrowers() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, _borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token = TokenClient::new(&env, &token_addr);
+
+        let borrower_a = Address::generate(&env);
+        let borrower_b = Address::generate(&env);
+        let borrower_c = Address::generate(&env);
+
+        let mut borrowers = Vec::new(&env);
+        borrowers.push_back(borrower_a.clone());
+        borrowers.push_back(borrower_b.clone());
+        borrowers.push_back(borrower_c.clone());
+
+        let mut stakes = Vec::new(&env);
+        stakes.push_back(1_000_000i128);
+        stakes.push_back(500_000i128);
+        stakes.push_back(200_000i128);
+
+        client.batch_vouch(&voucher, &borrowers, &stakes);
+
+        assert_eq!(client.get_vouches(&borrower_a).unwrap().get(0).unwrap().stake, 1_000_000);
+        assert_eq!(client.get_vouches(&borrower_b).unwrap().get(0).unwrap().stake, 500_000);
+        assert_eq!(client.get_vouches(&borrower_c).unwrap().get(0).unwrap().stake, 200_000);
+        // 10_000_000 - 1_000_000 - 500_000 - 200_000 = 8_300_000
+        assert_eq!(token.balance(&voucher), 8_300_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "borrowers and stakes length mismatch")]
+    fn test_batch_vouch_length_mismatch_rejected() {
+        let env = Env::default();
+        let (contract_id, _, _, _, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut borrowers = Vec::new(&env);
+        borrowers.push_back(Address::generate(&env));
+        let stakes: Vec<i128> = Vec::new(&env);
+
+        client.batch_vouch(&voucher, &borrowers, &stakes);
+    }
+
+    #[test]
+    #[should_panic(expected = "batch cannot be empty")]
+    fn test_batch_vouch_empty_rejected() {
+        let env = Env::default();
+        let (contract_id, _, _, _, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.batch_vouch(&voucher, &Vec::new(&env), &Vec::new(&env));
+    }
+
+    #[test]
+    fn test_batch_vouch_duplicate_aborts_batch() {
+        let env = Env::default();
+        let (contract_id, _, _, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Pre-vouch so the second batch entry is a duplicate.
+        client.vouch(&voucher, &borrower, &1_000_000);
+
+        let mut borrowers = Vec::new(&env);
+        borrowers.push_back(Address::generate(&env));
+        borrowers.push_back(borrower.clone());
+
+        let mut stakes = Vec::new(&env);
+        stakes.push_back(1_000_000i128);
+        stakes.push_back(500_000i128);
+
+        let result = client.try_batch_vouch(&voucher, &borrowers, &stakes);
+        assert_eq!(result, Err(Ok(ContractError::DuplicateVouch)));
     }
 
     // ── Max Loan Amount Tests ─────────────────────────────────────────────────
