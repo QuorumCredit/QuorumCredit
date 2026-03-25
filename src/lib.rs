@@ -939,6 +939,14 @@ impl QuorumCreditContract {
             .unwrap_or(0)
     }
 
+    /// Returns the total accumulated slashed funds held in the treasury.
+    pub fn get_slash_treasury_balance(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SlashTreasury)
+            .unwrap_or(0)
+    }
+
     pub fn get_paused(env: Env) -> bool {
         env.storage()
             .instance()
@@ -1323,5 +1331,31 @@ mod tests {
 
         // Loan is active — withdrawal must be blocked.
         client.withdraw_vouch(&voucher, &borrower);
+    }
+
+    // ── get_slash_treasury_balance ────────────────────────────────────────────
+
+    #[test]
+    fn test_get_slash_treasury_balance_accumulates_on_slash() {
+        let (env, contract_id, admin, token_addr, token_admin) = setup();
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Starts at zero before any slash.
+        assert_eq!(client.get_slash_treasury_balance(), 0);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        mint(&env, &token_admin, &token_addr, &voucher, 1_000_000);
+        mint(&env, &token_admin, &token_addr, &contract_id, 10_000_000);
+
+        client.vouch(&voucher, &borrower, &1_000_000i128);
+        client.request_loan(&borrower, &100_000i128, &1_000_000i128);
+
+        let mut admin_signers = Vec::new(&env);
+        admin_signers.push_back(admin.clone());
+        client.slash(&admin_signers, &borrower);
+
+        // slash_bps = 5000 (50%) of 1_000_000 stake = 500_000 slashed.
+        assert_eq!(client.get_slash_treasury_balance(), 500_000);
     }
 }
