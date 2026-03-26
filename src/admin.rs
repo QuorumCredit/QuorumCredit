@@ -188,6 +188,36 @@ pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     );
 }
 
+pub fn update_config(
+    env: Env,
+    admin_signers: Vec<Address>,
+    yield_bps: Option<i128>,
+    slash_bps: Option<i128>,
+) {
+    require_admin_approval(&env, &admin_signers);
+
+    let mut cfg = config(&env);
+
+    if let Some(new_yield_bps) = yield_bps {
+        assert!(new_yield_bps >= 0, "yield_bps must be non-negative");
+        cfg.yield_bps = new_yield_bps;
+    }
+
+    if let Some(new_slash_bps) = slash_bps {
+        assert!(
+            new_slash_bps > 0 && new_slash_bps <= 10_000,
+            "slash_bps must be 1-10000"
+        );
+        cfg.slash_bps = new_slash_bps;
+    }
+
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("upconfig")),
+        (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
+    );
+}
+
 pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: Address) {
     require_admin_approval(&env, &admin_signers);
     env.storage()

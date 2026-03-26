@@ -419,6 +419,15 @@ impl QuorumCreditContract {
         admin::set_config(env, admin_signers, config)
     }
 
+    pub fn update_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        yield_bps: Option<i128>,
+        slash_bps: Option<i128>,
+    ) {
+        admin::update_config(env, admin_signers, yield_bps, slash_bps)
+    }
+
     pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: Address) {
         admin::set_reputation_nft(env, admin_signers, nft_contract)
     }
@@ -712,5 +721,214 @@ mod tests {
 
         // Verify contract is initialized
         assert!(client.is_initialized());
+    }
+
+    #[test]
+    fn test_get_config_returns_defaults_after_initialization() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let config = client.get_config();
+        assert_eq!(config.yield_bps, DEFAULT_YIELD_BPS);
+        assert_eq!(config.slash_bps, DEFAULT_SLASH_BPS);
+        assert_eq!(config.max_vouchers, DEFAULT_MAX_VOUCHERS);
+        assert_eq!(config.min_loan_amount, DEFAULT_MIN_LOAN_AMOUNT);
+        assert_eq!(config.loan_duration, DEFAULT_LOAN_DURATION);
+        assert_eq!(
+            config.max_loan_to_stake_ratio,
+            DEFAULT_MAX_LOAN_TO_STAKE_RATIO
+        );
+    }
+
+    #[test]
+    fn test_update_config_yield_bps_only() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Update only yield_bps
+        let new_yield_bps = 300i128;
+        client.update_config(&admins, &Some(new_yield_bps), &None);
+
+        let config = client.get_config();
+        assert_eq!(config.yield_bps, new_yield_bps);
+        assert_eq!(config.slash_bps, DEFAULT_SLASH_BPS); // Should remain unchanged
+    }
+
+    #[test]
+    fn test_update_config_slash_bps_only() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Update only slash_bps
+        let new_slash_bps = 6000i128;
+        client.update_config(&admins, &None, &Some(new_slash_bps));
+
+        let config = client.get_config();
+        assert_eq!(config.yield_bps, DEFAULT_YIELD_BPS); // Should remain unchanged
+        assert_eq!(config.slash_bps, new_slash_bps);
+    }
+
+    #[test]
+    fn test_update_config_both_yield_and_slash_bps() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Update both values
+        let new_yield_bps = 400i128;
+        let new_slash_bps = 7000i128;
+        client.update_config(&admins, &Some(new_yield_bps), &Some(new_slash_bps));
+
+        let config = client.get_config();
+        assert_eq!(config.yield_bps, new_yield_bps);
+        assert_eq!(config.slash_bps, new_slash_bps);
+    }
+
+    #[test]
+    fn test_update_config_no_changes() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Update with None values (no changes)
+        client.update_config(&admins, &None, &None);
+
+        let config = client.get_config();
+        assert_eq!(config.yield_bps, DEFAULT_YIELD_BPS);
+        assert_eq!(config.slash_bps, DEFAULT_SLASH_BPS);
+    }
+
+    #[test]
+    #[should_panic(expected = "yield_bps must be non-negative")]
+    fn test_update_config_rejects_negative_yield_bps() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Try to set negative yield_bps
+        client.update_config(&admins, &Some(-100i128), &None);
+    }
+
+    #[test]
+    #[should_panic(expected = "slash_bps must be 1-10000")]
+    fn test_update_config_rejects_zero_slash_bps() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Try to set zero slash_bps
+        client.update_config(&admins, &None, &Some(0i128));
+    }
+
+    #[test]
+    #[should_panic(expected = "slash_bps must be 1-10000")]
+    fn test_update_config_rejects_slash_bps_above_10000() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Try to set slash_bps above 10000
+        client.update_config(&admins, &None, &Some(10001i128));
+    }
+
+    #[test]
+    fn test_update_config_accepts_boundary_values() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        // Test boundary values
+        client.update_config(&admins, &Some(0i128), &Some(1i128)); // Min values
+        let config = client.get_config();
+        assert_eq!(config.yield_bps, 0);
+        assert_eq!(config.slash_bps, 1);
+
+        client.update_config(&admins, &None, &Some(10000i128)); // Max slash_bps
+        let config = client.get_config();
+        assert_eq!(config.slash_bps, 10000);
     }
 }
