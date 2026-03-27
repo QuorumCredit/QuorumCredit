@@ -83,6 +83,21 @@ pub fn next_loan_id(env: &Env) -> u64 {
     loan_id
 }
 
+pub fn get_latest_loan_record(env: &Env, borrower: &Address) -> Option<LoanRecord> {
+    // Get the latest loan ID for the borrower
+    if let Some(loan_id) = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LatestLoan(borrower.clone()))
+    {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+    } else {
+        None
+    }
+}
+
 pub fn get_active_loan_record(env: &Env, borrower: &Address) -> Result<LoanRecord, ContractError> {
     let loan_id: u64 = env
         .storage()
@@ -93,14 +108,6 @@ pub fn get_active_loan_record(env: &Env, borrower: &Address) -> Result<LoanRecor
         .persistent()
         .get(&DataKey::Loan(loan_id))
         .ok_or(ContractError::NoActiveLoan)
-}
-
-pub fn get_latest_loan_record(env: &Env, borrower: &Address) -> Option<LoanRecord> {
-    let loan_id: u64 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::LatestLoan(borrower.clone()))?;
-    env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
 
 pub fn token(env: &Env) -> token::Client<'_> {

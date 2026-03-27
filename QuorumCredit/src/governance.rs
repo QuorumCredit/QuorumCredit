@@ -54,7 +54,7 @@ pub fn vote_slash(
         });
 
     if vote.executed {
-        panic!("already defaulted");
+        return Err(ContractError::SlashAlreadyExecuted);
     }
 
     // Prevent double-voting.
@@ -138,7 +138,6 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
     // Mark loan as defaulted first so we can read token_address.
     let mut loan = get_active_loan_record(env, borrower)?;
-    assert!(!loan.defaulted, "already defaulted");
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
     let mut total_slashed: i128 = 0;
