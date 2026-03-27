@@ -1,8 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, BytesN, Env,
-    Vec,
+    contract, contractimpl, panic_with_error, symbol_short, Address, BytesN, Env, Vec,
 };
 
 pub mod admin;
@@ -32,7 +31,7 @@ mod duplicate_loan_test;
 pub use errors::ContractError;
 pub use types::*;
 
-use helpers::{config, require_valid_token, validate_admin_config};
+use helpers::{require_valid_token, validate_admin_config};
 use reputation::ReputationNftExternalClient;
 
 #[contract]
@@ -40,6 +39,7 @@ pub struct QuorumCreditContract;
 
 #[contractimpl]
 impl QuorumCreditContract {
+    /// One-time contract initialization. Deployer must sign.
     pub fn initialize(
         env: Env,
         deployer: Address,
@@ -75,8 +75,14 @@ impl QuorumCreditContract {
             },
         );
 
+        env.events().publish(
+            (symbol_short!("contract"), symbol_short!("init")),
+            (deployer, admins, admin_threshold, token),
+        );
         Ok(())
     }
+
+    // ── Vouch ─────────────────────────────────────────────────────────────────
 
     pub fn vouch(
         env: Env,
@@ -133,6 +139,8 @@ impl QuorumCreditContract {
         vouch::transfer_vouch(env, from, to, borrower)
     }
 
+    // ── Loan ──────────────────────────────────────────────────────────────────
+
     pub fn register_referral(
         env: Env,
         borrower: Address,
@@ -175,6 +183,8 @@ impl QuorumCreditContract {
         loan::repay(env, borrower, payment)
     }
 
+    // ── Admin ─────────────────────────────────────────────────────────────────
+
     pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
         admin::add_admin(env, admin_signers, new_admin)
     }
@@ -216,6 +226,9 @@ impl QuorumCreditContract {
         admin::pause(env, admin_signers)
     }
 
+    pub fn unpause(env: Env, admin_signers: Vec<Address>) {
+        admin::unpause(env, admin_signers)
+    }
 
     pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
         admin::blacklist(env, admin_signers, borrower)
@@ -254,12 +267,42 @@ impl QuorumCreditContract {
         admin::set_max_loan_to_stake_ratio(env, admin_signers, ratio)
     }
 
+    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+        admin::add_allowed_token(env, admin_signers, token)
+    }
+
+    pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+        admin::remove_allowed_token(env, admin_signers, token)
+    }
+
+    // ── Governance ────────────────────────────────────────────────────────────
+
+    pub fn vote_slash(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        governance::vote_slash(env, voucher, borrower, approve)
+    }
+
+    pub fn set_slash_vote_quorum(env: Env, admin_signers: Vec<Address>, quorum_bps: u32) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        governance::set_slash_vote_quorum(&env, quorum_bps);
+    }
+
+    pub fn get_slash_vote_quorum(env: Env) -> u32 {
+        governance::get_slash_vote_quorum(env)
+    }
+
+    // ── Views ─────────────────────────────────────────────────────────────────
+
     pub fn is_initialized(env: Env) -> bool {
         env.storage().instance().has(&DataKey::Config)
     }
 
     pub fn get_token(env: Env) -> Address {
-        config(&env).token
+        helpers::config(&env).token
     }
 
     pub fn get_admins(env: Env) -> Vec<Address> {
