@@ -284,6 +284,26 @@ mod security_fixes_tests {
         });
     }
 
+    /// Test that a borrower cannot vouch for themselves.
+    /// This should cause a panic due to the assertion in do_vouch.
+    #[test]
+    fn test_borrower_cannot_vouch_for_self() {
+        let s = setup();
+        
+        let user = Address::generate(&s.env);
+        let stake = 500_000;
+        
+        // Mint tokens to the user
+        let token = StellarAssetClient::new(&s.env, &s.token_id);
+        token.mint(&user, &stake);
+        
+        // Attempt to vouch for self should panic
+        let result = s.client.try_vouch(&user, &user, &stake, &s.token_id);
+        
+        // The assertion should cause a panic, which results in an error
+        assert!(result.is_err(), "Self-vouch should panic and return an error");
+    }
+
     // ── Issue 114: Add Invariant Tests ──
     
     /// Property: Total stake in never decreases without explicit withdrawal

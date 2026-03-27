@@ -13,27 +13,27 @@ pub mod reputation;
 pub mod types;
 pub mod vouch;
 
-#[cfg(test)]
+// #[cfg(test)]
 mod governance_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod initialize_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod loan_purpose_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod multi_asset_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod referral_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod request_loan_insufficient_stake_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod vouch_zero_stake_test;
 mod security_fixes_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod bug_condition_test;
-#[cfg(test)]
+// #[cfg(test)]
 mod duplicate_loan_test;
 
-#[cfg(test)]
+// #[cfg(test)]
 mod slash_multi_voucher_test;
 
 pub use errors::ContractError;
@@ -75,9 +75,9 @@ impl QuorumCreditContract {
         env.storage().instance().set(
             &DataKey::Config,
             &Config {
-                admins,
+                admins: admins.clone(),
                 admin_threshold,
-                token,
+                token: token.clone(),
                 allowed_tokens: Vec::new(&env),
                 yield_bps: DEFAULT_YIELD_BPS,
                 slash_bps: DEFAULT_SLASH_BPS,
@@ -300,15 +300,6 @@ impl QuorumCreditContract {
         governance::vote_slash(env, voucher, borrower, approve)
     }
 
-    pub fn set_slash_vote_quorum(env: Env, admin_signers: Vec<Address>, quorum_bps: u32) {
-        helpers::require_admin_approval(&env, &admin_signers);
-        governance::set_slash_vote_quorum(&env, quorum_bps);
-    }
-
-    pub fn get_slash_vote_quorum(env: Env) -> u32 {
-        governance::get_slash_vote_quorum(env)
-    }
-
     // ── Views ─────────────────────────────────────────────────────────────────
 
     pub fn is_initialized(env: Env) -> bool {
@@ -435,23 +426,6 @@ impl QuorumCreditContract {
 
     pub fn get_config(env: Env) -> Config {
         admin::get_config(env)
-    }
-
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
-        admin::add_allowed_token(env, admin_signers, token)
-    }
-
-    pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
-        admin::remove_allowed_token(env, admin_signers, token)
-    }
-
-    pub fn vote_slash(
-        env: Env,
-        voucher: Address,
-        borrower: Address,
-        approve: bool,
-    ) -> Result<(), ContractError> {
-        governance::vote_slash(env, voucher, borrower, approve)
     }
 
     /// Issue 109: Propose a slash action with a confirmation window (timelock delay).

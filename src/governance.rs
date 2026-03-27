@@ -208,7 +208,7 @@ pub fn propose_slash(
         .storage()
         .instance()
         .get(&DataKey::TimelockCounter)
-        .unwrap_or(0)
+        .unwrap_or(0u64)
         .checked_add(1)
         .expect("proposal ID overflow");
 
