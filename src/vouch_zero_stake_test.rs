@@ -12,12 +12,7 @@ mod vouch_zero_stake_tests {
             .address();
         let contract_id = env.register_contract(None, QuorumCreditContract);
         let client = QuorumCreditContractClient::new(env, &contract_id);
-        client.initialize(
-            &deployer,
-            &Vec::from_array(env, [admin]),
-            &1,
-            &token_id,
-        );
+        client.initialize(&deployer, &Vec::from_array(env, [admin]), &1, &token_id);
         let voucher = Address::generate(env);
         StellarAssetClient::new(env, &token_id).mint(&voucher, &1_000_000);
         (contract_id, token_id, voucher, Address::generate(env))

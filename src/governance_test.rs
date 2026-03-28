@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod governance_tests {
-    use crate::{ContractError, DataKey, QuorumCreditContract, QuorumCreditContractClient};
+    use crate::{ContractError, QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::StellarAssetClient,
@@ -12,7 +12,6 @@ mod governance_tests {
     struct Setup {
         env: Env,
         client: QuorumCreditContractClient<'static>,
-        contract_id: Address,
         admin: Address,
         token_id: Address,
     }
@@ -40,7 +39,6 @@ mod governance_tests {
         Setup {
             env,
             client,
-            contract_id,
             admin,
             token_id: token_id.address(),
         }
@@ -54,7 +52,13 @@ mod governance_tests {
 
     /// Request a loan for `borrower` (vouches must already meet threshold).
     fn do_loan(s: &Setup, borrower: &Address, amount: i128, threshold: i128) {
-        s.client.request_loan(borrower, &amount, &threshold, &soroban_sdk::String::from_str(&s.env, "test loan"), &s.token_id);
+        s.client.request_loan(
+            borrower,
+            &amount,
+            &threshold,
+            &soroban_sdk::String::from_str(&s.env, "test loan"),
+            &s.token_id,
+        );
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────
@@ -107,10 +111,7 @@ mod governance_tests {
 
         // First vote: 30% — not enough
         s.client.vote_slash(&voucher_a, &borrower, &true);
-        assert_eq!(
-            s.client.loan_status(&borrower),
-            crate::LoanStatus::Active
-        );
+        assert_eq!(s.client.loan_status(&borrower), crate::LoanStatus::Active);
 
         // Second vote: 30% + 30% = 60% ≥ 50% → slash fires
         s.client.vote_slash(&voucher_b, &borrower, &true);
@@ -133,10 +134,7 @@ mod governance_tests {
         s.client.vote_slash(&voucher_a, &borrower, &false);
 
         // Loan still active
-        assert_eq!(
-            s.client.loan_status(&borrower),
-            crate::LoanStatus::Active
-        );
+        assert_eq!(s.client.loan_status(&borrower), crate::LoanStatus::Active);
         let vote = s.client.get_slash_vote(&borrower).unwrap();
         assert!(!vote.executed);
         assert_eq!(vote.reject_stake, 600_000);

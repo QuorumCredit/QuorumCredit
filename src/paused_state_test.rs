@@ -1,6 +1,5 @@
 #![cfg(test)]
 
-use crate::types::{Config, DataKey};
 use crate::{ContractError, QuorumCreditContract, QuorumCreditContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -41,7 +40,15 @@ fn setup_test_env() -> (
     token_client.mint(&voucher, &10_000_000);
     token_client.mint(&borrower, &1_000_000);
 
-    (env, client, admin, voucher, borrower, token_addr, token_client)
+    (
+        env,
+        client,
+        admin,
+        voucher,
+        borrower,
+        token_addr,
+        token_client,
+    )
 }
 
 #[test]
@@ -150,7 +157,10 @@ fn test_request_loan_blocked_when_paused() {
     client.vouch(&voucher, &borrower, &1_000_000, &token_addr);
 
     // Fund the contract for loan disbursement
-    token_client.mint(&env.as_contract(&client.address, || env.current_contract_address()), &5_000_000);
+    token_client.mint(
+        &env.as_contract(&client.address, || env.current_contract_address()),
+        &5_000_000,
+    );
 
     // Advance time to meet MIN_VOUCH_AGE requirement
     env.ledger().with_mut(|li| li.timestamp = 100);
@@ -178,7 +188,10 @@ fn test_repay_blocked_when_paused() {
     client.vouch(&voucher, &borrower, &1_000_000, &token_addr);
 
     // Fund the contract for loan disbursement
-    token_client.mint(&env.as_contract(&client.address, || env.current_contract_address()), &5_000_000);
+    token_client.mint(
+        &env.as_contract(&client.address, || env.current_contract_address()),
+        &5_000_000,
+    );
 
     // Advance time to meet MIN_VOUCH_AGE requirement
     env.ledger().with_mut(|li| li.timestamp = 100);
@@ -208,7 +221,10 @@ fn test_vote_slash_blocked_when_paused() {
     client.vouch(&voucher, &borrower, &1_000_000, &token_addr);
 
     // Fund the contract for loan disbursement
-    token_client.mint(&env.as_contract(&client.address, || env.current_contract_address()), &5_000_000);
+    token_client.mint(
+        &env.as_contract(&client.address, || env.current_contract_address()),
+        &5_000_000,
+    );
 
     // Advance time to meet MIN_VOUCH_AGE requirement
     env.ledger().with_mut(|li| li.timestamp = 100);
@@ -238,7 +254,10 @@ fn test_propose_slash_blocked_when_paused() {
     client.vouch(&voucher, &borrower, &1_000_000, &token_addr);
 
     // Fund the contract for loan disbursement
-    token_client.mint(&env.as_contract(&client.address, || env.current_contract_address()), &5_000_000);
+    token_client.mint(
+        &env.as_contract(&client.address, || env.current_contract_address()),
+        &5_000_000,
+    );
 
     // Advance time to meet MIN_VOUCH_AGE requirement
     env.ledger().with_mut(|li| li.timestamp = 100);
@@ -268,7 +287,10 @@ fn test_execute_slash_proposal_blocked_when_paused() {
     client.vouch(&voucher, &borrower, &1_000_000, &token_addr);
 
     // Fund the contract for loan disbursement
-    token_client.mint(&env.as_contract(&client.address, || env.current_contract_address()), &5_000_000);
+    token_client.mint(
+        &env.as_contract(&client.address, || env.current_contract_address()),
+        &5_000_000,
+    );
 
     // Advance time to meet MIN_VOUCH_AGE requirement
     env.ledger().with_mut(|li| li.timestamp = 100);
@@ -350,7 +372,10 @@ fn test_all_fund_moving_functions_respect_pause() {
     client.vouch(&voucher, &borrower, &1_000_000, &token_addr);
 
     // Fund the contract for loan disbursement
-    token_client.mint(&env.as_contract(&client.address, || env.current_contract_address()), &5_000_000);
+    token_client.mint(
+        &env.as_contract(&client.address, || env.current_contract_address()),
+        &5_000_000,
+    );
 
     // Advance time to meet MIN_VOUCH_AGE requirement
     env.ledger().with_mut(|li| li.timestamp = 100);

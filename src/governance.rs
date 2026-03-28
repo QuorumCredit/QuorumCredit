@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused};
-use crate::types::{DataKey, SlashVoteRecord, VouchRecord, TimelockProposal, TimelockAction};
+use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.
@@ -81,8 +81,8 @@ pub fn vote_slash(
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS);
 
-    let quorum_reached = total_stake > 0
-        && vote.approve_stake * 10_000 / total_stake >= quorum_bps as i128;
+    let quorum_reached =
+        total_stake > 0 && vote.approve_stake * 10_000 / total_stake >= quorum_bps as i128;
 
     if quorum_reached {
         vote.executed = true;
@@ -138,7 +138,10 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
     // Mark loan as defaulted first so we can read token_address.
     let mut loan = get_active_loan_record(env, borrower)?;
-    assert!(!loan.defaulted, "already defaulted");
+    assert!(
+        loan.status != crate::types::LoanStatus::Defaulted,
+        "already defaulted"
+    );
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
     let mut total_slashed: i128 = 0;
@@ -188,7 +191,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 }
 
 /// ── Issue 109: Slash Proposal Confirmation Window ──
-/// 
+///
 /// Implements a two-step slash with timelock pattern:
 /// 1. propose_slash: Admin creates a proposal, sets execution time (eta)
 /// 2. execute_slash_proposal: After delay, anyone can execute
@@ -240,10 +243,7 @@ pub fn propose_slash(
 }
 
 /// Execute a previously proposed slash action after the delay has passed.
-pub fn execute_slash_proposal(
-    env: Env,
-    proposal_id: u64,
-) -> Result<(), ContractError> {
+pub fn execute_slash_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
     require_not_paused(&env)?;
 
     // Get the proposal
@@ -309,10 +309,7 @@ pub fn cancel_slash_proposal(
         .ok_or(ContractError::NoActiveLoan)?;
 
     // Only proposer can cancel
-    assert!(
-        caller == proposal.proposer,
-        "only proposer can cancel"
-    );
+    assert!(caller == proposal.proposer, "only proposer can cancel");
 
     if proposal.executed || proposal.cancelled {
         return Err(ContractError::SlashAlreadyExecuted);
@@ -337,4 +334,3 @@ pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockPropo
         .instance()
         .get(&DataKey::Timelock(proposal_id))
 }
-

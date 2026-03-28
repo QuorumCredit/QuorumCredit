@@ -21,7 +21,6 @@ mod repay_multi_voucher_yield_tests {
     struct Setup {
         env: Env,
         client: QuorumCreditContractClient<'static>,
-        contract_id: Address,
         token_id: Address,
     }
 
@@ -45,7 +44,7 @@ mod repay_multi_voucher_yield_tests {
         // Advance past MIN_VOUCH_AGE (60s)
         env.ledger().with_mut(|l| l.timestamp = 120);
 
-        Setup { env, client, contract_id, token_id: token_id.address() }
+        Setup { env, client, token_id: token_id.address() }
     }
 
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
@@ -105,7 +104,7 @@ mod repay_multi_voucher_yield_tests {
         let loan = s.client.get_loan(&borrower).expect("loan should exist");
         assert_eq!(loan.amount, loan_amount);
         assert_eq!(loan.total_yield, total_yield);
-        assert!(!loan.repaid);
+        assert_eq!(loan.status, crate::LoanStatus::Active);
 
         // 3. Fund borrower and repay
         token.mint(&borrower, &total_repay);
@@ -113,7 +112,7 @@ mod repay_multi_voucher_yield_tests {
 
         // 4. Assertions
         let repaid_loan = s.client.get_loan(&borrower).expect("loan still exists");
-        assert!(repaid_loan.repaid, "loan should be marked repaid");
+        assert_eq!(repaid_loan.status, crate::LoanStatus::Repaid, "loan should be marked repaid");
 
         // Each voucher receives stake + proportional yield
         // final_balance = 0 (post-vouch) + stake + yield_i == initial + yield_i

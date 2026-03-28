@@ -1,5 +1,7 @@
 use crate::errors::ContractError;
-use crate::helpers::{has_active_loan, require_allowed_token, require_not_paused, require_positive_amount};
+use crate::helpers::{
+    has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
+};
 use crate::types::{DataKey, VouchRecord};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
@@ -52,12 +54,7 @@ fn do_vouch(
     }
 
     // Rate limiting: enforce cooldown between vouch calls from the same address.
-    let _now = env.ledger().timestamp();
-    let _last: u64 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::LastVouchTimestamp(voucher.clone()))
-        .unwrap_or(0);
+    // (Timestamp recorded at end of function for future cooldown enforcement.)
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -78,7 +75,7 @@ fn do_vouch(
         .instance()
         .get(&DataKey::MaxVouchersPerBorrower)
         .unwrap_or(crate::types::DEFAULT_MAX_VOUCHERS_PER_BORROWER);
-    
+
     if vouches.len() >= max_vouchers_per_borrower {
         return Err(ContractError::MaxVouchersPerBorrowerExceeded);
     }
@@ -213,7 +210,10 @@ pub fn decrease_stake(
         .expect("vouch not found") as u32;
 
     let mut vouch_rec = vouches.get(idx).unwrap();
-    assert!(amount <= vouch_rec.stake, "decrease amount exceeds staked amount");
+    assert!(
+        amount <= vouch_rec.stake,
+        "decrease amount exceeds staked amount"
+    );
 
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
     vouch_rec.stake -= amount;
@@ -224,9 +224,13 @@ pub fn decrease_stake(
     }
 
     if vouches.is_empty() {
-        env.storage().persistent().remove(&DataKey::Vouches(borrower));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower));
     } else {
-        env.storage().persistent().set(&DataKey::Vouches(borrower), &vouches);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower), &vouches);
     }
 
     token_client.transfer(&env.current_contract_address(), &voucher, &amount);
@@ -257,9 +261,13 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
     vouches.remove(idx);
 
     if vouches.is_empty() {
-        env.storage().persistent().remove(&DataKey::Vouches(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
     } else {
-        env.storage().persistent().set(&DataKey::Vouches(borrower.clone()), &vouches);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &vouches);
     }
 
     let token_client = require_allowed_token(&env, &token_addr)?;
@@ -390,7 +398,6 @@ pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DataKey;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 

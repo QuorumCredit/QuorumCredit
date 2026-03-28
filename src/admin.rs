@@ -375,7 +375,10 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
 
 pub fn set_max_vouchers_per_borrower(env: Env, admin_signers: Vec<Address>, max_vouchers: u32) {
     require_admin_approval(&env, &admin_signers);
-    assert!(max_vouchers > 0, "max_vouchers_per_borrower must be greater than zero");
+    assert!(
+        max_vouchers > 0,
+        "max_vouchers_per_borrower must be greater than zero"
+    );
     env.storage()
         .instance()
         .set(&DataKey::MaxVouchersPerBorrower, &max_vouchers);

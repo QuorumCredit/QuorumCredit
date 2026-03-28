@@ -33,7 +33,10 @@ mod get_loan_none_tests {
         let fresh = Address::generate(&env);
 
         let result = client.get_loan(&fresh);
-        assert!(result.is_none(), "get_loan should return None for an address with no loan record");
+        assert!(
+            result.is_none(),
+            "get_loan should return None for an address with no loan record"
+        );
     }
 
     /// Property 1: get_loan returns None for any address with no loan history

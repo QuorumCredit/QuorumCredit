@@ -11,7 +11,7 @@
 
 #[cfg(test)]
 mod slash_multi_voucher_tests {
-    use crate::{QuorumCreditContract, QuorumCreditContractClient, LoanStatus};
+    use crate::{LoanStatus, QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::StellarAssetClient,
@@ -21,7 +21,6 @@ mod slash_multi_voucher_tests {
     struct Setup {
         env: Env,
         client: QuorumCreditContractClient<'static>,
-        contract_id: Address,
         token_id: Address,
     }
 
@@ -45,7 +44,11 @@ mod slash_multi_voucher_tests {
         // Advance past MIN_VOUCH_AGE (60s)
         env.ledger().with_mut(|l| l.timestamp = 120);
 
-        Setup { env, client, contract_id, token_id: token_id.address() }
+        Setup {
+            env,
+            client,
+            token_id: token_id.address(),
+        }
     }
 
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
@@ -62,19 +65,19 @@ mod slash_multi_voucher_tests {
     fn test_slash_multi_voucher_all_lose_50_percent() {
         let s = setup();
         let borrower = Address::generate(&s.env);
-        let voucher1 = Address::generate(&s.env);  // 301_000 → slash=150_500
-        let voucher2 = Address::generate(&s.env);  // 200_000 → 100_000
-        let voucher3 = Address::generate(&s.env);  // 100_001 → 50_000
+        let voucher1 = Address::generate(&s.env); // 301_000 → slash=150_500
+        let voucher2 = Address::generate(&s.env); // 200_000 → 100_000
+        let voucher3 = Address::generate(&s.env); // 100_001 → 50_000
 
         let stakes = [301_000i128, 200_000i128, 100_001i128];
         let vouchers = [&voucher1, &voucher2, &voucher3];
         let total_stake = stakes.iter().sum::<i128>();
         let loan_amount = 100_000i128;
         let slash_bps = 5_000i128;
-        let expected_slash1 = stakes[0] * slash_bps / 10_000;  // 150500
-        let expected_slash2 = stakes[1] * slash_bps / 10_000;  // 100000
-        let expected_slash3 = stakes[2] * slash_bps / 10_000;  // 50000 (trunc)
-        let total_slash = expected_slash1 + expected_slash2 + expected_slash3;  // 300500
+        let expected_slash1 = stakes[0] * slash_bps / 10_000; // 150500
+        let expected_slash2 = stakes[1] * slash_bps / 10_000; // 100000
+        let expected_slash3 = stakes[2] * slash_bps / 10_000; // 50000 (trunc)
+        let total_slash = expected_slash1 + expected_slash2 + expected_slash3; // 300500
         let token = StellarAssetClient::new(&s.env, &s.token_id);
 
         // Record initial balances (minted stakes)
@@ -99,11 +102,17 @@ mod slash_multi_voucher_tests {
         assert_eq!(vouched, total_stake);
 
         // 2. Request loan
-        s.client.request_loan(&borrower, &loan_amount, &total_stake, &purpose(&s.env), &s.token_id);
+        s.client.request_loan(
+            &borrower,
+            &loan_amount,
+            &total_stake,
+            &purpose(&s.env),
+            &s.token_id,
+        );
 
         let loan = s.client.get_loan(&borrower).expect("loan exists");
         assert_eq!(loan.amount, loan_amount);
-        assert!(!loan.defaulted);
+        assert_eq!(loan.status, crate::LoanStatus::Active);
 
         // 3. Voucher1 votes YES (~50% stake >= 50% quorum) → auto-slash
         s.client.vote_slash(&voucher1, &borrower, &true);
@@ -125,4 +134,3 @@ mod slash_multi_voucher_tests {
         assert_eq!(token.balance(&voucher3), initial_bals[2] - expected_slash3);
     }
 }
-

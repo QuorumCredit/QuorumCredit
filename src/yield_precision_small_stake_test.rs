@@ -99,7 +99,7 @@ mod yield_precision_small_stake_tests {
 
         // Loan fully repaid.
         let repaid_loan = s.client.get_loan(&borrower).expect("loan should exist after repay");
-        assert!(repaid_loan.repaid, "loan should be marked repaid");
+        assert_eq!(repaid_loan.status, crate::LoanStatus::Repaid, "loan should be marked repaid");
 
         // CRITICAL: Voucher receives stake back + 0 yield due to truncation.
         // Final balance == initial_balance (stake returned exactly).

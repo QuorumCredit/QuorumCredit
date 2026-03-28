@@ -57,14 +57,6 @@ pub fn add_slash_balance(env: &Env, amount: i128) {
         .set(&DataKey::SlashTreasury, &(current + amount));
 }
 
-/// Issue 112: Get current slash balance to prevent it from being used for yield payouts.
-pub fn get_slash_balance(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::SlashTreasury)
-        .unwrap_or(0)
-}
-
 pub fn has_active_loan(env: &Env, borrower: &Address) -> bool {
     matches!(get_active_loan_record(env, borrower), Ok(loan) if loan.status == crate::types::LoanStatus::Active)
 }
@@ -106,10 +98,6 @@ pub fn get_latest_loan_record(env: &Env, borrower: &Address) -> Option<LoanRecor
 pub fn token(env: &Env) -> token::Client<'_> {
     let addr = config(env).token;
     token::Client::new(env, &addr)
-}
-
-pub fn token_client(env: &Env) -> token::Client<'_> {
-    token(env)
 }
 
 /// Returns a token client for `addr` after verifying it is an allowed token

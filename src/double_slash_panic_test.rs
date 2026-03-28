@@ -43,7 +43,13 @@ mod double_slash_panic_tests {
         // Advance past MIN_VOUCH_AGE (60 s) so vouches are eligible.
         env.ledger().with_mut(|l| l.timestamp = 120);
 
-        Setup { env, client, admin, admin_vec, token: token_id.address() }
+        Setup {
+            env,
+            client,
+            admin,
+            admin_vec,
+            token: token_id.address(),
+        }
     }
 
     /// Set up a voucher + borrower with an active loan, then return both addresses.
@@ -107,7 +113,11 @@ mod double_slash_panic_tests {
         s.client.vote_slash(&voucher, &borrower, &true);
 
         let loan = s.client.get_loan(&borrower).expect("loan should exist");
-        assert!(loan.defaulted, "first slash must mark loan as defaulted");
+        assert_eq!(
+            loan.status,
+            crate::LoanStatus::Defaulted,
+            "first slash must mark loan as defaulted"
+        );
     }
 
     /// **Property 2: Preservation** - Missing Loan Still Errors
@@ -126,6 +136,9 @@ mod double_slash_panic_tests {
         s.client.vouch(&voucher, &borrower, &1_000_000, &s.token);
 
         let result = s.client.try_vote_slash(&voucher, &borrower, &true);
-        assert!(result.is_err(), "slash on a borrower with no loan must return an error");
+        assert!(
+            result.is_err(),
+            "slash on a borrower with no loan must return an error"
+        );
     }
 }

@@ -14,7 +14,7 @@
 
 #[cfg(test)]
 mod slash_precision_tests {
-    use crate::{ContractError, QuorumCreditContract, QuorumCreditContractClient, LoanStatus};
+    use crate::{QuorumCreditContract, QuorumCreditContractClient, LoanStatus};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::StellarAssetClient,
@@ -25,9 +25,7 @@ mod slash_precision_tests {
     struct Setup {
         env: Env,
         client: QuorumCreditContractClient<'static>,
-        admin: Address,
         token_id: Address,
-        contract_id: Address,
     }
 
     fn setup() -> Setup {
@@ -53,9 +51,7 @@ mod slash_precision_tests {
         Setup {
             env,
             client,
-            admin,
             token_id: token_id.address(),
-            contract_id,
         }
     }
 
@@ -70,7 +66,7 @@ mod slash_precision_tests {
             borrower,
             &amount,
             &threshold,
-            &String::from_str(&s.env, \"precision test\"),
+            &String::from_str(&s.env, "precision test"),
             &s.token_id,
         );
     }
@@ -86,8 +82,6 @@ mod slash_precision_tests {
         token_client.mint(&voucher, &initial_balance);
 
         let stake = 1_i128;
-        let expected_slash = 0_i128; // 1 * 5000 / 10000 = 0
-        let expected_remaining = 1_i128;
         let expected_treasury_delta = 0_i128;
 
         // 1. Vouch
@@ -126,7 +120,6 @@ mod slash_precision_tests {
         let voucher = Address::generate(&s.env);
 
         let token_client = StellarAssetClient::new(&s.env, &s.token_id);
-        let initial_balance = token_client.balance(&voucher); // 0
 
         let stake = 10_i128;
         let expected_slash = 5_i128; // 10 * 5000 / 10000 = 5

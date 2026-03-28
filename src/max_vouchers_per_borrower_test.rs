@@ -7,7 +7,10 @@ mod tests {
         Address, Env, String, Vec,
     };
 
-    fn create_token_contract<'a>(env: &Env, admin: &Address) -> (TokenClient<'a>, TokenAdminClient<'a>) {
+    fn create_token_contract<'a>(
+        env: &Env,
+        admin: &Address,
+    ) -> (TokenClient<'a>, TokenAdminClient<'a>) {
         let contract_address = env.register_stellar_asset_contract_v2(admin.clone());
         (
             TokenClient::new(env, &contract_address.address()),

@@ -2,7 +2,9 @@
 mod request_loan_insufficient_stake_tests {
     use crate::errors::ContractError;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, String, Vec};
+    use soroban_sdk::{
+        testutils::Address as _, token::StellarAssetClient, Address, Env, String, Vec,
+    };
 
     fn setup(env: &Env) -> (Address, Address, Address, Address) {
         let deployer = Address::generate(env);
