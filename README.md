@@ -383,6 +383,7 @@ Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for our full guidelines on:
 - Never commit `.env` files or secret keys
 - Use hardware wallets or multisig for admin keys
 - Report vulnerabilities privately — do not open public issues
+- **Dependency Scanning**: `cargo audit` runs automatically in CI. Any high-severity vulnerability will fail the build. Run manually via `cargo install cargo-audit && cargo audit`.
 
 ---
 
