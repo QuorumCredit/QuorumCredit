@@ -86,6 +86,12 @@ fn do_vouch(
         return Err(ContractError::ActiveLoanExists);
     }
 
+    // Issue #115: Check voucher balance before transfer to provide clear error message
+    let voucher_balance = token_client.balance(&voucher);
+    if voucher_balance < stake {
+        return Err(ContractError::InsufficientVoucherBalance);
+    }
+
     // Transfer stake from voucher into the contract.
     token_client.transfer(&voucher, &env.current_contract_address(), &stake);
 

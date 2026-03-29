@@ -47,7 +47,11 @@ mod get_loan_none_test;
 mod max_vouchers_per_borrower_test;
 #[cfg(test)]
 mod paused_state_test;
+#[cfg(test)]
+mod repay_nonexistent_loan_test;
 mod slash_multi_voucher_test;
+#[cfg(test)]
+mod voucher_balance_check_test;
 
 pub use errors::ContractError;
 pub use types::*;
