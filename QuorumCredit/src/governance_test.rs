@@ -54,6 +54,8 @@ mod governance_tests {
 
     /// Request a loan for `borrower` (vouches must already meet threshold).
     fn do_loan(s: &Setup, borrower: &Address, amount: i128, threshold: i128) {
+        // Advance time to ensure vouches are old enough (MIN_VOUCH_AGE = 60s)
+        s.env.ledger().with_mut(|l| l.timestamp = l.timestamp + 61);
         s.client.request_loan(borrower, &amount, &threshold, &soroban_sdk::String::from_str(&s.env, "test loan"), &s.token_id);
     }
 
@@ -189,7 +191,7 @@ mod governance_tests {
         assert_eq!(result, Err(Ok(ContractError::NoActiveLoan)));
     }
 
-    /// After slash executes, further votes return SlashAlreadyExecuted.
+    /// After slash executes, further votes return NoActiveLoan (loan is no longer active).
     #[test]
     fn test_vote_slash_after_execution_rejected() {
         let s = setup();
@@ -204,8 +206,9 @@ mod governance_tests {
         // Slash executes on first vote (60% ≥ 50%)
         s.client.vote_slash(&voucher_a, &borrower, &true);
 
+        // After slash, loan is no longer active, so voting returns NoActiveLoan
         let result = s.client.try_vote_slash(&voucher_b, &borrower, &true);
-        assert_eq!(result, Err(Ok(ContractError::SlashAlreadyExecuted)));
+        assert_eq!(result, Err(Ok(ContractError::NoActiveLoan)));
     }
 
     /// Admin can change the quorum threshold; new threshold is respected.

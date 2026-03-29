@@ -302,6 +302,44 @@ impl QuorumCreditContract {
         governance::vote_slash(env, voucher, borrower, approve)
     }
 
+    pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
+        governance::get_slash_vote(env, borrower)
+    }
+
+    pub fn set_slash_vote_quorum(env: Env, admin_signers: Vec<Address>, quorum_bps: u32) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        governance::set_slash_vote_quorum(&env, quorum_bps);
+    }
+
+    pub fn get_slash_vote_quorum(env: Env) -> u32 {
+        governance::get_slash_vote_quorum(env)
+    }
+
+    pub fn propose_slash(
+        env: Env,
+        proposer: Address,
+        borrower: Address,
+        delay_secs: u64,
+    ) -> Result<u64, ContractError> {
+        governance::propose_slash(env, proposer, borrower, delay_secs)
+    }
+
+    pub fn execute_slash_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        governance::execute_slash_proposal(env, proposal_id)
+    }
+
+    pub fn cancel_slash_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        governance::cancel_slash_proposal(env, caller, proposal_id)
+    }
+
+    pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockProposal> {
+        governance::get_timelock_proposal(env, proposal_id)
+    }
+
     // ── Views ─────────────────────────────────────────────────────────────────
 
     pub fn is_initialized(env: Env) -> bool {

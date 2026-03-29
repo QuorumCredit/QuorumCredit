@@ -377,7 +377,7 @@ mod security_fixes_tests {
             token.mint(&borrower, &100_000);
             
             let loan_amount = 50_000 + (i as i128 * 10_000);
-            let purpose = String::from_str(&s.env, &format!("loan {}", i));
+            let purpose = String::from_str(&s.env, "loan");
             s.client.request_loan(
                 &borrower,
                 &loan_amount,
