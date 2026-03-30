@@ -201,5 +201,5 @@ pub fn validate_admin_config(
 /// assert_eq!(bps_of(10_000_000, 200), 200_000);
 /// ```
 pub fn bps_of(amount: i128, bps: u32) -> i128 {
-    amount * bps as i128 / 10_000
+    amount * bps as i128 / BPS_DENOMINATOR
 }

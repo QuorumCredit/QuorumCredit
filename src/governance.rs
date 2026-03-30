@@ -10,7 +10,7 @@ const DEFAULT_SLASH_VOTE_QUORUM_BPS: u32 = 5_000;
 ///
 /// - Only active vouchers (those with a stake in `Vouches(borrower)`) may vote.
 /// - Votes are weighted by the voucher's current stake.
-/// - When `approve_stake * 10_000 / total_stake >= quorum_bps`, slash is auto-executed.
+/// - When `approve_stake * BPS_DENOMINATOR / total_stake >= quorum_bps`, slash is auto-executed.
 pub fn vote_slash(
     env: Env,
     voucher: Address,
@@ -81,9 +81,10 @@ pub fn vote_slash(
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS);
 
-    // Use ceiling division to prevent rounding down: (approve_stake * 10_000 + total_stake - 1) / total_stake
+    // Use ceiling division to prevent rounding down: (approve_stake * BPS_DENOMINATOR + total_stake - 1) / total_stake
     let quorum_reached = total_stake > 0
-        && (vote.approve_stake * 10_000 + total_stake - 1) / total_stake >= quorum_bps as i128;
+        && (vote.approve_stake * BPS_DENOMINATOR + total_stake - 1) / total_stake
+            >= quorum_bps as i128;
 
     if quorum_reached {
         vote.executed = true;
@@ -152,7 +153,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
             remaining_vouches.push_back(v);
             continue;
         }
-        let slash_amount = v.stake * cfg.slash_bps / 10_000;
+        let slash_amount = v.stake * cfg.slash_bps / BPS_DENOMINATOR;
         let remaining = v.stake - slash_amount;
         total_slashed += slash_amount;
 

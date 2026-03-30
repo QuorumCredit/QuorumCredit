@@ -5,7 +5,8 @@ use crate::helpers::{
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
-    DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
+    DataKey, LoanRecord, LoanStatus, VouchRecord, BPS_DENOMINATOR, DEFAULT_REFERRAL_BONUS_BPS,
+    MIN_VOUCH_AGE,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -254,7 +255,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             .get(&DataKey::ProtocolFeeBps)
             .unwrap_or(0);
         let protocol_fee = crate::helpers::bps_of(loan.amount, protocol_fee_bps);
-        
+
         if protocol_fee > 0 {
             if let Some(fee_treasury) = env
                 .storage()
@@ -316,7 +317,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 .instance()
                 .get(&DataKey::ReferralBonusBps)
                 .unwrap_or(DEFAULT_REFERRAL_BONUS_BPS);
-            let bonus = loan.amount * bonus_bps as i128 / 10_000;
+            let bonus = loan.amount * bonus_bps as i128 / BPS_DENOMINATOR;
 
             // Issue 369: Check contract balance before transferring bonus
             if bonus > 0 {
