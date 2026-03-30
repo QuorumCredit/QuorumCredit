@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::types::{Config, DataKey, LoanRecord};
-use soroban_sdk::{token, Address, Env, String, Vec};
+use soroban_sdk::{panic_with_error, token, Address, Env, String, Vec};
 
 /// Returns true if the address is the all-zeros account or contract address.
 pub fn is_zero_address(env: &Env, addr: &Address) -> bool {
@@ -32,6 +32,7 @@ pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
 
 /// Returns `Err(InsufficientFunds)` if `amount` is not strictly positive (≤ 0).
 /// Use this for all numeric inputs that must be > 0 (stakes, loan amounts, thresholds).
+/// All such amounts are denominated in stroops (1 XLM = 10,000,000 stroops).
 pub fn require_positive_amount(_env: &Env, amount: i128) -> Result<(), ContractError> {
     if amount <= 0 {
         return Err(ContractError::InsufficientFunds);
@@ -116,15 +117,13 @@ pub fn require_allowed_token<'a>(
 
 pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
     let config = config(env);
-    assert!(
-        admin_signers.len() >= config.admin_threshold,
-        "insufficient admin approvals"
-    );
+    if admin_signers.len() < config.admin_threshold {
+        panic_with_error!(env, ContractError::UnauthorizedCaller);
+    }
     for signer in admin_signers.iter() {
-        assert!(
-            config.admins.iter().any(|a| a == signer),
-            "signer is not a registered admin"
-        );
+        if !config.admins.iter().any(|a| a == signer) {
+            panic_with_error!(env, ContractError::UnauthorizedCaller);
+        }
         signer.require_auth();
     }
 }
@@ -160,34 +159,41 @@ pub fn validate_admin_config(
     admins: &Vec<Address>,
     admin_threshold: u32,
 ) -> Result<(), ContractError> {
-    assert!(!admins.is_empty(), "at least one admin is required");
-    assert!(
-        admin_threshold > 0,
-        "admin threshold must be greater than zero"
-    );
-    assert!(
-        admin_threshold <= admins.len(),
-        "admin threshold cannot exceed admin count"
-    );
+    if admins.is_empty() {
+        panic_with_error!(env, ContractError::UnauthorizedCaller);
+    }
+    if admin_threshold == 0 {
+        panic_with_error!(env, ContractError::InvalidAmount);
+    }
+    if admin_threshold > admins.len() {
+        panic_with_error!(env, ContractError::InvalidAmount);
+    }
 
     let admin_count = admins.len();
     for i in 0..admin_count {
         let admin = admins.get(i).unwrap();
-
-        // Validate admin address is not zero
         require_valid_address(env, &admin)?;
-
-        // Check for duplicates
         for j in 0..i {
             let prior_admin = admins.get(j).unwrap();
-            assert!(admin != prior_admin, "duplicate admin");
+            if admin == prior_admin {
+                panic_with_error!(env, ContractError::ZeroAddress);
+            }
         }
     }
 
     Ok(())
 }
 
-/// Compute basis points: amount * bps / 10_000
+/// Compute basis points of an amount: `amount * bps / 10_000`.
+///
+/// `amount` is expected to be in stroops (1 XLM = 10,000,000 stroops).
+/// The result is also in stroops.
+///
+/// # Examples
+/// ```
+/// // 2% of 1 XLM (10_000_000 stroops) = 200_000 stroops
+/// assert_eq!(bps_of(10_000_000, 200), 200_000);
+/// ```
 pub fn bps_of(amount: i128, bps: u32) -> i128 {
     amount * bps as i128 / 10_000
 }

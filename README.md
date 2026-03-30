@@ -4,6 +4,7 @@
 
 Platform: Stellar Soroban | Language: Rust | License: MIT
 
+[![CI](https://github.com/your-org/QuorumCredit/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/QuorumCredit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/your-org/QuorumCredit/branch/main/graph/badge.svg)](https://codecov.io/gh/your-org/QuorumCredit)
 
 ---
@@ -21,6 +22,7 @@ This platform is designed for developers building on Stellar, fintech teams targ
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Stroop Unit Convention](#stroop-unit-convention)
 - [How It Works](#how-it-works)
 - [Project Structure](#project-structure)
 - [Setup Instructions](#setup-instructions)
@@ -29,6 +31,56 @@ This platform is designed for developers building on Stellar, fintech teams targ
 - [Architecture](#architecture)
 - [Error Reference](#error-reference)
 - [Contributing](#contributing)
+
+---
+
+## Stroop Unit Convention
+
+> [!IMPORTANT]
+> **All monetary amounts throughout this contract are denominated in _stroops_.**
+
+Stellar's smallest indivisible unit is the **stroop**:
+
+| Unit     | Conversion                     |
+|----------|--------------------------------|
+| 1 XLM    | 10,000,000 stroops             |
+| 1 stroop | 0.0000001 XLM (10⁻⁷ XLM)      |
+
+This applies universally to every `i128` parameter or field in the contract that represents a token quantity, including:
+
+| Field / Parameter     | Where used                                      |
+|-----------------------|-------------------------------------------------|
+| `stake`               | `vouch()`, `batch_vouch()`, `increase_stake()`, `decrease_stake()` |
+| `amount`              | `request_loan()`, `set_min_stake()`, `set_max_loan_amount()` |
+| `payment`             | `repay()`                                       |
+| `threshold`           | `request_loan()`, `is_eligible()`               |
+| `LoanRecord.amount`   | Total principal disbursed                       |
+| `LoanRecord.amount_repaid` | Cumulative repayment received             |
+| `LoanRecord.total_yield`   | Yield locked in at disbursement           |
+| `VouchRecord.stake`   | Staked collateral per voucher                   |
+| `Config.min_loan_amount` | Protocol minimum loan size                  |
+| `DEFAULT_MIN_LOAN_AMOUNT` | 100,000 stroops = 0.01 XLM              |
+| `DEFAULT_MIN_YIELD_STAKE` | 50 stroops (minimum for non-zero yield) |
+
+### Conversion helpers
+
+```
+// Rust (off-chain tooling)
+fn xlm_to_stroops(xlm: f64) -> i128 { (xlm * 10_000_000.0) as i128 }
+fn stroops_to_xlm(stroops: i128) -> f64 { stroops as f64 / 10_000_000.0 }
+```
+
+```js
+// JavaScript / TypeScript (frontend / SDK)
+const XLM_TO_STROOPS = 10_000_000n;
+const xlmToStroops = (xlm) => BigInt(Math.round(xlm * 10_000_000));
+const stroopsToXlm  = (stroops) => Number(stroops) / 10_000_000;
+```
+
+> [!NOTE]
+> When reading `LoanRecord`, `VouchRecord`, or any balance returned by the contract,
+> divide by `10_000_000` to display the equivalent XLM to users.
+> When accepting user input in XLM, multiply by `10_000_000` before passing to contract functions.
 
 ---
 
