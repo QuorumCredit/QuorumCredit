@@ -18,17 +18,23 @@ const MAX_VOUCHERS_PER_LOAN: u32 = 100;
 pub enum ContractError {
     InsufficientFunds = 1,
     DuplicateVouch = 2,
+    InvalidAdminThreshold = 3,
+    NoActiveLoan = 4,
+    InvalidAmount = 5,
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
 pub enum DataKey {
-    Loan(Address),    // borrower → LoanRecord
-    Vouches(Address), // borrower → Vec<VouchRecord>
-    Admin,            // Address allowed to call slash
-    Token,            // XLM token contract address
-    Deployer,         // Address that deployed the contract; guards initialize
+    Loan(Address),       // borrower → LoanRecord
+    ActiveLoan(Address), // borrower → bool; present when loan is active
+    Vouches(Address),    // borrower → Vec<VouchRecord>
+    Admin,               // Address allowed to call slash
+    Admins,              // Vec<Address> of all admins (used for threshold validation)
+    AdminThreshold,      // u32 — how many admins must agree to slash
+    Token,               // XLM token contract address
+    Deployer,            // Address that deployed the contract; guards initialize
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -74,6 +80,41 @@ impl QuorumCreditContract {
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
+
+        // Seed the admins list with the initial admin.
+        let mut admins: Vec<Address> = Vec::new(&env);
+        admins.push_back(admin.clone());
+        env.storage().instance().set(&DataKey::Admins, &admins);
+        // Default threshold: 1 (the single initial admin).
+        env.storage().instance().set(&DataKey::AdminThreshold, &1u32);
+    }
+
+    /// Update the admin list and the quorum threshold required to slash.
+    ///
+    /// `admin_threshold` must not exceed the number of admins; otherwise the
+    /// threshold could never be reached.
+    pub fn set_config(
+        env: Env,
+        admins: Vec<Address>,
+        admin_threshold: u32,
+    ) -> Result<(), ContractError> {
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        current_admin.require_auth();
+
+        // Guard: threshold must be reachable given the admin list.
+        if admin_threshold as usize > admins.len() as usize {
+            return Err(ContractError::InvalidAdminThreshold);
+        }
+
+        env.storage().instance().set(&DataKey::Admins, &admins);
+        env.storage()
+            .instance()
+            .set(&DataKey::AdminThreshold, &admin_threshold);
+        Ok(())
     }
 
     /// Stake XLM to vouch for a borrower.
@@ -82,9 +123,10 @@ impl QuorumCreditContract {
 
         assert!(voucher != borrower, "voucher cannot vouch for self");
 
-        // Transfer stake from voucher into the contract.
-        let token = Self::token(&env);
-        token.transfer(&voucher, &env.current_contract_address(), &stake);
+        // Guard: stake must be a positive amount.
+        if stake <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
 
         let mut vouches: Vec<VouchRecord> = env
             .storage()
@@ -99,19 +141,86 @@ impl QuorumCreditContract {
             }
         }
 
-        // Transfer stake from voucher into the contract.
-        let token = Self::token(&env);
-        token.transfer(&voucher, &env.current_contract_address(), &stake);
         assert!(
             vouches.len() < MAX_VOUCHERS_PER_LOAN,
             "maximum vouchers per loan exceeded"
         );
+
+        // Transfer stake from voucher into the contract.
+        let token = Self::token(&env);
+        token.transfer(&voucher, &env.current_contract_address(), &stake);
 
         vouches.push_back(VouchRecord { voucher, stake });
         env.storage()
             .persistent()
             .set(&DataKey::Vouches(borrower), &vouches);
         
+        Ok(())
+    }
+
+    /// Increase an existing vouch stake for a borrower.
+    pub fn increase_stake(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        voucher.require_auth();
+
+        // Guard: amount must be a positive value.
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let mut vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let mut found = false;
+        for i in 0..vouches.len() {
+            let mut v = vouches.get(i).unwrap();
+            if v.voucher == voucher {
+                v.stake += amount;
+                vouches.set(i, v);
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "no existing vouch found for this voucher");
+
+        // Transfer the additional stake from voucher into the contract.
+        let token = Self::token(&env);
+        token.transfer(&voucher, &env.current_contract_address(), &amount);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower), &vouches);
+        Ok(())
+    }
+
+    /// Create a slash vote for a borrower. The borrower must have an active loan.
+    pub fn initialize_slash_vote(
+        env: Env,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+
+        // Guard: only borrowers with an active loan may be voted on.
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::ActiveLoan(borrower.clone()))
+        {
+            return Err(ContractError::NoActiveLoan);
+        }
+
         Ok(())
     }
 
@@ -149,12 +258,16 @@ impl QuorumCreditContract {
         env.storage().persistent().set(
             &DataKey::Loan(borrower.clone()),
             &LoanRecord {
-                borrower,
+                borrower: borrower.clone(),
                 amount,
                 repaid: false,
                 defaulted: false,
             },
         );
+        // Mark loan as active for slash-vote eligibility checks.
+        env.storage()
+            .persistent()
+            .set(&DataKey::ActiveLoan(borrower), &true);
         Ok(())
     }
 
@@ -194,7 +307,11 @@ impl QuorumCreditContract {
         loan.repaid = true;
         env.storage()
             .persistent()
-            .set(&DataKey::Loan(borrower), &loan);
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+        // Loan is no longer active.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveLoan(borrower));
     }
 
     /// Admin marks a loan defaulted; 50% of each voucher's stake is slashed.
@@ -234,7 +351,11 @@ impl QuorumCreditContract {
         loan.defaulted = true;
         env.storage()
             .persistent()
-            .set(&DataKey::Loan(borrower), &loan);
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+        // Loan is no longer active.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveLoan(borrower));
     }
 
     // ── Views ─────────────────────────────────────────────────────────────────
@@ -428,6 +549,9 @@ mod tests {
         
         // This should panic due to zero amount
         client.request_loan(&borrower, &0, &1_000_000);
+    }
+
+    #[test]
     fn test_repay_with_max_vouchers() {
         let env = Env::default();
         env.budget().reset_unlimited();
@@ -457,5 +581,105 @@ mod tests {
         // Check loan is repaid
         let loan = client.get_loan(&borrower).unwrap();
         assert!(loan.repaid);
+    }
+
+    // ── New validation tests ──────────────────────────────────────────────────
+
+    /// set_config: threshold > number of admins must be rejected.
+    #[test]
+    fn test_set_config_invalid_threshold_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Only 1 admin exists; requesting threshold of 2 must fail.
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin.clone());
+        let result = client.try_set_config(&admins, &2u32);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAdminThreshold)),
+            "expected InvalidAdminThreshold when threshold exceeds admin count"
+        );
+    }
+
+    /// initialize_slash_vote: borrower with no active loan must be rejected.
+    #[test]
+    fn test_slash_vote_for_non_borrower_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // borrower has never taken a loan → no ActiveLoan key.
+        let result = client.try_initialize_slash_vote(&borrower);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::NoActiveLoan)),
+            "expected NoActiveLoan when borrower has no active loan"
+        );
+    }
+
+    /// vouch: zero stake must be rejected.
+    #[test]
+    fn test_vouch_zero_stake_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let result = client.try_vouch(&voucher, &borrower, &0i128);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "expected InvalidAmount for zero stake"
+        );
+    }
+
+    /// vouch: negative stake must be rejected.
+    #[test]
+    fn test_vouch_negative_stake_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let result = client.try_vouch(&voucher, &borrower, &-1_000_000i128);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "expected InvalidAmount for negative stake"
+        );
+    }
+
+    /// increase_stake: zero amount must be rejected.
+    #[test]
+    fn test_increase_stake_zero_amount_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+
+        let result = client.try_increase_stake(&voucher, &borrower, &0i128);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "expected InvalidAmount for zero increase amount"
+        );
+    }
+
+    /// increase_stake: negative amount must be rejected.
+    #[test]
+    fn test_increase_stake_negative_amount_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+
+        let result = client.try_increase_stake(&voucher, &borrower, &-500_000i128);
+        assert_eq!(
+            result,
+            Err(Ok(ContractError::InvalidAmount)),
+            "expected InvalidAmount for negative increase amount"
+        );
     }
 }
