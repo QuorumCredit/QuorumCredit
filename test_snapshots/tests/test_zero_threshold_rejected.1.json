@@ -463,6 +463,34 @@
                         "key": {
                           "vec": [
                             {
+                              "symbol": "AdminThreshold"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "Admins"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "vec": [
+                            {
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
                               "symbol": "Deployer"
                             }
                           ]
@@ -1339,7 +1367,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'threshold must be greater than zero' from contract function 'Symbol(obj#325)'"
+                  "string": "caught panic 'threshold must be greater than zero' from contract function 'Symbol(obj#345)'"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
