@@ -18,6 +18,8 @@ mod bug_condition_test;
 #[cfg(test)]
 mod config_bps_test;
 #[cfg(test)]
+mod max_loan_to_stake_ratio_test;
+#[cfg(test)]
 mod double_repay_test;
 #[cfg(test)]
 mod duplicate_loan_test;
