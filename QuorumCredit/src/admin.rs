@@ -1,6 +1,7 @@
 use crate::helpers::{config, extend_ttl, require_admin_approval, validate_admin_config};
 use crate::types::{Config, DataKey};
 use soroban_sdk::{symbol_short, Address, BytesN, Env, Vec};
+use crate::errors::ContractError;
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
     require_admin_approval(&env, &admin_signers);
@@ -373,4 +374,47 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
         .persistent()
         .get(&DataKey::VoucherWhitelist(voucher))
         .unwrap_or(false)
+}
+
+pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if new_admin == Address::zero(&env) {
+        return Err(ContractError::ZeroAddress);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::PendingAdmin, &new_admin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("proposed")),
+        new_admin,
+    );
+
+    Ok(())
+}
+
+pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+    let new_admin = env
+        .storage()
+        .instance()
+        .get(&DataKey::PendingAdmin)
+        .ok_or(ContractError::UnauthorizedCaller)?;
+
+    new_admin.require_auth();
+
+    let mut cfg = config(&env);
+    cfg.admins.push_back(new_admin.clone());
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    // Clear the pending admin
+    env.storage().instance().remove(&DataKey::PendingAdmin);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("accepted")),
+        new_admin,
+    );
+
+    Ok(())
 }

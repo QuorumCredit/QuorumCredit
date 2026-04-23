@@ -355,6 +355,32 @@ impl QuorumCreditContract {
         admin::rotate_admin(env, admin_signers, old_admin, new_admin)
     }
 
+    /// Propose a new admin (two-step admin transfer).
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet current threshold)
+    /// * `new_admin` - Address of the proposed new admin
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::ZeroAddress` - If new_admin is the zero address
+    pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+        admin::propose_admin(env, admin_signers, new_admin)
+    }
+
+    /// Accept the proposed admin transfer.
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Success or error
+    ///
+    /// # Errors
+    /// * `ContractError::UnauthorizedCaller` - If no pending admin is set or caller is not the pending admin
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        admin::accept_admin(env)
+    }
+
     /// Set the admin threshold (minimum number of admins required for approval).
     ///
     /// # Arguments

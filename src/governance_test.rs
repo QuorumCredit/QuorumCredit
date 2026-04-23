@@ -309,4 +309,16 @@ mod governance_tests {
         // Loan should still be active
         assert_eq!(s.client.loan_status(&borrower), crate::LoanStatus::Active);
     }
+
+    /// Test that propose_admin rejects zero address.
+    #[test]
+    fn test_propose_admin_zero_address_rejected() {
+        let s = setup();
+        let zero_addr = Address::zero(&s.env);
+        let admins = Vec::from_array(&s.env, [s.admin.clone()]);
+
+        // Attempt to propose zero address should fail
+        let result = s.client.try_propose_admin(&admins, &zero_addr);
+        assert_eq!(result, Err(Ok(ContractError::ZeroAddress)));
+    }
 }

@@ -314,6 +314,14 @@ impl QuorumCreditContract {
         governance::execute_slash_vote(env, borrower)
     }
 
+    pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+        admin::propose_admin(env, admin_signers, new_admin)
+    }
+
+    pub fn accept_admin(env: Env) -> Result<(), ContractError> {
+        admin::accept_admin(env)
+    }
+
     pub fn propose_slash(
         env: Env,
         proposer: Address,
