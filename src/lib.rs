@@ -63,7 +63,7 @@ mod insurance_test;
 #[cfg(test)]
 mod dynamic_yield_test;
 #[cfg(test)]
-mod slash_vote_flow_test;
+mod multi_token_vouch_test;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
