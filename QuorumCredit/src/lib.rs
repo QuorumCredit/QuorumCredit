@@ -28,6 +28,8 @@ mod double_repay_test;
 #[cfg(test)]
 mod duplicate_loan_test;
 #[cfg(test)]
+mod duplicate_vouch_test;
+#[cfg(test)]
 mod get_loan_status_test;
 #[cfg(test)]
 mod governance_test;
@@ -40,13 +42,19 @@ mod multi_asset_test;
 #[cfg(test)]
 mod referral_test;
 #[cfg(test)]
+mod repay_overpayment_test;
+#[cfg(test)]
 mod request_loan_insufficient_stake_test;
 #[cfg(test)]
 mod security_fixes_test;
 #[cfg(test)]
+mod max_loan_amount_test;
+#[cfg(test)]
 mod set_min_loan_amount_test;
 #[cfg(test)]
 mod simple_double_repay_test;
+#[cfg(test)]
+mod vouch_min_stake_test;
 #[cfg(test)]
 mod vouch_zero_stake_test;
 #[cfg(test)]

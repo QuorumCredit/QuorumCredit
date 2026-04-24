@@ -4,6 +4,8 @@ mod bug_condition_test;
 mod double_slash_panic_test;
 #[path = "duplicate_loan_test.rs"]
 mod duplicate_loan_test;
+#[path = "duplicate_vouch_test.rs"]
+mod duplicate_vouch_test;
 #[path = "full_lifecycle_test.rs"]
 mod full_lifecycle_test;
 #[path = "get_loan_none_test.rs"]
@@ -20,12 +22,16 @@ mod loan_overwrite_protection_test;
 mod loan_purpose_test;
 #[path = "max_vouchers_per_borrower_test.rs"]
 mod max_vouchers_per_borrower_test;
+#[path = "max_loan_amount_test.rs"]
+mod max_loan_amount_test;
 #[path = "min_loan_amount_test.rs"]
 mod min_loan_amount_test;
 #[path = "multi_asset_test.rs"]
 mod multi_asset_test;
 #[path = "partial_repay_test.rs"]
 mod partial_repay_test;
+#[path = "repay_overpayment_test.rs"]
+mod repay_overpayment_test;
 #[path = "paused_state_test.rs"]
 mod paused_state_test;
 #[path = "referral_test.rs"]
@@ -44,6 +50,8 @@ mod slash_auth_test;
 mod slash_multi_voucher_test;
 #[path = "vouch_cooldown_test.rs"]
 mod vouch_cooldown_test;
+#[path = "vouch_min_stake_test.rs"]
+mod vouch_min_stake_test;
 #[path = "vouch_zero_stake_test.rs"]
 mod vouch_zero_stake_test;
 #[path = "voucher_balance_check_test.rs"]
