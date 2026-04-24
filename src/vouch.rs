@@ -222,9 +222,14 @@ pub fn increase_stake(
     let mut vouch_rec = vouches.get(idx).unwrap();
     // Use the token stored on the vouch record.
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
-    token_client.transfer(&voucher, &env.current_contract_address(), &additional);
 
-    vouch_rec.stake += additional;
+    // Check for overflow before transferring tokens.
+    vouch_rec.stake = vouch_rec
+        .stake
+        .checked_add(additional)
+        .ok_or(ContractError::StakeOverflow)?;
+
+    token_client.transfer(&voucher, &env.current_contract_address(), &additional);
     vouches.set(idx, vouch_rec);
 
     env.storage()

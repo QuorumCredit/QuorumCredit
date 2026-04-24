@@ -41,6 +41,10 @@ mod vouch_active_loan_test;
 #[cfg(test)]
 mod request_loan_stake_threshold_test;
 #[cfg(test)]
+mod increase_stake_overflow_test;
+#[cfg(test)]
+mod batch_vouch_partial_failure_test;
+#[cfg(test)]
 mod decrease_stake_full_withdrawal_test;
 #[cfg(test)]
 mod initialize_admin_threshold_test;
