@@ -62,6 +62,8 @@ mod mint_reputation_nft_test;
 mod insurance_test;
 #[cfg(test)]
 mod dynamic_yield_test;
+#[cfg(test)]
+mod slash_vote_flow_test;
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
