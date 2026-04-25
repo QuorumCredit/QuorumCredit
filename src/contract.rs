@@ -597,6 +597,27 @@ impl QuorumCreditContract {
         admin::remove_allowed_token(env, admin_signers, token)
     }
 
+    /// Withdraw funds from the slash treasury to a recipient address.
+    /// Admin-gated. Emits an admin/slshwdraw event on success.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `recipient` - Address to receive the withdrawn funds
+    /// * `amount` - Amount to withdraw in stroops (must be > 0)
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    /// * If amount is not greater than zero
+    /// * If slash treasury balance is insufficient
+    pub fn withdraw_slash_treasury(
+        env: Env,
+        admin_signers: Vec<Address>,
+        recipient: Address,
+        amount: i128,
+    ) {
+        admin::withdraw_slash_treasury(env, admin_signers, recipient, amount)
+    }
+
     // ── Queries ───────────────────────────────────────────────────────────────
 
     /// Get the current list of admin addresses.
