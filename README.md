@@ -28,6 +28,8 @@ This platform is designed for developers building on Stellar, fintech teams targ
 - [Setup Instructions](#setup-instructions)
 - [Testing](#testing)
 - [Deployment](#deployment)
+- [Security Best Practices](SECURITY_BEST_PRACTICES.md)
+- [Documentation](#documentation)
 - [Architecture](#architecture)
 - [Error Reference](#error-reference)
 - [Contributing](#contributing)
@@ -261,6 +263,14 @@ Step 3: Initialize the contract ← SAME deployer keypair must sign this tx
 ```
 
 If steps 2 and 3 are not signed by the same keypair, `initialize` will panic and the contract remains uninitialized.
+
+## Documentation
+
+Project reference documentation is generated automatically from the Rust workspace and published to GitHub Pages on every merge to `main`.
+
+Visit the published docs at:
+
+https://ndifreke000.github.io/QuorumCredit/
 
 ### Deploy to Testnet
 

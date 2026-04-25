@@ -1,0 +1,9 @@
+[git]
+tag_pattern = "^v\\d+\\.\\d+\\.\\d+$"
+
+[output]
+path = "CHANGELOG.md"
+template = "keep-a-changelog"
+issue_url = "https://github.com/Ndifreke000/QuorumCredit/issues/{{id}}"
+tag_url = "https://github.com/Ndifreke000/QuorumCredit/releases/tag/{{tag}}"
+commit_url = "https://github.com/Ndifreke000/QuorumCredit/commit/{{hash}}"
