@@ -19,6 +19,12 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Install git-cliff
+        run: cargo install --locked git-cliff-cli
+
+      - name: Generate changelog
+        run: git cliff -o CHANGELOG.md
+
       - name: Cache Cargo registry
         uses: actions/cache@v4
         with:
@@ -60,5 +66,6 @@ jobs:
           files: |
             quorum_credit_${{ github.ref_name }}.wasm
             quorum_credit_${{ github.ref_name }}.wasm.sha256
+            CHANGELOG.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

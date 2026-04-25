@@ -1,0 +1,32 @@
+name: Changelog
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  generate:
+    name: Generate changelog from conventional commits
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install git-cliff
+        run: cargo install --locked git-cliff-cli
+
+      - name: Generate CHANGELOG.md
+        run: git cliff -o CHANGELOG.md
+
+      - name: Upload CHANGELOG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: changelog
+          path: CHANGELOG.md
