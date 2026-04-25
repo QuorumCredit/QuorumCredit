@@ -63,7 +63,7 @@ pub enum DataKey {
     VoucherWhitelistEnabled,   // bool: true when voucher whitelist is enforced
     BorrowerWhitelist(Address), // borrower → bool allowed to request loans
     BorrowerWhitelistEnabled,  // bool: true when borrower whitelist is enforced
-    BorrowerWhitelist(Address), // borrower → bool allowed to request loans
+    TokenConfig(Address),      // token → TokenConfig (per-token yield/slash overrides)
     ExtensionConsents(Address), // borrower → Vec<Address> vouchers who consented to extension
     SlashVote(Address), // borrower → SlashVoteRecord
     SlashVoteQuorum, // u32 quorum in basis points (e.g. 5000 = 50%)
@@ -98,6 +98,17 @@ pub struct Config {
     pub loan_duration: u64,
     pub max_loan_to_stake_ratio: u32,
     pub grace_period: u64,
+}
+
+// ── Per-Token Config ──────────────────────────────────────────────────────────
+
+/// Per-token overrides for yield and slash parameters.
+/// When set, these values take precedence over the global `Config` values.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenConfig {
+    pub yield_bps: i128,
+    pub slash_bps: i128,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────

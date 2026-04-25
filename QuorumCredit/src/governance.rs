@@ -192,13 +192,21 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     validate_loan_active(&loan)?;
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
+    // Use token-specific slash_bps if configured, otherwise fall back to global.
+    let slash_bps = env
+        .storage()
+        .persistent()
+        .get::<DataKey, crate::types::TokenConfig>(&DataKey::TokenConfig(loan.token_address.clone()))
+        .map(|tc| tc.slash_bps)
+        .unwrap_or(cfg.slash_bps);
+
     let mut total_slashed: i128 = 0;
 
     for v in vouches.iter() {
         if v.token != loan.token_address {
             continue;
         }
-        let slash_amount = v.amount * cfg.slash_bps / 10_000;
+        let slash_amount = v.amount * slash_bps / 10_000;
         let remaining = v.amount - slash_amount;
         total_slashed += slash_amount;
 

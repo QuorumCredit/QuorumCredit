@@ -1,5 +1,5 @@
 use crate::helpers::{config, extend_ttl, require_admin_approval, require_valid_token, validate_admin_config};
-use crate::types::{Config, DataKey};
+use crate::types::{Config, DataKey, TokenConfig};
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
@@ -469,6 +469,37 @@ pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Addres
         .expect("token not in allowed list") as u32;
     cfg.allowed_tokens.remove(idx);
     env.storage().instance().set(&DataKey::Config, &cfg);
+}
+
+pub fn set_token_config(
+    env: Env,
+    admin_signers: Vec<Address>,
+    token: Address,
+    token_cfg: TokenConfig,
+) {
+    require_admin_approval(&env, &admin_signers);
+    assert!(
+        token_cfg.yield_bps >= 0 && token_cfg.yield_bps <= 10_000,
+        "yield_bps must be 0-10000"
+    );
+    assert!(
+        token_cfg.slash_bps > 0 && token_cfg.slash_bps <= 10_000,
+        "slash_bps must be 1-10000"
+    );
+    env.storage()
+        .persistent()
+        .set(&DataKey::TokenConfig(token.clone()), &token_cfg);
+    extend_ttl(&env, &DataKey::TokenConfig(token.clone()));
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("tkcfg")),
+        (admin_signers.get(0).unwrap(), token),
+    );
+}
+
+pub fn get_token_config(env: Env, token: Address) -> Option<TokenConfig> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TokenConfig(token))
 }
 
 pub fn get_admins(env: Env) -> Vec<Address> {

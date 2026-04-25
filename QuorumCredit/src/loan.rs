@@ -159,7 +159,13 @@ pub fn request_loan(
 
     let deadline = now + cfg.loan_duration;
     let loan_id = next_loan_id(&env);
-    let total_yield = bps_of(amount, cfg.yield_bps);
+    let yield_bps = env
+        .storage()
+        .persistent()
+        .get::<crate::types::DataKey, crate::types::TokenConfig>(&crate::types::DataKey::TokenConfig(token_addr.clone()))
+        .map(|tc| tc.yield_bps)
+        .unwrap_or(cfg.yield_bps);
+    let total_yield = bps_of(amount, yield_bps);
 
     env.storage().persistent().set(
         &DataKey::Loan(loan_id),

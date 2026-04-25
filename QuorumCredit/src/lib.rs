@@ -54,6 +54,8 @@ mod set_min_loan_amount_test;
 #[cfg(test)]
 mod simple_double_repay_test;
 #[cfg(test)]
+mod token_config_test;
+#[cfg(test)]
 mod vouch_min_stake_test;
 #[cfg(test)]
 mod vouch_zero_stake_test;
@@ -348,6 +350,19 @@ impl QuorumCreditContract {
 
     pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
         admin::remove_allowed_token(env, admin_signers, token)
+    }
+
+    pub fn set_token_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+        token_cfg: TokenConfig,
+    ) {
+        admin::set_token_config(env, admin_signers, token, token_cfg)
+    }
+
+    pub fn get_token_config(env: Env, token: Address) -> Option<TokenConfig> {
+        admin::get_token_config(env, token)
     }
 
     // ── Governance ────────────────────────────────────────────────────────────
