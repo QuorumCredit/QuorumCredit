@@ -72,6 +72,10 @@ mod insurance_test;
 mod dynamic_yield_test;
 #[cfg(test)]
 mod multi_token_vouch_test;
+#[cfg(test)]
+mod yield_reserve_solvency_test;
+#[cfg(test)]
+mod slash_escrow_test;
 
 use helpers::{require_valid_token, validate_admin_config};
 use reputation::ReputationNftExternalClient;

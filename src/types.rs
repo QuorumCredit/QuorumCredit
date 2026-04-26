@@ -54,6 +54,8 @@ pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
 /// Withdrawal request timelock delay, in seconds (24 hours).
 pub const WITHDRAWAL_TIMELOCK_DELAY: u64 = 24 * 60 * 60;
+/// Slash escrow period before funds are permanently burned, in seconds (30 days).
+pub const SLASH_ESCROW_PERIOD: u64 = 30 * 24 * 60 * 60;
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
 
@@ -112,6 +114,9 @@ pub enum DataKey {
     InsuranceClaim(u64),     // loan_id → Address of voucher who claimed (prevents double-claim)
     VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
     VouchDelegation(Address, Address, Address), // (borrower, original_voucher, token) → Address (delegate)
+    YieldReserve,            // i128 balance of the yield reserve
+    SlashEscrow(Address),    // borrower → (i128 amount, u64 release_timestamp)
+    SlashAudit(Address),     // borrower → SlashAuditRecord
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -200,6 +205,10 @@ pub struct LoanRecord {
     pub token_address: Address,
     /// Amortization schedule for partial repayments.
     pub amortization_schedule: Vec<AmortizationEntry>,
+    /// Whether a repayment reminder has been sent for this loan.
+    pub reminder_sent: bool,
+    /// Risk score for the borrower (0-100), used for dynamic yield calculation.
+    pub risk_score: u32,
 }
 
 #[contracttype]

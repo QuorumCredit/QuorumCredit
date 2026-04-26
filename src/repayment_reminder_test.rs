@@ -108,3 +108,61 @@ mod repayment_reminder_tests {
         assert_eq!(events_after, events_before, "expected no events when no loans exist");
     }
 }
+
+
+    /// Test send_repayment_reminder marks reminder_sent as true
+    #[test]
+    fn test_send_repayment_reminder_marks_sent() {
+        let s = setup();
+        let borrower = Address::generate(&s.env);
+        let voucher = Address::generate(&s.env);
+
+        do_vouch(&s, &voucher, &borrower, 500_000);
+        s.client.request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.token_id);
+
+        let loan = s.client.get_loan(&borrower).unwrap();
+        assert!(!loan.reminder_sent, "reminder should not be sent initially");
+
+        // Send reminder
+        s.client.send_repayment_reminder(&loan.id).unwrap();
+
+        let loan_after = s.client.get_loan(&borrower).unwrap();
+        assert!(loan_after.reminder_sent, "reminder should be marked as sent");
+    }
+
+    /// Test send_repayment_reminder emits event
+    #[test]
+    fn test_send_repayment_reminder_emits_event() {
+        let s = setup();
+        let borrower = Address::generate(&s.env);
+        let voucher = Address::generate(&s.env);
+
+        do_vouch(&s, &voucher, &borrower, 500_000);
+        s.client.request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.token_id);
+
+        let loan = s.client.get_loan(&borrower).unwrap();
+        let events_before = s.env.events().all().len();
+        s.client.send_repayment_reminder(&loan.id).unwrap();
+        let events_after = s.env.events().all().len();
+
+        assert!(events_after > events_before, "expected reminder event to be emitted");
+    }
+
+    /// Test send_repayment_reminder fails if already sent
+    #[test]
+    fn test_send_repayment_reminder_fails_if_already_sent() {
+        let s = setup();
+        let borrower = Address::generate(&s.env);
+        let voucher = Address::generate(&s.env);
+
+        do_vouch(&s, &voucher, &borrower, 500_000);
+        s.client.request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.token_id);
+
+        let loan = s.client.get_loan(&borrower).unwrap();
+        s.client.send_repayment_reminder(&loan.id).unwrap();
+
+        // Try to send again
+        let result = s.client.try_send_repayment_reminder(&loan.id);
+        assert!(result.is_err(), "expected error when sending reminder twice");
+    }
+}
