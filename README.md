@@ -591,15 +591,17 @@ Stake tokens to vouch for a borrower. Creates social collateral.
 ##### `batch_vouch(voucher, borrowers, stakes, token)`
 **Signature**: `fn batch_vouch(env: Env, voucher: Address, borrowers: Vec<Address>, stakes: Vec<i128>, token: Address) -> Result<(), ContractError>`
 
-Stake for multiple borrowers in a single transaction.
+Stake for multiple borrowers in a single atomic transaction. Implements all-or-nothing semantics: all vouches are fully validated before any state is mutated or tokens are transferred. If any single vouch fails validation, the entire batch is rejected and no state changes occur — the borrower list is never left in a partially-vouched state.
+
+**Atomic guarantee**: Phase 1 runs `validate_vouch` for every entry in the batch. Only if all entries pass does Phase 2 call `commit_vouch` for each entry. A failure in Phase 1 returns immediately without touching storage or token balances.
 
 **Parameters**:
-- `voucher`: Address staking tokens
+- `voucher`: Address staking tokens (must sign the transaction)
 - `borrowers`: Vector of borrower addresses
-- `stakes`: Vector of stake amounts in stroops
-- `token`: Token contract address
+- `stakes`: Vector of stake amounts in stroops (must be same length as `borrowers`)
+- `token`: Token contract address (must be allowed)
 
-**Errors**: Same as `vouch`, plus `PoolLengthMismatch` if vectors don't match
+**Errors**: Same as `vouch()`. Returns `InsufficientFunds` if `borrowers` and `stakes` lengths differ or the batch is empty.
 
 ##### `increase_stake(voucher, borrower, additional_stake, token)`
 **Signature**: `fn increase_stake(env: Env, voucher: Address, borrower: Address, additional_stake: i128, token: Address) -> Result<(), ContractError>`
@@ -910,28 +912,63 @@ await contract.setProtocolFee([admin], 50);
 
 ## Frequently Asked Questions (FAQ)
 
-### What happens if I default?
-If a borrower defaults (fails to repay the loan by the due date), the vouchers who backed the loan will have their staked XLM slashed proportionally to cover the loss. The slashing mechanism is automated through the smart contract and follows these steps:
-1. The default is detected after the repayment deadline passes
-2. Each voucher's stake is reduced proportionally based on their contribution to the loan
-3. The slashed funds are used to cover the outstanding loan amount
-4. Defaulting affects the borrower's credit score within the system, making it harder to get future loans
+### Protocol
 
-### Can I withdraw my vouch?
-Yes, but with important limitations to protect the system:
-1. **Before loan disbursement**: You can withdraw your vouch at any time before the loan is funded
-2. **After loan disbursement**: Once the loan is active, you cannot withdraw your vouch until the loan is fully repaid or defaulted
-3. **Partial withdrawal**: You can reduce your stake (but not below the minimum required) if the loan hasn't been disbursed yet
-4. **Withdrawal process**: Use the `decrease_stake()` function to reduce your vouch amount
+**What is QuorumCredit?**
+QuorumCredit is a decentralized microlending protocol on Stellar Soroban that replaces asset collateral with social collateral. Vouchers stake XLM to back borrowers they trust. If the loan is repaid, vouchers earn yield. If the borrower defaults, vouchers are slashed.
 
-### How is yield funded?
-Yield for vouchers comes from two primary sources:
-1. **Interest payments**: Borrowers pay interest on their loans, which is distributed to vouchers proportionally to their stake
-2. **Protocol fees**: A small percentage of each successful loan goes into a yield pool
-3. **Distribution**: Yield is locked in at loan disbursement and distributed upon successful repayment
-4. **Calculation**: Yield amount = (loan amount × interest rate × voucher's stake percentage)
+**What happens if a borrower defaults?**
+After the loan deadline passes without full repayment, an admin (or quorum of vouchers via `vote_slash`) can trigger a slash. Each voucher loses `slash_bps / 10_000` of their staked amount (default: 50%). The slashed funds accumulate in the slash treasury. The borrower's default count increments, affecting future loan eligibility.
 
-The yield mechanism ensures that vouchers are compensated for the risk they take while maintaining the protocol's sustainability.
+**Can I vouch for multiple borrowers at once?**
+Yes — use `batch_vouch(voucher, borrowers, stakes, token)`. It provides atomic all-or-nothing semantics: all vouches are validated before any state changes. If one entry is invalid, the entire batch is rejected and no tokens are transferred.
+
+**What is the minimum stake to earn yield?**
+50 stroops (0.000005 XLM). At the default 2% yield rate, `stake * 200 / 10_000` truncates to zero for stakes below 50 stroops. The contract enforces this minimum and rejects smaller stakes with `MinStakeNotMet`.
+
+**Can I withdraw my vouch?**
+Yes, with restrictions. You can call `withdraw_vouch()` or `decrease_stake()` at any time — unless the borrower has an active loan. Once a loan is disbursed, your stake is locked until the loan is repaid or defaulted. This protects borrowers from having their collateral pulled mid-loan.
+
+**How is yield funded?**
+Yield is sourced from a pre-funded yield reserve held by the contract. It is not minted — the contract must hold sufficient tokens to cover both principal and yield at repayment time. If the reserve is depleted, repayment will fail with `InsufficientFunds`. Admins are responsible for maintaining the reserve.
+
+**What tokens are supported?**
+The primary token is set at initialization. Admins can add additional SEP-41-compliant tokens via `add_allowed_token()`. All amounts are denominated in the token's smallest unit (stroops for XLM: 1 XLM = 10,000,000 stroops).
+
+**Is there a cooldown between vouches?**
+Yes. By default, a voucher must wait 24 hours between vouch calls (`DEFAULT_VOUCH_COOLDOWN_SECS`). This is configurable by admins. Attempting to vouch before the cooldown expires returns `VouchCooldownActive`.
+
+### Deployment
+
+**How do I deploy to testnet?**
+See the [Deployment](#deployment) section. The key requirement is that the same keypair that signs the `deploy` transaction must also sign the `initialize` transaction. Using a different key will cause `initialize` to panic.
+
+**Can I upgrade the contract after deployment?**
+Yes, via `upgrade(admin_signers, new_wasm_hash)`. This requires `admin_threshold` admin signatures. It is recommended to pause the contract before upgrading and unpause after. See the [Deployment](#deployment) section for the full upgrade sequence.
+
+**What network passphrase should I use?**
+- Testnet: `"Test SDF Network ; September 2015"`
+- Mainnet: `"Public Global Stellar Network ; September 2015"`
+
+**How do I set up multisig admin?**
+Pass multiple addresses in the `admins` vector during `initialize` and set `admin_threshold` to the required quorum (e.g., 2-of-3). All admin functions require `admin_threshold` distinct admin signatures.
+
+### Operation
+
+**How do I pause the contract in an emergency?**
+Call `pause(admin_signers)` with sufficient admin signatures. All state-mutating functions will return `ContractPaused` until `unpause(admin_signers)` is called.
+
+**How do I check if a borrower is eligible for a loan?**
+Call `is_eligible(borrower, threshold, token_addr)`. This returns `true` if the total stake from vouches for that borrower meets or exceeds `threshold` for the given token.
+
+**How do I monitor slash votes?**
+Vouchers call `vote_slash(voucher, borrower, approve)`. Once the approve stake reaches `slash_vote_quorum` (default 50% of total stake), the slash executes automatically. Query the slash vote state via `get_slash_vote_quorum()`.
+
+**Where do slashed funds go?**
+Into the slash treasury (`DataKey::SlashTreasury`). Admins can withdraw via `withdraw_slash_treasury(admin_signers, recipient, amount)`.
+
+**How do I read contract events off-chain?**
+See [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) for event topics, data structures, and how to subscribe using the Stellar Horizon API or a Soroban RPC node.
 
 ---
 
