@@ -530,3 +530,22 @@ pub fn accept_admin(env: Env) -> Result<(), ContractError> {
 
     Ok(())
 }
+
+pub fn set_prepayment_penalty_bps(env: Env, admin_signers: Vec<Address>, penalty_bps: u32) {
+    require_admin_approval(&env, &admin_signers);
+    assert!(penalty_bps <= 10_000, "penalty_bps must not exceed 10000");
+    env.storage()
+        .instance()
+        .set(&DataKey::PrepaymentPenaltyBps, &penalty_bps);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("prepay")),
+        (admin_signers.get(0).unwrap(), penalty_bps),
+    );
+}
+
+pub fn get_prepayment_penalty_bps(env: Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::PrepaymentPenaltyBps)
+        .unwrap_or(0)
+}

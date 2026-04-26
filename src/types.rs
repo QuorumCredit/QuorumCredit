@@ -104,6 +104,10 @@ pub enum DataKey {
     MaxVouchersPerBorrower, // u32 maximum number of vouchers per borrower (default 50)
     InsurancePool,           // i128 total funds contributed to the insurance pool
     InsuranceClaim(u64),     // loan_id → Address of voucher who claimed (prevents double-claim)
+    CollateralRequired,      // bool: true when collateral is required for high-risk borrowers
+    DefaultThresholdForCollateral, // u32 number of defaults before collateral is required
+    BorrowerCollateral(Address), // borrower → i128 collateral amount deposited
+    PrepaymentPenaltyBps,    // u32 prepayment penalty in basis points
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
