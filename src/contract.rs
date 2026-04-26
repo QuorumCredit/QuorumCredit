@@ -1304,69 +1304,49 @@ impl QuorumCreditContract {
         loan::repay_partial(env, borrower, payment, token)
     }
 
-    /// Issue #553: Get yield distribution for a loan.
-    ///
-    /// # Arguments
-    /// * `loan_id` - The loan ID
-    ///
-    /// # Returns
-    /// * `Option<Vec<YieldDistributionEntry>>` - Vector of yield distribution entries if exists
-    pub fn get_yield_distribution(env: Env, loan_id: u64) -> Option<Vec<YieldDistributionEntry>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::YieldDistribution(loan_id))
+    // ── Issue #547: Loan Repayment Reminders ──────────────────────────────────
+
+    /// Send a repayment reminder for a loan. Anyone can call this.
+    pub fn send_repayment_reminder(env: Env, loan_id: u64) -> Result<(), ContractError> {
+        loan::send_repayment_reminder(env, loan_id)
     }
 
-    /// Issue #552: Appeal a slash decision.
-    pub fn appeal_slash(
-        env: Env,
-        voucher: Address,
-        borrower: Address,
-        evidence_hash: BytesN<32>,
-    ) -> Result<(), ContractError> {
-        governance::appeal_slash(env, voucher, borrower, evidence_hash)
-    }
+    // ── Issue #548: Dynamic Yield Based on Risk ───────────────────────────────
 
-    /// Issue #552: Vote on a slash appeal (admin only).
-    pub fn vote_on_slash_appeal(
+    /// Set the risk score for a borrower. Admin-only.
+    pub fn set_borrower_risk_score(
         env: Env,
         admin_signers: Vec<Address>,
         borrower: Address,
-        voucher: Address,
-        approve: bool,
+        risk_score: u32,
     ) -> Result<(), ContractError> {
-        governance::vote_on_slash_appeal(env, admin_signers, borrower, voucher, approve)
+        loan::set_borrower_risk_score(env, admin_signers, borrower, risk_score)
     }
 
-    /// Issue #552: Execute a slash appeal if approved.
-    pub fn execute_slash_appeal(
+    // ── Issue #549: Yield Reserve Solvency Checks ─────────────────────────────
+
+    /// Get the yield reserve balance.
+    pub fn get_yield_reserve_balance(env: Env) -> i128 {
+        loan::get_yield_reserve_balance(env)
+    }
+
+    /// Set the yield reserve balance. Admin-only.
+    pub fn set_yield_reserve(
         env: Env,
+        admin_signers: Vec<Address>,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        loan::set_yield_reserve(env, admin_signers, amount)
+    }
+
+    // ── Issue #550: Slash Escrow for Disputed Defaults ────────────────────────
+
+    /// Release slashed funds from escrow after the escrow period expires. Admin-only.
+    pub fn release_slash_escrow(
+        env: Env,
+        admin_signers: Vec<Address>,
         borrower: Address,
-        voucher: Address,
     ) -> Result<(), ContractError> {
-        governance::execute_slash_appeal(env, borrower, voucher)
-    }
-
-    /// Issue #554: Propose an admin action.
-    pub fn propose_admin_action(
-        env: Env,
-        proposer: Address,
-        action_type: soroban_sdk::String,
-    ) -> Result<u64, ContractError> {
-        admin::propose_admin_action(env, proposer, action_type)
-    }
-
-    /// Issue #554: Approve an admin action.
-    pub fn approve_admin_action(
-        env: Env,
-        admin: Address,
-        action_id: u64,
-    ) -> Result<(), ContractError> {
-        admin::approve_admin_action(env, admin, action_id)
-    }
-
-    /// Issue #554: Execute an admin action if threshold is met.
-    pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
-        admin::execute_admin_action(env, action_id)
+        loan::release_slash_escrow(env, admin_signers, borrower)
     }
 }

@@ -146,3 +146,40 @@ mod dynamic_yield_tests {
         assert_eq!(loan.total_yield, 1_500);
     }
 }
+
+
+    /// Test set_borrower_risk_score updates the risk_score field
+    #[test]
+    fn test_set_borrower_risk_score() {
+        let s = setup();
+        let borrower = Address::generate(&s.env);
+        let voucher = Address::generate(&s.env);
+
+        do_vouch(&s, &voucher, &borrower, 500_000);
+        s.client.request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.token_id);
+
+        let loan_before = s.client.get_loan(&borrower).unwrap();
+        assert_eq!(loan_before.risk_score, 0, "risk_score should be 0 initially");
+
+        // Set risk_score to 50
+        s.client.set_borrower_risk_score(&s.admin_vec, &borrower, &50).unwrap();
+
+        let loan_after = s.client.get_loan(&borrower).unwrap();
+        assert_eq!(loan_after.risk_score, 50, "risk_score should be updated to 50");
+    }
+
+    /// Test set_borrower_risk_score rejects invalid scores > 100
+    #[test]
+    fn test_set_borrower_risk_score_rejects_invalid() {
+        let s = setup();
+        let borrower = Address::generate(&s.env);
+        let voucher = Address::generate(&s.env);
+
+        do_vouch(&s, &voucher, &borrower, 500_000);
+        s.client.request_loan(&borrower, &100_000, &500_000, &purpose(&s.env), &s.token_id);
+
+        // Try to set risk_score > 100
+        let result = s.client.try_set_borrower_risk_score(&s.admin_vec, &borrower, &101);
+        assert!(result.is_err(), "expected error for risk_score > 100");
+    }
+}

@@ -1,12 +1,12 @@
 use crate::errors::ContractError;
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, next_loan_id, require_allowed_token,
-    require_not_paused,
+    require_not_paused, require_admin_approval,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
     DataKey, LoanRecord, LoanStatus, VouchRecord, BPS_DENOMINATOR, DEFAULT_REFERRAL_BONUS_BPS,
-    AmortizationEntry,
+    AmortizationEntry, SLASH_ESCROW_PERIOD,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -184,6 +184,16 @@ pub fn request_loan(
     let dynamic_yield_bps = calculate_dynamic_yield(&env, &borrower);
     let total_yield = amount * dynamic_yield_bps / 10_000; // stroops
 
+    // Check yield reserve solvency before disbursing
+    let yield_reserve: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::YieldReserve)
+        .unwrap_or(0);
+    if yield_reserve < total_yield {
+        return Err(ContractError::InsufficientYieldReserve);
+    }
+
     env.storage().persistent().set(
         &DataKey::Loan(loan_id),
         &LoanRecord {
@@ -201,6 +211,8 @@ pub fn request_loan(
             loan_purpose,
             token_address: token_addr.clone(),
             amortization_schedule: Vec::new(&env),
+            reminder_sent: false,
+            risk_score: 0,
         },
     );
     env.storage()
@@ -886,6 +898,121 @@ pub fn repay_partial(
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("partial_repay")),
         (borrower.clone(), payment),
+    );
+
+    Ok(())
+}
+
+
+/// Send a repayment reminder for a loan. Anyone can call this.
+pub fn send_repayment_reminder(env: Env, loan_id: u64) -> Result<(), ContractError> {
+    let mut loan: LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    if loan.status != LoanStatus::Active {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    if loan.reminder_sent {
+        return Err(ContractError::ReminderAlreadySent);
+    }
+
+    loan.reminder_sent = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(loan_id), &loan);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("reminder")),
+        (loan.borrower.clone(), loan.deadline),
+    );
+
+    Ok(())
+}
+
+/// Get the yield reserve balance.
+pub fn get_yield_reserve_balance(env: Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::YieldReserve)
+        .unwrap_or(0)
+}
+
+/// Release slashed funds from escrow after the escrow period expires.
+/// Admin-only function.
+pub fn release_slash_escrow(env: Env, admin_signers: Vec<Address>, borrower: Address) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers)?;
+
+    let escrow_data: Option<(i128, u64)> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SlashEscrow(borrower.clone()));
+
+    let (amount, release_timestamp) = escrow_data.ok_or(ContractError::NoActiveLoan)?;
+
+    let now = env.ledger().timestamp();
+    if now < release_timestamp {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SlashEscrow(borrower.clone()));
+
+    env.events().publish(
+        (symbol_short!("slash"), symbol_short!("escrow_released")),
+        (borrower.clone(), amount),
+    );
+
+    Ok(())
+}
+
+/// Set the yield reserve balance. Admin-only.
+pub fn set_yield_reserve(env: Env, admin_signers: Vec<Address>, amount: i128) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers)?;
+
+    if amount < 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::YieldReserve, &amount);
+
+    env.events().publish(
+        (symbol_short!("yield"), symbol_short!("reserve_set")),
+        amount,
+    );
+
+    Ok(())
+}
+
+/// Set the risk score for a borrower. Admin-only.
+pub fn set_borrower_risk_score(env: Env, admin_signers: Vec<Address>, borrower: Address, risk_score: u32) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers)?;
+
+    if risk_score > 100 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let mut loan: LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ActiveLoan(borrower.clone()))
+        .and_then(|loan_id| env.storage().persistent().get(&DataKey::Loan(loan_id)))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    loan.risk_score = risk_score;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(loan.id), &loan);
+
+    env.events().publish(
+        (symbol_short!("borrower"), symbol_short!("risk_score_set")),
+        (borrower.clone(), risk_score),
     );
 
     Ok(())

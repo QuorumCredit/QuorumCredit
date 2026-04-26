@@ -50,4 +50,8 @@ pub enum ContractError {
     DuplicateToken = 39,
     /// Admin threshold must be > 0 and <= number of admins.
     InvalidAdminThreshold = 40,
+    /// Yield reserve is insufficient to cover promised yield.
+    InsufficientYieldReserve = 41,
+    /// Reminder already sent for this loan.
+    ReminderAlreadySent = 42,
 }

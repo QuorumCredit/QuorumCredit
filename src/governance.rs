@@ -238,7 +238,12 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         }
     }
 
-    add_slash_balance(env, total_slashed);
+    // Store slashed funds in escrow instead of immediately burning
+    let now = env.ledger().timestamp();
+    let release_timestamp = now + crate::types::SLASH_ESCROW_PERIOD;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SlashEscrow(borrower.clone()), &(total_slashed, release_timestamp));
 
     loan.status = crate::types::LoanStatus::Defaulted;
     env.storage()
