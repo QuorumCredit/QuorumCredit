@@ -1303,4 +1303,50 @@ impl QuorumCreditContract {
     ) -> Result<(), ContractError> {
         loan::repay_partial(env, borrower, payment, token)
     }
+
+    // ── Issue #547: Loan Repayment Reminders ──────────────────────────────────
+
+    /// Send a repayment reminder for a loan. Anyone can call this.
+    pub fn send_repayment_reminder(env: Env, loan_id: u64) -> Result<(), ContractError> {
+        loan::send_repayment_reminder(env, loan_id)
+    }
+
+    // ── Issue #548: Dynamic Yield Based on Risk ───────────────────────────────
+
+    /// Set the risk score for a borrower. Admin-only.
+    pub fn set_borrower_risk_score(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        risk_score: u32,
+    ) -> Result<(), ContractError> {
+        loan::set_borrower_risk_score(env, admin_signers, borrower, risk_score)
+    }
+
+    // ── Issue #549: Yield Reserve Solvency Checks ─────────────────────────────
+
+    /// Get the yield reserve balance.
+    pub fn get_yield_reserve_balance(env: Env) -> i128 {
+        loan::get_yield_reserve_balance(env)
+    }
+
+    /// Set the yield reserve balance. Admin-only.
+    pub fn set_yield_reserve(
+        env: Env,
+        admin_signers: Vec<Address>,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        loan::set_yield_reserve(env, admin_signers, amount)
+    }
+
+    // ── Issue #550: Slash Escrow for Disputed Defaults ────────────────────────
+
+    /// Release slashed funds from escrow after the escrow period expires. Admin-only.
+    pub fn release_slash_escrow(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::release_slash_escrow(env, admin_signers, borrower)
+    }
 }
