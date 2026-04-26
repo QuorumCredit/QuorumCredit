@@ -387,6 +387,82 @@ impl QuorumCreditContract {
         loan::repay(env, borrower, payment)
     }
 
+    /// Add a co-borrower to an active loan.
+    ///
+    /// # Arguments
+    /// * `borrower` - Primary borrower address (must sign)
+    /// * `co_borrower` - Address of the co-borrower to add
+    ///
+    /// # Errors
+    /// * If borrower has no active loan
+    /// * If co-borrower is the same as primary borrower
+    /// * If co-borrower is already added
+    /// * If contract is paused
+    pub fn add_co_borrower(
+        env: Env,
+        borrower: Address,
+        co_borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::add_co_borrower(env, borrower, co_borrower)
+    }
+
+    /// Refinance an existing loan with new terms.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower (must sign)
+    /// * `new_amount` - New loan amount in stroops
+    /// * `new_threshold` - New minimum stake threshold in stroops
+    /// * `new_token` - Token contract address for the new loan
+    ///
+    /// # Errors
+    /// * If borrower has no active loan
+    /// * If new_amount or new_threshold is not positive
+    /// * If new_amount is below minimum or exceeds maximum
+    /// * If total stake is below threshold
+    /// * If contract has insufficient balance
+    /// * If token is not allowed
+    /// * If contract is paused
+    pub fn refinance_loan(
+        env: Env,
+        borrower: Address,
+        new_amount: i128,
+        new_threshold: i128,
+        new_token: Address,
+    ) -> Result<(), ContractError> {
+        loan::refinance_loan(env, borrower, new_amount, new_threshold, new_token)
+    }
+
+    /// Deposit collateral for a borrower (required for high-risk borrowers).
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower (must sign)
+    /// * `amount` - Collateral amount in stroops
+    /// * `token` - Token contract address for collateral
+    ///
+    /// # Errors
+    /// * If amount is not positive
+    /// * If token is not allowed
+    /// * If contract is paused
+    pub fn deposit_collateral(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        loan::deposit_collateral(env, borrower, amount, token)
+    }
+
+    /// Get the collateral amount deposited by a borrower.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower
+    ///
+    /// # Returns
+    /// * `i128` - Collateral amount in stroops
+    pub fn get_borrower_collateral(env: Env, borrower: Address) -> i128 {
+        loan::get_borrower_collateral(env, borrower)
+    }
+
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     /// Add a new admin to the protocol.
@@ -777,6 +853,27 @@ impl QuorumCreditContract {
     /// * `u32` - The quorum in basis points
     pub fn get_slash_vote_quorum(env: Env) -> u32 {
         governance::get_slash_vote_quorum(env)
+    }
+
+    /// Set the prepayment penalty in basis points.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `penalty_bps` - Penalty in basis points (e.g., 100 = 1%)
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    /// * If penalty_bps exceeds 10000
+    pub fn set_prepayment_penalty_bps(env: Env, admin_signers: Vec<Address>, penalty_bps: u32) {
+        admin::set_prepayment_penalty_bps(env, admin_signers, penalty_bps)
+    }
+
+    /// Get the current prepayment penalty in basis points.
+    ///
+    /// # Returns
+    /// * `u32` - The prepayment penalty in basis points
+    pub fn get_prepayment_penalty_bps(env: Env) -> u32 {
+        admin::get_prepayment_penalty_bps(env)
     }
 
     // ── Views ─────────────────────────────────────────────────────────────────

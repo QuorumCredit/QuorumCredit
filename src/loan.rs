@@ -509,6 +509,266 @@ pub fn emit_repayment_reminders(env: Env) {
     }
 }
 
+/// Add a co-borrower to an active loan. Only the primary borrower can call this.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - Primary borrower address (must sign)
+/// * `co_borrower` - Address of the co-borrower to add
+///
+/// # Errors
+/// * `NoActiveLoan` — borrower has no active loan
+/// * `UnauthorizedCaller` — caller is not the primary borrower
+/// * `InvalidAmount` — co-borrower is the same as primary borrower
+pub fn add_co_borrower(
+    env: Env,
+    borrower: Address,
+    co_borrower: Address,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    if borrower == co_borrower {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let mut loan = get_active_loan_record(&env, &borrower)?;
+
+    // Check if co-borrower is already in the list
+    for cb in loan.co_borrowers.iter() {
+        if cb == co_borrower {
+            return Err(ContractError::DuplicateVouch);
+        }
+    }
+
+    loan.co_borrowers.push_back(co_borrower.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(loan.id), &loan);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("coborrow")),
+        (borrower, co_borrower),
+    );
+
+    Ok(())
+}
+
+/// Refinance an existing loan with new terms.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - Address of the borrower (must sign)
+/// * `new_amount` - New loan amount in stroops
+/// * `new_threshold` - New minimum stake threshold in stroops
+/// * `new_token` - Token contract address for the new loan
+///
+/// # Errors
+/// * `NoActiveLoan` — borrower has no active loan
+/// * `UnauthorizedCaller` — caller is not the borrower
+/// * `InvalidAmount` — new_amount or new_threshold is not positive
+/// * `LoanBelowMinAmount` — new_amount is below minimum
+/// * `LoanExceedsMaxAmount` — new_amount exceeds maximum
+/// * `InsufficientFunds` — contract has insufficient balance or total stake below threshold
+/// * `InvalidToken` — token is not allowed
+/// * `ContractPaused` — contract is paused
+pub fn refinance_loan(
+    env: Env,
+    borrower: Address,
+    new_amount: i128,
+    new_threshold: i128,
+    new_token: Address,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    let mut old_loan = get_active_loan_record(&env, &borrower)?;
+
+    if borrower != old_loan.borrower {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    if new_amount <= 0 || new_threshold <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let token_client = require_allowed_token(&env, &new_token)?;
+    let cfg = config(&env);
+
+    if new_amount < cfg.min_loan_amount {
+        return Err(ContractError::LoanBelowMinAmount);
+    }
+
+    let max_loan_amount: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::MaxLoanAmount)
+        .unwrap_or(0);
+    if max_loan_amount > 0 && new_amount > max_loan_amount {
+        return Err(ContractError::LoanExceedsMaxAmount);
+    }
+
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let mut token_vouches: Vec<VouchRecord> = Vec::new(&env);
+    for v in vouches.iter() {
+        if v.token == new_token {
+            token_vouches.push_back(v);
+        }
+    }
+
+    let mut total_stake: i128 = 0;
+    for v in token_vouches.iter() {
+        total_stake = total_stake
+            .checked_add(v.stake)
+            .ok_or(ContractError::StakeOverflow)?;
+    }
+    if total_stake < new_threshold {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
+
+    let contract_balance = token_client.balance(&env.current_contract_address());
+    if contract_balance < new_amount {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    // Repay old loan with new loan proceeds
+    let old_token = soroban_sdk::token::Client::new(&env, &old_loan.token_address);
+    let old_total_owed = old_loan.amount + old_loan.total_yield;
+    let old_outstanding = old_total_owed - old_loan.amount_repaid;
+
+    old_token.transfer(
+        &env.current_contract_address(),
+        &env.current_contract_address(),
+        &old_outstanding,
+    );
+
+    old_loan.status = LoanStatus::Repaid;
+    old_loan.repayment_timestamp = Some(env.ledger().timestamp());
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(old_loan.id), &old_loan);
+
+    // Create new loan record
+    let now = env.ledger().timestamp();
+    let deadline = now + cfg.loan_duration;
+    let loan_id = next_loan_id(&env);
+    let dynamic_yield_bps = calculate_dynamic_yield(&env, &borrower);
+    let total_yield = new_amount * dynamic_yield_bps / 10_000;
+
+    env.storage().persistent().set(
+        &DataKey::Loan(loan_id),
+        &LoanRecord {
+            id: loan_id,
+            borrower: borrower.clone(),
+            co_borrowers: Vec::new(&env),
+            amount: new_amount,
+            amount_repaid: 0,
+            total_yield,
+            status: LoanStatus::Active,
+            created_at: now,
+            disbursement_timestamp: now,
+            repayment_timestamp: None,
+            deadline,
+            loan_purpose: soroban_sdk::String::from_slice(&env, "refinance"),
+            token_address: new_token.clone(),
+        },
+    );
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveLoan(borrower.clone()), &loan_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::LatestLoan(borrower.clone()), &loan_id);
+
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LoanCount(borrower.clone()))
+        .unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&DataKey::LoanCount(borrower.clone()), &(count + 1));
+
+    token_client.transfer(&env.current_contract_address(), &borrower, &new_amount);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("refinance")),
+        (borrower.clone(), new_amount, deadline, new_token),
+    );
+
+    Ok(())
+}
+
+/// Deposit collateral for a borrower. Required for high-risk borrowers (multiple defaults).
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - Address of the borrower (must sign)
+/// * `amount` - Collateral amount in stroops
+/// * `token` - Token contract address for collateral
+///
+/// # Errors
+/// * `InvalidAmount` — amount is not positive
+/// * `ContractPaused` — contract is paused
+pub fn deposit_collateral(
+    env: Env,
+    borrower: Address,
+    amount: i128,
+    token: Address,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let token_client = require_allowed_token(&env, &token)?;
+
+    let current_collateral: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::BorrowerCollateral(borrower.clone()))
+        .unwrap_or(0);
+
+    let new_collateral = current_collateral
+        .checked_add(amount)
+        .ok_or(ContractError::StakeOverflow)?;
+
+    token_client.transfer(&borrower, &env.current_contract_address(), &amount);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::BorrowerCollateral(borrower.clone()), &new_collateral);
+
+    env.events().publish(
+        (symbol_short!("collateral"), symbol_short!("deposit")),
+        (borrower, amount),
+    );
+
+    Ok(())
+}
+
+/// Get the collateral amount deposited by a borrower.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - Address of the borrower
+///
+/// # Returns
+/// * `i128` - Collateral amount in stroops
+pub fn get_borrower_collateral(env: Env, borrower: Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BorrowerCollateral(borrower))
+        .unwrap_or(0)
+}
+
 /// Mint a reputation NFT for a borrower who has successfully repaid at least one loan.
 ///
 /// # Errors
