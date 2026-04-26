@@ -104,6 +104,8 @@ pub enum DataKey {
     MaxVouchersPerBorrower, // u32 maximum number of vouchers per borrower (default 50)
     InsurancePool,           // i128 total funds contributed to the insurance pool
     InsuranceClaim(u64),     // loan_id → Address of voucher who claimed (prevents double-claim)
+    VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
+    VouchDelegation(Address, Address, Address), // (borrower, original_voucher, token) → Address (delegate)
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -193,6 +195,23 @@ pub struct VouchRecord {
     pub vouch_timestamp: u64,
     /// Token contract address that this stake is denominated in.
     pub token: Address,
+    /// Optional expiry timestamp; if set and current time > expiry, vouch is expired.
+    pub expiry_timestamp: Option<u64>,
+    /// Optional delegate address; if set, this address can manage the vouch.
+    pub delegate: Option<Address>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchHistoryEntry {
+    /// Timestamp of the modification.
+    pub timestamp: u64,
+    /// Type of modification: "created", "increased", "decreased", "withdrawn", "delegated".
+    pub modification_type: soroban_sdk::String,
+    /// Stake amount involved in the modification, in stroops.
+    pub stake_amount: i128,
+    /// Optional delegate address if this is a delegation event.
+    pub delegate: Option<Address>,
 }
 
 #[contracttype]
