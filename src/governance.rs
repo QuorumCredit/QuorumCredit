@@ -4,7 +4,7 @@ use crate::helpers::{
 };
 use crate::types::{
     DataKey, LoanStatus, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord,
-    BPS_DENOMINATOR,
+    BPS_DENOMINATOR, SlashAppealRecord,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -203,6 +203,14 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     }
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
+    // Issue #551: Calculate total stake for proportional slashing
+    let mut total_loan_token_stake: i128 = 0;
+    for v in vouches.iter() {
+        if v.token == loan.token_address {
+            total_loan_token_stake += v.stake;
+        }
+    }
+
     let mut total_slashed: i128 = 0;
     let mut remaining_vouches: Vec<VouchRecord> = Vec::new(env);
 
@@ -212,7 +220,16 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
             remaining_vouches.push_back(v);
             continue;
         }
-        let slash_amount = v.stake * cfg.slash_bps / BPS_DENOMINATOR;
+        
+        // Issue #551: Proportional slashing based on voucher's share of total stake
+        let voucher_share_bps = if total_loan_token_stake > 0 {
+            (v.stake * BPS_DENOMINATOR) / total_loan_token_stake
+        } else {
+            0
+        };
+        
+        // Slash amount is proportional to the voucher's share of the loan
+        let slash_amount = loan.amount * voucher_share_bps / BPS_DENOMINATOR * cfg.slash_bps / BPS_DENOMINATOR;
         let remaining = v.stake - slash_amount;
         total_slashed += slash_amount;
 
@@ -423,4 +440,141 @@ pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockPropo
     env.storage()
         .instance()
         .get(&DataKey::Timelock(proposal_id))
+}
+
+/// Issue #552: Appeal a slash decision. Only the slashed voucher can appeal.
+pub fn appeal_slash(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    evidence_hash: soroban_sdk::BytesN<32>,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    // Verify the loan was defaulted
+    let loan = get_latest_loan_record(&env, &borrower)
+        .ok_or(ContractError::NoActiveLoan)?;
+    if loan.status != LoanStatus::Defaulted {
+        return Err(ContractError::NoActiveLoan);
+    }
+
+    // Create appeal record
+    let appeal = SlashAppealRecord {
+        borrower: borrower.clone(),
+        voucher: voucher.clone(),
+        evidence_hash,
+        appeal_timestamp: env.ledger().timestamp(),
+        approved: None,
+        admin_votes: Vec::new(&env),
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()), &appeal);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("appeal")),
+        (voucher, borrower),
+    );
+
+    Ok(())
+}
+
+/// Issue #552: Admin votes on a slash appeal.
+pub fn vote_on_slash_appeal(
+    env: Env,
+    admin_signers: Vec<Address>,
+    borrower: Address,
+    voucher: Address,
+    approve: bool,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    // Verify admin approval
+    crate::helpers::require_admin_approval(&env, &admin_signers);
+
+    let mut appeal: SlashAppealRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    if appeal.approved.is_some() {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    appeal.approved = Some(approve);
+    appeal.admin_votes = admin_signers.clone();
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()), &appeal);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("appeal_vote")),
+        (borrower, voucher, approve),
+    );
+
+    Ok(())
+}
+
+/// Issue #552: Execute a slash appeal if approved. Reverses the slash.
+pub fn execute_slash_appeal(
+    env: Env,
+    borrower: Address,
+    voucher: Address,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let appeal: SlashAppealRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    if appeal.approved != Some(true) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    // Get the loan to find the token
+    let loan = get_latest_loan_record(&env, &borrower)
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let token_client = soroban_sdk::token::Client::new(&env, &loan.token_address);
+
+    // Restore the voucher's stake (50% of original, since 50% was slashed)
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let original_stake = vouches
+        .iter()
+        .find(|v| v.voucher == voucher && v.token == loan.token_address)
+        .map(|v| v.stake)
+        .unwrap_or(0);
+
+    // Restore 50% of the original stake (the slashed amount)
+    let restored_amount = original_stake / 2;
+    if restored_amount > 0 {
+        token_client.transfer(
+            &env.current_contract_address(),
+            &voucher,
+            &restored_amount,
+        );
+    }
+
+    // Remove the appeal record
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()));
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("appeal_executed")),
+        (borrower, voucher),
+    );
+
+    Ok(())
 }

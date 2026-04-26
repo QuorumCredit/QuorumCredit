@@ -289,3 +289,32 @@ pub struct WithdrawalRequest {
     pub token: Address,
     pub requested_at: u64,
 }
+
+#[contracttype]
+#[derive(Clone)]
+pub struct YieldDistributionEntry {
+    pub voucher: Address,
+    pub yield_amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct SlashAppealRecord {
+    pub borrower: Address,
+    pub voucher: Address,
+    pub evidence_hash: soroban_sdk::BytesN<32>,
+    pub appeal_timestamp: u64,
+    pub approved: Option<bool>,
+    pub admin_votes: Vec<Address>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminActionProposal {
+    pub id: u64,
+    pub action_type: soroban_sdk::String,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u64,
+    pub executed: bool,
+}

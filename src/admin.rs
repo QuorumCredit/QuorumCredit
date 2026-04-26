@@ -1,5 +1,5 @@
 use crate::helpers::{config, require_admin_approval, require_valid_token, validate_admin_config};
-use crate::types::{Config, DataKey};
+use crate::types::{Config, DataKey, AdminActionProposal};
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 use crate::errors::ContractError;
 
@@ -548,4 +548,116 @@ pub fn get_prepayment_penalty_bps(env: Env) -> u32 {
         .instance()
         .get(&DataKey::PrepaymentPenaltyBps)
         .unwrap_or(0)
+}
+
+/// Issue #554: Propose an admin action (e.g., pause, slash, config change).
+pub fn propose_admin_action(
+    env: Env,
+    proposer: Address,
+    action_type: soroban_sdk::String,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+
+    let action_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminActionCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("action ID overflow");
+
+    let proposal = AdminActionProposal {
+        id: action_id,
+        action_type,
+        proposer: proposer.clone(),
+        approvals: Vec::new(&env),
+        created_at: env.ledger().timestamp(),
+        executed: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminAction(action_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionCounter, &action_id);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("propose")),
+        (action_id, proposer),
+    );
+
+    Ok(action_id)
+}
+
+/// Issue #554: Approve an admin action. Requires admin signature.
+pub fn approve_admin_action(
+    env: Env,
+    admin: Address,
+    action_id: u64,
+) -> Result<(), ContractError> {
+    admin.require_auth();
+
+    let cfg = config(&env);
+    if !cfg.admins.iter().any(|a| a == admin) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    let mut proposal: AdminActionProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminAction(action_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    if proposal.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    // Prevent double-approval
+    if proposal.approvals.iter().any(|a| a == admin) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    proposal.approvals.push_back(admin.clone());
+
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminAction(action_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("approve")),
+        (action_id, admin),
+    );
+
+    Ok(())
+}
+
+/// Issue #554: Execute an admin action if threshold is met.
+pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
+    let mut proposal: AdminActionProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminAction(action_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    if proposal.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    let cfg = config(&env);
+    if proposal.approvals.len() < cfg.admin_threshold {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    proposal.executed = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminAction(action_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("execute")),
+        (action_id, proposal.action_type.clone()),
+    );
+
+    Ok(())
 }

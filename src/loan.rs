@@ -340,6 +340,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         // Issue #542: Add prepayment penalty to yield distribution
         let available_for_yield = loan.total_yield + prepayment_penalty;
         let mut total_distributed: i128 = 0;
+        
+        // Issue #553: Track yield distribution
+        let mut yield_distribution: Vec<crate::types::YieldDistributionEntry> = Vec::new(&env);
 
         for v in vouches.iter() {
             if v.token != loan.token_address {
@@ -356,12 +359,23 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 panic_with_error!(&env, ContractError::InsufficientFunds);
             }
 
+            // Issue #553: Record yield distribution
+            yield_distribution.push_back(crate::types::YieldDistributionEntry {
+                voucher: v.voucher.clone(),
+                yield_amount: voucher_yield,
+            });
+
             loan_token.transfer(
                 &env.current_contract_address(),
                 &v.voucher,
                 &(v.stake + voucher_yield),
             );
         }
+
+        // Issue #553: Store yield distribution for this loan
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldDistribution(loan.id), &yield_distribution);
 
         loan.status = LoanStatus::Repaid;
         loan.repayment_timestamp = Some(env.ledger().timestamp());
