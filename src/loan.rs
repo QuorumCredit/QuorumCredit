@@ -265,6 +265,22 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
 
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
 
+    // Issue #542: Calculate prepayment penalty if repaying early
+    let cfg = config(&env);
+    let now = env.ledger().timestamp();
+    let time_remaining = if loan.deadline > now {
+        loan.deadline - now
+    } else {
+        0
+    };
+    
+    let mut prepayment_penalty: i128 = 0;
+    if time_remaining > 0 && cfg.prepayment_penalty_bps > 0 {
+        // Penalty is calculated on the remaining principal
+        let remaining_principal = loan.amount - (loan.amount_repaid * loan.amount / total_owed);
+        prepayment_penalty = remaining_principal * cfg.prepayment_penalty_bps as i128 / 10_000;
+    }
+
     token.transfer(&borrower, &env.current_contract_address(), &payment);
     loan.amount_repaid += payment;
     let fully_repaid = loan.amount_repaid >= total_owed;
@@ -309,7 +325,8 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         }
 
         // Issue 112: Ensure yield distribution respects available funds (excluding slash balance)
-        let available_for_yield = loan.total_yield;
+        // Issue #542: Add prepayment penalty to yield distribution
+        let available_for_yield = loan.total_yield + prepayment_penalty;
         let mut total_distributed: i128 = 0;
 
         for v in vouches.iter() {
