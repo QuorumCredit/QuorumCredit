@@ -57,6 +57,7 @@ impl QuorumCreditContract {
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
+                min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
             },
         );
 
@@ -195,6 +196,87 @@ impl QuorumCreditContract {
         borrower: Address,
     ) -> Result<(), ContractError> {
         vouch::transfer_vouch(env, from, to, borrower)
+    }
+
+    /// Issue #532: Delegate vouch management to another address.
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the original voucher
+    /// * `borrower` - Address of the borrower
+    /// * `delegate` - Address to delegate vouch management to
+    /// * `token` - Address of the token contract
+    ///
+    /// # Panics
+    /// * If voucher is the same as delegate
+    /// * If vouch does not exist
+    /// * If contract is paused
+    pub fn delegate_vouch(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        delegate: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        vouch::delegate_vouch(env, voucher, borrower, delegate, token)
+    }
+
+    /// Issue #532: Revoke delegation of a vouch.
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the original voucher
+    /// * `borrower` - Address of the borrower
+    /// * `token` - Address of the token contract
+    ///
+    /// # Panics
+    /// * If vouch does not exist
+    /// * If contract is paused
+    pub fn revoke_delegation(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        vouch::revoke_delegation(env, voucher, borrower, token)
+    }
+
+    /// Issue #533: Set expiry timestamp for a vouch.
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the voucher
+    /// * `borrower` - Address of the borrower
+    /// * `expiry_timestamp` - Timestamp when the vouch expires
+    /// * `token` - Address of the token contract
+    ///
+    /// # Panics
+    /// * If expiry_timestamp is in the past
+    /// * If vouch does not exist
+    /// * If contract is paused
+    pub fn set_vouch_expiry(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        expiry_timestamp: u64,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        vouch::set_vouch_expiry(env, voucher, borrower, expiry_timestamp, token)
+    }
+
+    /// Issue #534: Get vouch modification history for auditing.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower
+    /// * `voucher` - Address of the voucher
+    /// * `token` - Address of the token contract
+    ///
+    /// # Returns
+    /// * `Vec<VouchHistoryEntry>` - History of modifications
+    pub fn get_vouch_history(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+    ) -> Vec<VouchHistoryEntry> {
+        vouch::get_vouch_history(env, borrower, voucher, token)
     }
 
     // ── Loan ──────────────────────────────────────────────────────────────────
@@ -719,14 +801,6 @@ impl QuorumCreditContract {
     ///
     /// # Returns
     /// * `Vec<Address>` - Vector of admin addresses
-    pub fn get_admins(env: Env) -> Vec<Address> {
-        admin::get_admins(env)
-    }
-
-    /// Get the admin threshold (minimum number of admins required for approval).
-    ///
-    /// # Returns
-    /// * `u32` - The admin threshold
     pub fn get_admin_threshold(env: Env) -> u32 {
         admin::get_admin_threshold(env)
     }
@@ -923,14 +997,6 @@ impl QuorumCreditContract {
         admin::get_protocol_fee(env)
     }
 
-    /// Get the fee treasury address.
-    ///
-    /// # Returns
-    /// * `Option<Address>` - The fee treasury address if set, None otherwise
-    pub fn get_fee_treasury(env: Env) -> Option<Address> {
-        admin::get_fee_treasury(env)
-    }
-
     /// Check if a borrower is blacklisted.
     ///
     /// # Arguments
@@ -974,16 +1040,6 @@ impl QuorumCreditContract {
         admin::get_max_loan_to_stake_ratio(env)
     }
 
-    /// Get the current protocol configuration.
-    ///
-    /// # Returns
-    /// * `Config` - The configuration struct
-    pub fn get_config(env: Env) -> Config {
-        admin::get_config(env)
-    }
-
-    /// Propose a slash action with a confirmation window (timelock delay).
-    ///
     /// Get the maximum number of vouchers per borrower.
     ///
     /// # Returns
@@ -1112,5 +1168,42 @@ impl QuorumCreditContract {
     /// Get the current insurance pool balance in stroops.
     pub fn get_insurance_pool_balance(env: Env) -> i128 {
         insurance::get_insurance_pool_balance(env)
+    }
+
+    // ── Issue #535: Minimum Vouch Age ────────────────────────────────────────
+
+    /// Request vouch withdrawal with timelock (Issue #537).
+    pub fn request_vouch_withdrawal(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        vouch::request_vouch_withdrawal(env, voucher, borrower, token)
+    }
+
+    /// Execute vouch withdrawal after timelock expires (Issue #537).
+    pub fn execute_vouch_withdrawal(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        vouch::execute_vouch_withdrawal(env, voucher, borrower, token)
+    }
+
+    /// Get slash audit record for a borrower (Issue #536).
+    pub fn get_slash_audit(env: Env, borrower: Address) -> Option<crate::types::SlashAuditRecord> {
+        loan::get_slash_audit(env, borrower)
+    }
+
+    /// Repay loan with partial payment support (Issue #538).
+    pub fn repay_partial(
+        env: Env,
+        borrower: Address,
+        payment: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        loan::repay_partial(env, borrower, payment, token)
     }
 }

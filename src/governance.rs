@@ -256,6 +256,17 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         (borrower.clone(), total_slashed),
     );
 
+    // Log slash audit record (Issue #536)
+    env.storage().persistent().set(
+        &DataKey::SlashAudit(borrower.clone()),
+        &crate::types::SlashAuditRecord {
+            borrower: borrower.clone(),
+            loan_amount: loan.amount,
+            total_slashed,
+            slash_timestamp: env.ledger().timestamp(),
+        },
+    );
+
     Ok(())
 }
 

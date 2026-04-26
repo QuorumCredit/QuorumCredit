@@ -72,9 +72,6 @@ mod insurance_test;
 mod dynamic_yield_test;
 #[cfg(test)]
 mod multi_token_vouch_test;
->>>>>>> origin/main
-
-// ── Storage Keys ──────────────────────────────────────────────────────────────
 
 use helpers::{require_valid_token, validate_admin_config};
 use reputation::ReputationNftExternalClient;
@@ -1123,3 +1120,5 @@ impl QuorumCreditContract {
         governance::execute_slash_vote(env, borrower)
     }
 }
+
+

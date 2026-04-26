@@ -6,7 +6,7 @@ use crate::helpers::{
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
     DataKey, LoanRecord, LoanStatus, VouchRecord, BPS_DENOMINATOR, DEFAULT_REFERRAL_BONUS_BPS,
-    MIN_VOUCH_AGE,
+    AmortizationEntry,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -162,8 +162,9 @@ pub fn request_loan(
     }
 
     let now = env.ledger().timestamp();
+    let min_vouch_age = cfg.min_vouch_age_secs;
     for v in token_vouches.iter() {
-        if now < v.vouch_timestamp + MIN_VOUCH_AGE {
+        if now < v.vouch_timestamp + min_vouch_age {
             return Err(ContractError::VouchTooRecent);
         }
     }
@@ -199,6 +200,7 @@ pub fn request_loan(
             deadline,
             loan_purpose,
             token_address: token_addr.clone(),
+            amortization_schedule: Vec::new(&env),
         },
     );
     env.storage()
@@ -541,228 +543,76 @@ pub fn mint_reputation_nft(env: Env, borrower: Address) -> Result<(), ContractEr
     Ok(())
 }
 
-/// Issue #539: Refinance an existing loan with new terms.
-/// Repays the old loan with proceeds from the new loan.
-pub fn refinance_loan(
-    env: Env,
-    borrower: Address,
-    new_amount: i128,
-    new_threshold: i128,
-    new_token: Address,
-) -> Result<(), ContractError> {
-    borrower.require_auth();
-    require_not_paused(&env)?;
-
-    // Get the active loan to refinance
-    let old_loan = get_active_loan_record(&env, &borrower)?;
-    if old_loan.status != LoanStatus::Active {
-        return Err(ContractError::NoActiveLoan);
-    }
-
-    let cfg = config(&env);
-    
-    // Validate new loan parameters
-    if new_amount < cfg.min_loan_amount {
-        return Err(ContractError::LoanBelowMinAmount);
-    }
-    assert!(new_threshold > 0, "threshold must be greater than zero");
-
-    // Validate token is allowed
-    let new_token_client = require_allowed_token(&env, &new_token)?;
-
-    // Check vouches for new token
-    let vouches: Vec<VouchRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Vouches(borrower.clone()))
-        .unwrap_or(Vec::new(&env));
-
-    let mut token_vouches: Vec<VouchRecord> = Vec::new(&env);
-    for v in vouches.iter() {
-        if v.token == new_token {
-            token_vouches.push_back(v);
-        }
-    }
-
-    let mut total_stake: i128 = 0;
-    for v in token_vouches.iter() {
-        total_stake = total_stake
-            .checked_add(v.stake)
-            .ok_or(ContractError::StakeOverflow)?;
-    }
-    if total_stake < new_threshold {
-        panic_with_error!(&env, ContractError::InsufficientFunds);
-    }
-
-    // Check contract has sufficient funds for new loan
-    let contract_balance = new_token_client.balance(&env.current_contract_address());
-    if contract_balance < new_amount {
-        return Err(ContractError::InsufficientFunds);
-    }
-
-    // Calculate amount needed to repay old loan
-    let old_token_client = soroban_sdk::token::Client::new(&env, &old_loan.token_address);
-    let total_owed = old_loan.amount + old_loan.total_yield;
-    let outstanding = total_owed - old_loan.amount_repaid;
-
-    // If new loan is in different token, we need to handle conversion
-    // For now, we require new_amount >= outstanding to cover old loan
-    if new_token != old_loan.token_address {
-        assert!(
-            new_amount >= outstanding,
-            "new loan amount must cover outstanding balance when changing tokens"
-        );
-    } else {
-        assert!(
-            new_amount >= outstanding,
-            "new loan amount must be at least the outstanding balance"
-        );
-    }
-
-    // Repay old loan with new loan proceeds
-    old_token_client.transfer(&env.current_contract_address(), &borrower, &outstanding);
-
-    // Mark old loan as repaid
-    let mut old_loan_updated = old_loan.clone();
-    old_loan_updated.status = LoanStatus::Repaid;
-    old_loan_updated.repayment_timestamp = Some(env.ledger().timestamp());
-    old_loan_updated.amount_repaid = total_owed;
+/// Get slash audit record for a borrower.
+pub fn get_slash_audit(env: Env, borrower: Address) -> Option<crate::types::SlashAuditRecord> {
     env.storage()
         .persistent()
-        .set(&DataKey::Loan(old_loan.id), &old_loan_updated);
-
-    // Create new loan record
-    let now = env.ledger().timestamp();
-    let deadline = now + cfg.loan_duration;
-    let loan_id = next_loan_id(&env);
-    let total_yield = new_amount * cfg.yield_bps / 10_000;
-
-    env.storage().persistent().set(
-        &DataKey::Loan(loan_id),
-        &LoanRecord {
-            id: loan_id,
-            borrower: borrower.clone(),
-            co_borrowers: Vec::new(&env),
-            amount: new_amount,
-            amount_repaid: 0,
-            total_yield,
-            status: LoanStatus::Active,
-            created_at: now,
-            disbursement_timestamp: now,
-            repayment_timestamp: None,
-            deadline,
-            loan_purpose: soroban_sdk::String::from_slice(&env, "refinanced"),
-            token_address: new_token.clone(),
-            collateral_amount: 0,
-            is_refinance: true,
-            original_loan_id: Some(old_loan.id),
-        },
-    );
-
-    env.storage()
-        .persistent()
-        .set(&DataKey::ActiveLoan(borrower.clone()), &loan_id);
-    env.storage()
-        .persistent()
-        .set(&DataKey::LatestLoan(borrower.clone()), &loan_id);
-
-    // Disburse new loan to borrower
-    new_token_client.transfer(&env.current_contract_address(), &borrower, &new_amount);
-
-    env.events().publish(
-        (symbol_short!("loan"), symbol_short!("refinanced")),
-        (borrower.clone(), new_amount, old_loan.id, loan_id),
-    );
-
-    Ok(())
+        .get(&DataKey::SlashAudit(borrower))
 }
 
-/// Issue #540: Add a co-borrower to an active loan.
-/// Only the primary borrower can add co-borrowers.
-pub fn add_co_borrower(
-    env: Env,
-    loan_id: u64,
-    co_borrower: Address,
-) -> Result<(), ContractError> {
-    let mut loan: LoanRecord = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Loan(loan_id))
-        .ok_or(ContractError::NoActiveLoan)?;
-
-    loan.borrower.require_auth();
-
-    if loan.status != LoanStatus::Active {
-        return Err(ContractError::NoActiveLoan);
-    }
-
-    // Check co-borrower is not already in the list
-    for cb in loan.co_borrowers.iter() {
-        if cb == co_borrower {
-            return Err(ContractError::DuplicateVouch);
-        }
-    }
-
-    loan.co_borrowers.push_back(co_borrower.clone());
-    env.storage()
-        .persistent()
-        .set(&DataKey::Loan(loan_id), &loan);
-
-    env.events().publish(
-        (symbol_short!("loan"), symbol_short!("co_borrower_added")),
-        (loan_id, co_borrower),
-    );
-
-    Ok(())
-}
-
-/// Issue #541: Deposit collateral for a borrower.
-/// Required if borrower has exceeded default threshold.
-pub fn deposit_collateral(
+/// Repay loan with partial payment support.
+pub fn repay_partial(
     env: Env,
     borrower: Address,
-    amount: i128,
+    payment: i128,
     token: Address,
 ) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_paused(&env)?;
 
-    assert!(amount > 0, "collateral amount must be positive");
+    let mut loan = get_active_loan_record(&env, &borrower)?;
 
-    let token_client = require_allowed_token(&env, &token)?;
+    if borrower != loan.borrower {
+        return Err(ContractError::UnauthorizedCaller);
+    }
 
-    // Transfer collateral from borrower to contract
-    token_client.transfer(&borrower, &env.current_contract_address(), &amount);
+    for cb in loan.co_borrowers.iter() {
+        cb.require_auth();
+    }
 
-    // Update collateral storage
-    let current_collateral: i128 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::BorrowerCollateral(borrower.clone()))
-        .unwrap_or(0);
+    if payment <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let outstanding = loan.amount + loan.total_yield - loan.amount_repaid;
+    if payment > outstanding {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let loan_token = require_allowed_token(&env, &token)?;
+    loan_token.transfer(&env.current_contract_address(), &borrower, &payment);
+
+    loan.amount_repaid = loan.amount_repaid + payment;
+
+    if loan.amount_repaid >= loan.amount + loan.total_yield {
+        loan.status = LoanStatus::Repaid;
+        loan.repayment_timestamp = Some(env.ledger().timestamp());
+
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RepaymentCount(borrower.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RepaymentCount(borrower.clone()), &(count + 1));
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveLoan(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
+    }
 
     env.storage()
         .persistent()
-        .set(
-            &DataKey::BorrowerCollateral(borrower.clone()),
-            &(current_collateral + amount),
-        );
-    env.storage()
-        .persistent()
-        .set(&DataKey::BorrowerCollateralToken(borrower.clone()), &token);
+        .set(&DataKey::Loan(loan.id), &loan);
 
     env.events().publish(
-        (symbol_short!("collateral"), symbol_short!("deposited")),
-        (borrower, amount, token),
+        (symbol_short!("loan"), symbol_short!("partial_repay")),
+        (borrower.clone(), payment),
     );
 
     Ok(())
-}
-
-/// Issue #541: Get collateral amount for a borrower.
-pub fn get_collateral(env: Env, borrower: Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::BorrowerCollateral(borrower))
-        .unwrap_or(0)
 }

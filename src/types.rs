@@ -33,6 +33,8 @@ pub const DEFAULT_MIN_YIELD_STAKE: i128 = 50;
 pub const DEFAULT_REFERRAL_BONUS_BPS: u32 = 100; // 1% of loan amount
 /// Minimum age of a vouch before it can be used for a loan, in seconds (60 = 1 minute).
 pub const MIN_VOUCH_AGE: u64 = 60; // 1 minute
+/// Default minimum vouch age before loan eligibility, in seconds (24 hours).
+pub const DEFAULT_MIN_VOUCH_AGE_SECS: u64 = 24 * 60 * 60;
 /// Default maximum number of distinct vouchers per borrower.
 pub const DEFAULT_MAX_VOUCHERS: u32 = 100;
 /// Default minimum loan amount, in stroops (100,000 stroops = 0.01 XLM).
@@ -50,6 +52,8 @@ pub const DEFAULT_MAX_VOUCHERS_PER_BORROWER: u32 = 50;
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 /// Maximum window after `eta` within which a timelocked action must be executed, in seconds (72 hours).
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+/// Withdrawal request timelock delay, in seconds (24 hours).
+pub const WITHDRAWAL_TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
 
@@ -106,6 +110,8 @@ pub enum DataKey {
     BorrowerCollateralToken(Address), // borrower → Address token used for collateral
     InsurancePool,           // i128 total funds contributed to the insurance pool
     InsuranceClaim(u64),     // loan_id → Address of voucher who claimed (prevents double-claim)
+    VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
+    VouchDelegation(Address, Address, Address), // (borrower, original_voucher, token) → Address (delegate)
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -152,12 +158,18 @@ pub struct Config {
     pub max_loan_to_stake_ratio: u32,
     /// Grace period after loan deadline before the loan can be slashed, in seconds.
     pub grace_period: u64,
-    pub prepayment_penalty_bps: u32,    // Issue #542: penalty for early repayment
-    pub collateral_required: bool,      // Issue #541: require collateral for high-risk borrowers
-    pub default_threshold_for_collateral: u32, // Issue #541: default count threshold
+    /// Minimum age of a vouch before it can be used for loan eligibility, in seconds (default 24 hours).
+    pub min_vouch_age_secs: u64,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AmortizationEntry {
+    pub due_date: u64,
+    pub payment_due: i128,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -186,12 +198,8 @@ pub struct LoanRecord {
     pub loan_purpose: soroban_sdk::String,
     /// Address of the token contract used for this loan.
     pub token_address: Address,
-    /// Issue #541: collateral deposited by borrower
-    pub collateral_amount: i128,
-    /// Issue #539: true if this is a refinanced loan
-    pub is_refinance: bool,
-    /// Issue #539: ID of the loan being refinanced
-    pub original_loan_id: Option<u64>,
+    /// Amortization schedule for partial repayments.
+    pub amortization_schedule: Vec<AmortizationEntry>,
 }
 
 #[contracttype]
@@ -204,6 +212,23 @@ pub struct VouchRecord {
     pub vouch_timestamp: u64,
     /// Token contract address that this stake is denominated in.
     pub token: Address,
+    /// Optional expiry timestamp; if set and current time > expiry, vouch is expired.
+    pub expiry_timestamp: Option<u64>,
+    /// Optional delegate address; if set, this address can manage the vouch.
+    pub delegate: Option<Address>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchHistoryEntry {
+    /// Timestamp of the modification.
+    pub timestamp: u64,
+    /// Type of modification: "created", "increased", "decreased", "withdrawn", "delegated".
+    pub modification_type: soroban_sdk::String,
+    /// Stake amount involved in the modification, in stroops.
+    pub stake_amount: i128,
+    /// Optional delegate address if this is a delegation event.
+    pub delegate: Option<Address>,
 }
 
 #[contracttype]
@@ -236,4 +261,22 @@ pub struct TimelockProposal {
 pub enum TimelockAction {
     Slash(Address),
     SetConfig(Config),
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct SlashAuditRecord {
+    pub borrower: Address,
+    pub loan_amount: i128,
+    pub total_slashed: i128,
+    pub slash_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct WithdrawalRequest {
+    pub voucher: Address,
+    pub borrower: Address,
+    pub token: Address,
+    pub requested_at: u64,
 }
