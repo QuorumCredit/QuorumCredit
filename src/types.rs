@@ -106,6 +106,8 @@ pub enum DataKey {
     ReferredBy(Address), // borrower → Address of referrer
     ReferralBonusBps, // u32 referral bonus in basis points (default 100 = 1%)
     MaxVouchersPerBorrower, // u32 maximum number of vouchers per borrower (default 50)
+    BorrowerCollateral(Address), // borrower → i128 collateral amount deposited
+    BorrowerCollateralToken(Address), // borrower → Address token used for collateral
     InsurancePool,           // i128 total funds contributed to the insurance pool
     InsuranceClaim(u64),     // loan_id → Address of voucher who claimed (prevents double-claim)
     VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
