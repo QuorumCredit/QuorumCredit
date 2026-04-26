@@ -112,6 +112,11 @@ pub enum DataKey {
     InsuranceClaim(u64),     // loan_id → Address of voucher who claimed (prevents double-claim)
     VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
     VouchDelegation(Address, Address, Address), // (borrower, original_voucher, token) → Address (delegate)
+    YieldDistribution(u64), // loan_id → Vec<YieldDistributionEntry>
+    SlashAppeal(Address, Address), // (borrower, voucher) → SlashAppealRecord
+    AdminAction(u64), // action_id → AdminActionProposal
+    AdminActionCounter, // u64 monotonically increasing action ID
+    PrepaymentPenaltyBps, // u32 prepayment penalty in basis points
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -279,4 +284,33 @@ pub struct WithdrawalRequest {
     pub borrower: Address,
     pub token: Address,
     pub requested_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct YieldDistributionEntry {
+    pub voucher: Address,
+    pub yield_amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct SlashAppealRecord {
+    pub borrower: Address,
+    pub voucher: Address,
+    pub evidence_hash: soroban_sdk::BytesN<32>,
+    pub appeal_timestamp: u64,
+    pub approved: Option<bool>,
+    pub admin_votes: Vec<Address>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminActionProposal {
+    pub id: u64,
+    pub action_type: soroban_sdk::String,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u64,
+    pub executed: bool,
 }

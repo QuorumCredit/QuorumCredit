@@ -1303,4 +1303,70 @@ impl QuorumCreditContract {
     ) -> Result<(), ContractError> {
         loan::repay_partial(env, borrower, payment, token)
     }
+
+    /// Issue #553: Get yield distribution for a loan.
+    ///
+    /// # Arguments
+    /// * `loan_id` - The loan ID
+    ///
+    /// # Returns
+    /// * `Option<Vec<YieldDistributionEntry>>` - Vector of yield distribution entries if exists
+    pub fn get_yield_distribution(env: Env, loan_id: u64) -> Option<Vec<YieldDistributionEntry>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::YieldDistribution(loan_id))
+    }
+
+    /// Issue #552: Appeal a slash decision.
+    pub fn appeal_slash(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        governance::appeal_slash(env, voucher, borrower, evidence_hash)
+    }
+
+    /// Issue #552: Vote on a slash appeal (admin only).
+    pub fn vote_on_slash_appeal(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        voucher: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        governance::vote_on_slash_appeal(env, admin_signers, borrower, voucher, approve)
+    }
+
+    /// Issue #552: Execute a slash appeal if approved.
+    pub fn execute_slash_appeal(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+    ) -> Result<(), ContractError> {
+        governance::execute_slash_appeal(env, borrower, voucher)
+    }
+
+    /// Issue #554: Propose an admin action.
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        action_type: soroban_sdk::String,
+    ) -> Result<u64, ContractError> {
+        admin::propose_admin_action(env, proposer, action_type)
+    }
+
+    /// Issue #554: Approve an admin action.
+    pub fn approve_admin_action(
+        env: Env,
+        admin: Address,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::approve_admin_action(env, admin, action_id)
+    }
+
+    /// Issue #554: Execute an admin action if threshold is met.
+    pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
+        admin::execute_admin_action(env, action_id)
+    }
 }
