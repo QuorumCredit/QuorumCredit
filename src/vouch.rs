@@ -2,7 +2,7 @@ use crate::errors::ContractError;
 use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
-use crate::types::{DataKey, VouchRecord};
+use crate::types::{DataKey, VouchRecord, VouchHistoryEntry};
 use soroban_sdk::{panic_with_error, symbol_short, token, Address, Env, Vec};
 
 /// Cached instance-storage values read once per vouch call to reduce storage reads (#501).
@@ -163,19 +163,41 @@ fn commit_vouch(
         .persistent()
         .set(&DataKey::VoucherHistory(voucher.clone()), &history);
 
+    let timestamp = env.ledger().timestamp();
     vouches.push_back(VouchRecord {
         voucher: voucher.clone(),
         stake,
-        vouch_timestamp: env.ledger().timestamp(),
+        vouch_timestamp: timestamp,
         token: token.clone(),
+        expiry_timestamp: None,
+        delegate: None,
     });
     env.storage()
         .persistent()
         .set(&DataKey::Vouches(borrower.clone()), &vouches);
 
+    // Issue #534: Record vouch creation in modification history
+    let mut vouch_history: Vec<VouchHistoryEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()))
+        .unwrap_or(Vec::new(env));
+
+    vouch_history.push_back(VouchHistoryEntry {
+        timestamp,
+        modification_type: soroban_sdk::String::from_slice(env, "created"),
+        stake_amount: stake,
+        delegate: None,
+    });
+
+    env.storage().persistent().set(
+        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
+        &vouch_history,
+    );
+
     env.storage().persistent().set(
         &DataKey::LastVouchTimestamp(voucher.clone()),
-        &env.ledger().timestamp(),
+        &timestamp,
     );
 
     env.events().publish(
@@ -277,6 +299,7 @@ pub fn increase_stake(
     let mut vouch_rec = vouches.get(idx).unwrap();
     // Use the token stored on the vouch record.
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
+    let token = vouch_rec.token.clone();
 
     // Check for overflow before transferring tokens.
     vouch_rec.stake = vouch_rec
@@ -285,11 +308,31 @@ pub fn increase_stake(
         .ok_or(ContractError::StakeOverflow)?;
 
     token_client.transfer(&voucher, &env.current_contract_address(), &additional);
-    vouches.set(idx, vouch_rec);
+    vouches.set(idx, vouch_rec.clone());
 
     env.storage()
         .persistent()
         .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    // Issue #534: Record stake increase in modification history
+    let timestamp = env.ledger().timestamp();
+    let mut vouch_history: Vec<VouchHistoryEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    vouch_history.push_back(VouchHistoryEntry {
+        timestamp,
+        modification_type: soroban_sdk::String::from_slice(&env, "increased"),
+        stake_amount: additional,
+        delegate: None,
+    });
+
+    env.storage().persistent().set(
+        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
+        &vouch_history,
+    );
 
     // Issue #370: Emit event for stake increase
     env.events().publish(
@@ -336,6 +379,7 @@ pub fn decrease_stake(
     }
 
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
+    let token = vouch_rec.token.clone();
     vouch_rec.stake -= amount;
     if vouch_rec.stake == 0 {
         vouches.remove(idx);
@@ -354,6 +398,26 @@ pub fn decrease_stake(
     }
 
     token_client.transfer(&env.current_contract_address(), &voucher, &amount);
+
+    // Issue #534: Record stake decrease in modification history
+    let timestamp = env.ledger().timestamp();
+    let mut vouch_history: Vec<VouchHistoryEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    vouch_history.push_back(VouchHistoryEntry {
+        timestamp,
+        modification_type: soroban_sdk::String::from_slice(&env, "decreased"),
+        stake_amount: amount,
+        delegate: None,
+    });
+
+    env.storage().persistent().set(
+        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
+        &vouch_history,
+    );
 
     // Issue #371: Emit event for stake decrease
     env.events().publish(
@@ -401,6 +465,26 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
 
     let token_client = require_allowed_token(&env, &token_addr)?;
     token_client.transfer(&env.current_contract_address(), &voucher, &stake);
+
+    // Issue #534: Record withdrawal in modification history
+    let timestamp = env.ledger().timestamp();
+    let mut vouch_history: Vec<VouchHistoryEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token_addr.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    vouch_history.push_back(VouchHistoryEntry {
+        timestamp,
+        modification_type: soroban_sdk::String::from_slice(&env, "withdrawn"),
+        stake_amount: stake,
+        delegate: None,
+    });
+
+    env.storage().persistent().set(
+        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token_addr.clone()),
+        &vouch_history,
+    );
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("withdrawn")),
@@ -526,6 +610,165 @@ pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
         .get(&DataKey::VoucherHistory(voucher))
         .unwrap_or(Vec::new(&env))
 }
+
+/// Issue #532: Delegate vouch management to another address.
+/// Only the original voucher can call this.
+pub fn delegate_vouch(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    delegate: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    if voucher == delegate {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let mut vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .ok_or(ContractError::NoVouchesForBorrower)?;
+
+    let idx = vouches
+        .iter()
+        .position(|v| v.voucher == voucher && v.token == token)
+        .ok_or(ContractError::VoucherNotFound)? as u32;
+
+    let mut vouch_rec = vouches.get(idx).unwrap();
+    let stake_amount = vouch_rec.stake;
+    vouch_rec.delegate = Some(delegate.clone());
+    vouches.set(idx, vouch_rec);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    // Record delegation in history
+    let mut history: Vec<VouchHistoryEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    history.push_back(VouchHistoryEntry {
+        timestamp: env.ledger().timestamp(),
+        modification_type: soroban_sdk::String::from_slice(&env, "delegated"),
+        stake_amount,
+        delegate: Some(delegate.clone()),
+    });
+
+    env.storage().persistent().set(
+        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
+        &history,
+    );
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("delegated")),
+        (voucher, borrower, delegate),
+    );
+
+    Ok(())
+}
+
+/// Issue #532: Revoke delegation of a vouch.
+/// Only the original voucher can call this.
+pub fn revoke_delegation(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let mut vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .ok_or(ContractError::NoVouchesForBorrower)?;
+
+    let idx = vouches
+        .iter()
+        .position(|v| v.voucher == voucher && v.token == token)
+        .ok_or(ContractError::VoucherNotFound)? as u32;
+
+    let mut vouch_rec = vouches.get(idx).unwrap();
+    vouch_rec.delegate = None;
+    vouches.set(idx, vouch_rec);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("revoked")),
+        (voucher, borrower),
+    );
+
+    Ok(())
+}
+
+/// Issue #533: Set expiry timestamp for a vouch.
+/// Only the original voucher can call this.
+pub fn set_vouch_expiry(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    expiry_timestamp: u64,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let now = env.ledger().timestamp();
+    if expiry_timestamp <= now {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let mut vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .ok_or(ContractError::NoVouchesForBorrower)?;
+
+    let idx = vouches
+        .iter()
+        .position(|v| v.voucher == voucher && v.token == token)
+        .ok_or(ContractError::VoucherNotFound)? as u32;
+
+    let mut vouch_rec = vouches.get(idx).unwrap();
+    vouch_rec.expiry_timestamp = Some(expiry_timestamp);
+    vouches.set(idx, vouch_rec);
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("expiry")),
+        (voucher, borrower, expiry_timestamp),
+    );
+
+    Ok(())
+}
+
+/// Issue #534: Get vouch modification history for auditing.
+pub fn get_vouch_history(
+    env: Env,
+    borrower: Address,
+    voucher: Address,
+    token: Address,
+) -> Vec<VouchHistoryEntry> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VouchHistory(borrower, voucher, token))
+        .unwrap_or(Vec::new(&env))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

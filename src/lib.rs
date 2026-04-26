@@ -35,6 +35,14 @@ mod slash_multi_voucher_test;
 #[cfg(test)]
 mod voucher_balance_check_test;
 #[cfg(test)]
+mod refinance_test;
+#[cfg(test)]
+mod co_borrower_test;
+#[cfg(test)]
+mod collateral_test;
+#[cfg(test)]
+mod prepayment_penalty_test;
+#[cfg(test)]
 mod vouch_cooldown_test;
 #[cfg(test)]
 mod vouch_active_loan_test;
@@ -64,8 +72,6 @@ mod insurance_test;
 mod dynamic_yield_test;
 #[cfg(test)]
 mod multi_token_vouch_test;
-
-// ── Storage Keys ──────────────────────────────────────────────────────────────
 
 use helpers::{require_valid_token, validate_admin_config};
 use reputation::ReputationNftExternalClient;
@@ -104,6 +110,9 @@ impl QuorumCreditContract {
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
+                prepayment_penalty_bps: 0,
+                collateral_required: false,
+                default_threshold_for_collateral: 2,
             },
         );
 
@@ -358,6 +367,42 @@ impl QuorumCreditContract {
     /// * If contract is paused
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
         loan::repay(env, borrower, payment)
+    }
+
+    /// Issue #539: Refinance an existing loan with new terms.
+    /// Repays the old loan with proceeds from the new loan.
+    pub fn refinance_loan(
+        env: Env,
+        borrower: Address,
+        new_amount: i128,
+        new_threshold: i128,
+        new_token: Address,
+    ) -> Result<(), ContractError> {
+        loan::refinance_loan(env, borrower, new_amount, new_threshold, new_token)
+    }
+
+    /// Issue #540: Add a co-borrower to an active loan.
+    pub fn add_co_borrower(
+        env: Env,
+        loan_id: u64,
+        co_borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::add_co_borrower(env, loan_id, co_borrower)
+    }
+
+    /// Issue #541: Deposit collateral for a borrower.
+    pub fn deposit_collateral(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        loan::deposit_collateral(env, borrower, amount, token)
+    }
+
+    /// Issue #541: Get collateral amount for a borrower.
+    pub fn get_collateral(env: Env, borrower: Address) -> i128 {
+        loan::get_collateral(env, borrower)
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
@@ -1075,3 +1120,5 @@ impl QuorumCreditContract {
         governance::execute_slash_vote(env, borrower)
     }
 }
+
+
