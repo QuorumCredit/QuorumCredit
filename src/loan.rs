@@ -6,7 +6,7 @@ use crate::helpers::{
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
     DataKey, LoanRecord, LoanStatus, VouchRecord, BPS_DENOMINATOR, DEFAULT_REFERRAL_BONUS_BPS,
-    AmortizationEntry,
+    AmortizationEntry, SLASH_ESCROW_PERIOD,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
