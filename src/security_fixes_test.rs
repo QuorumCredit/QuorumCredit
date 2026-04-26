@@ -315,6 +315,8 @@ mod security_fixes_tests {
         // Attempt to vouch for self should return SelfVouchNotAllowed
         let result = s.client.try_vouch(&user, &user, &stake, &s.token_id);
         assert_eq!(result, Err(Ok(ContractError::SelfVouchNotAllowed)));
+    }
+
     /// Test that a borrower cannot vouch for themselves in batch_vouch.
     #[test]
     fn test_batch_vouch_self_vouch_not_allowed() {
