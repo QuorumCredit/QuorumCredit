@@ -81,6 +81,8 @@ pub enum DataKey {
     Deployer,                    // Address that deployed the contract; guards initialize
     SlashTreasury,               // i128 accumulated slashed funds
     Paused,                      // bool: true when contract is paused
+    PauseMode,                   // PauseMode enum: None, Paused, or Thawing
+    ThawState,                   // ThawState: pause and thaw timestamps
     BorrowerList,                // Vec<Address> of all borrowers who have ever requested a loan
     ReputationNft,               // Address of the ReputationNftContract
     MinStake,                    // i128 minimum stake amount per vouch
@@ -317,4 +319,51 @@ pub struct AdminActionProposal {
     pub approvals: Vec<Address>,
     pub created_at: u64,
     pub executed: bool,
+}
+
+// ── Pagination ────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PaginationParams {
+    /// Maximum number of results to return (default 10, max 100)
+    pub limit: u32,
+    /// Offset for cursor-based pagination
+    pub offset: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PaginatedLoans {
+    pub loans: Vec<LoanRecord>,
+    pub total: u32,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct PaginatedVouches {
+    pub vouches: Vec<VouchRecord>,
+    pub total: u32,
+    pub limit: u32,
+    pub offset: u32,
+}
+
+// ── Pause Mode ────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PauseMode {
+    None,
+    Paused,
+    Thawing,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct ThawState {
+    pub pause_timestamp: u64,
+    pub thaw_duration: u64,
+    pub thaw_start_timestamp: u64,
 }
