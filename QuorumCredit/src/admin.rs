@@ -15,6 +15,8 @@ pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
     cfg.admins.push_back(new_admin.clone());
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "add_admin");
+
     env.events()
         .publish((symbol_short!("admin"), symbol_short!("added")), new_admin);
 }
@@ -66,6 +68,13 @@ pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, n
 
     cfg.admins.set(idx, new_admin.clone());
     env.storage().instance().set(&DataKey::Config, &cfg);
+
+    // Clear expiry for new admin
+    env.storage()
+        .persistent()
+        .remove(&DataKey::AdminKeyExpiry(new_admin.clone()));
+
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "rotate_admin");
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("rotated")),
@@ -213,6 +222,7 @@ pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>)
 pub fn pause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
     env.storage().instance().set(&DataKey::Paused, &true);
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "pause");
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("pause")),
         (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
@@ -222,6 +232,7 @@ pub fn pause(env: Env, admin_signers: Vec<Address>) {
 pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
     env.storage().instance().set(&DataKey::Paused, &false);
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "unpause");
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("unpause")),
         (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
@@ -555,6 +566,224 @@ pub fn accept_admin(env: Env) -> Result<(), ContractError> {
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("accepted")),
         new_admin,
+    );
+
+    Ok(())
+}
+
+
+// ── Audit Logging ─────────────────────────────────────────────────────────────
+
+pub fn log_admin_action(env: &Env, admin: &Address, action: &str) {
+    let mut log: Vec<crate::types::AdminAuditEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AdminAuditLog)
+        .unwrap_or(Vec::new(env));
+
+    log.push_back(crate::types::AdminAuditEntry {
+        admin: admin.clone(),
+        action: soroban_sdk::String::from_slice(env, action),
+        timestamp: env.ledger().timestamp(),
+    });
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::AdminAuditLog, &log);
+}
+
+pub fn get_admin_audit_log(env: Env) -> Vec<crate::types::AdminAuditEntry> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AdminAuditLog)
+        .unwrap_or(Vec::new(&env))
+}
+
+// ── Admin Key Expiry ──────────────────────────────────────────────────────────
+
+pub fn set_admin_key_expiry(env: Env, admin_signers: Vec<Address>, admin: Address, expiry: u64) {
+    require_admin_approval(&env, &admin_signers);
+
+    let cfg = config(&env);
+    assert!(
+        cfg.admins.iter().any(|a| a == admin),
+        "address is not an admin"
+    );
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::AdminKeyExpiry(admin.clone()), &expiry);
+
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "set_admin_key_expiry");
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("expiry")),
+        (admin, expiry),
+    );
+}
+
+pub fn get_admin_key_expiry(env: Env, admin: Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AdminKeyExpiry(admin))
+        .unwrap_or(0)
+}
+
+pub fn is_admin_key_expired(env: &Env, admin: &Address) -> bool {
+    let expiry: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AdminKeyExpiry(admin.clone()))
+        .unwrap_or(0);
+
+    expiry > 0 && env.ledger().timestamp() > expiry
+}
+
+// ── Admin Action Timelock ────────────────────────────────────────────────────
+
+pub fn queue_admin_action(
+    env: Env,
+    admin_signers: Vec<Address>,
+    action: crate::types::AdminTimelockAction,
+    delay_secs: u64,
+) -> Result<u64, ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    let action_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelockCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("action ID overflow");
+
+    let eta = env.ledger().timestamp() + delay_secs;
+
+    let timelock = crate::types::AdminTimelock {
+        id: action_id,
+        action,
+        proposer: admin_signers.get(0).unwrap().clone(),
+        eta,
+        executed: false,
+        cancelled: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelock(action_id), &timelock);
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelockCounter, &action_id);
+
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "queue_admin_action");
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("queued")),
+        (action_id, eta),
+    );
+
+    Ok(action_id)
+}
+
+pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
+    let mut timelock: crate::types::AdminTimelock = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelock(action_id))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    if timelock.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+    if timelock.cancelled {
+        return Err(ContractError::TimelockNotFound);
+    }
+
+    if env.ledger().timestamp() < timelock.eta {
+        return Err(ContractError::TimelockNotReady);
+    }
+
+    const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+    if env.ledger().timestamp() > timelock.eta + TIMELOCK_EXPIRY {
+        return Err(ContractError::TimelockExpired);
+    }
+
+    timelock.executed = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelock(action_id), &timelock);
+
+    match &timelock.action {
+        crate::types::AdminTimelockAction::Pause => {
+            env.storage().instance().set(&DataKey::Paused, &true);
+        }
+        crate::types::AdminTimelockAction::Unpause => {
+            env.storage().instance().set(&DataKey::Paused, &false);
+        }
+        crate::types::AdminTimelockAction::UpdateConfig(cfg) => {
+            env.storage().instance().set(&DataKey::Config, cfg);
+        }
+        crate::types::AdminTimelockAction::SetAdminThreshold(threshold) => {
+            let mut cfg = config(&env);
+            cfg.admin_threshold = *threshold;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+    }
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("executed")),
+        action_id,
+    );
+
+    Ok(())
+}
+
+pub fn cancel_admin_action(env: Env, caller: Address, action_id: u64) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    let mut timelock: crate::types::AdminTimelock = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelock(action_id))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    if caller != timelock.proposer {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    if timelock.executed || timelock.cancelled {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    timelock.cancelled = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelock(action_id), &timelock);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("cancelled")),
+        action_id,
+    );
+
+    Ok(())
+}
+
+pub fn get_admin_timelock(env: Env, action_id: u64) -> Option<crate::types::AdminTimelock> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelock(action_id))
+}
+
+pub fn set_governance_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    require_valid_token(&env, &token)?;
+
+    governance::set_governance_token(&env, token.clone());
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "set_governance_token");
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("gov_token")),
+        token,
     );
 
     Ok(())

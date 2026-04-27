@@ -14,6 +14,14 @@ pub mod types;
 pub mod vouch;
 
 #[cfg(test)]
+mod admin_audit_log_test;
+#[cfg(test)]
+mod admin_key_rotation_test;
+#[cfg(test)]
+mod admin_timelock_test;
+#[cfg(test)]
+mod governance_token_voting_test;
+#[cfg(test)]
 mod bug_condition_test;
 #[cfg(test)]
 mod borrower_whitelist_test;
@@ -578,5 +586,83 @@ impl QuorumCreditContract {
 
     pub fn get_config(env: Env) -> Config {
         admin::get_config(env)
+    }
+
+    pub fn get_admin_audit_log(env: Env) -> Vec<AdminAuditEntry> {
+        admin::get_admin_audit_log(env)
+    }
+
+    pub fn set_admin_key_expiry(env: Env, admin_signers: Vec<Address>, admin: Address, expiry: u64) {
+        admin::set_admin_key_expiry(env, admin_signers, admin, expiry)
+    }
+
+    pub fn get_admin_key_expiry(env: Env, admin: Address) -> u64 {
+        admin::get_admin_key_expiry(env, admin)
+    }
+
+    pub fn queue_admin_action(
+        env: Env,
+        admin_signers: Vec<Address>,
+        action: AdminTimelockAction,
+        delay_secs: u64,
+    ) -> Result<u64, ContractError> {
+        admin::queue_admin_action(env, admin_signers, action, delay_secs)
+    }
+
+    pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
+        admin::execute_admin_action(env, action_id)
+    }
+
+    pub fn cancel_admin_action(
+        env: Env,
+        caller: Address,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::cancel_admin_action(env, caller, action_id)
+    }
+
+    pub fn get_admin_timelock(env: Env, action_id: u64) -> Option<AdminTimelock> {
+        admin::get_admin_timelock(env, action_id)
+    }
+
+    pub fn propose_governance_change(
+        env: Env,
+        proposer: Address,
+        description: soroban_sdk::String,
+        voting_period_secs: u64,
+    ) -> Result<u64, ContractError> {
+        governance::propose_governance_change(env, proposer, description, voting_period_secs)
+    }
+
+    pub fn vote_on_governance_change(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        governance::vote_on_governance_change(env, voter, proposal_id, approve)
+    }
+
+    pub fn execute_governance_change(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        governance::execute_governance_change(env, proposal_id)
+    }
+
+    pub fn get_governance_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<GovernanceProposal> {
+        governance::get_governance_proposal(env, proposal_id)
+    }
+
+    pub fn set_governance_token(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        admin::set_governance_token(env, admin_signers, token)
+    }
+
+    pub fn get_governance_token(env: Env) -> Option<Address> {
+        governance::get_governance_token(env)
     }
 }
