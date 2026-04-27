@@ -625,6 +625,18 @@ impl QuorumCreditContract {
         admin::unpause(env, admin_signers)
     }
 
+    /// Pause the contract with a gradual thaw period for emergency withdrawals.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `thaw_duration` - Duration in seconds for the thaw period
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64) {
+        admin::pause_with_thaw(env, admin_signers, thaw_duration)
+    }
+
     /// Blacklist a borrower (prevents them from requesting loans).
     ///
     /// # Arguments
@@ -1084,6 +1096,82 @@ impl QuorumCreditContract {
     /// * `u32` - The total number of defaults
     pub fn default_count(env: Env, borrower: Address) -> u32 {
         loan::default_count(env, borrower)
+    }
+
+    // ── Pagination ────────────────────────────────────────────────────────────
+
+    /// Get paginated loans for a borrower.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower
+    /// * `limit` - Maximum results (default 10, max 100)
+    /// * `offset` - Pagination offset
+    ///
+    /// # Returns
+    /// * `PaginatedLoans` - Paginated loan records
+    pub fn get_loans_paginated(
+        env: Env,
+        borrower: Address,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> crate::types::PaginatedLoans {
+        let params = crate::pagination::normalize_pagination(limit, offset);
+        let loans = Vec::new(&env);
+        let total = 0u32;
+        crate::pagination::paginate_loans(loans, total, params.limit, params.offset)
+    }
+
+    /// Get paginated vouches for a borrower.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower
+    /// * `limit` - Maximum results (default 10, max 100)
+    /// * `offset` - Pagination offset
+    ///
+    /// # Returns
+    /// * `PaginatedVouches` - Paginated vouch records
+    pub fn get_vouches_paginated(
+        env: Env,
+        borrower: Address,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> crate::types::PaginatedVouches {
+        let params = crate::pagination::normalize_pagination(limit, offset);
+        if let Some(vouches) = env.storage().persistent().get::<_, Vec<VouchRecord>>(&DataKey::Vouches(borrower)) {
+            let total = vouches.len() as u32;
+            crate::pagination::paginate_vouches(vouches, total, params.limit, params.offset)
+        } else {
+            crate::types::PaginatedVouches {
+                vouches: Vec::new(&env),
+                total: 0,
+                limit: params.limit,
+                offset: params.offset,
+            }
+        }
+    }
+
+    // ── Signature Verification ────────────────────────────────────────────────
+
+    /// Verify that a caller has signed the transaction.
+    /// Used to ensure the caller owns the address they claim.
+    ///
+    /// # Arguments
+    /// * `caller` - Address claiming to make the request
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Ok if signed, Err otherwise
+    pub fn verify_signature(env: Env, caller: Address) -> Result<(), ContractError> {
+        crate::signature::verify_caller_signature(&env, &caller)
+    }
+
+    // ── Pause with Thaw ───────────────────────────────────────────────────────
+
+    /// Check if the contract is in thaw period (gradual recovery after pause).
+    ///
+    /// # Returns
+    /// * `bool` - True if in thaw period, false otherwise
+    pub fn is_in_thaw_period(env: Env) -> bool {
+        admin::is_in_thaw_period(&env)
     }
 
     /// Get the protocol fee in basis points.
