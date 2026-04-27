@@ -5,6 +5,7 @@ use soroban_sdk::{
 };
 
 pub mod admin;
+pub mod benchmarks;
 pub mod errors;
 pub mod governance;
 pub mod health;
@@ -17,6 +18,8 @@ pub mod vouch;
 
 #[cfg(test)]
 mod admin_audit_log_test;
+#[cfg(test)]
+mod benchmarks_test;
 #[cfg(test)]
 mod admin_key_rotation_test;
 #[cfg(test)]
