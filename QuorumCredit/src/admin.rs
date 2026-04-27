@@ -69,6 +69,13 @@ pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, n
     cfg.admins.set(idx, new_admin.clone());
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    // Clear expiry for new admin
+    env.storage()
+        .persistent()
+        .remove(&DataKey::AdminKeyExpiry(new_admin.clone()));
+
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "rotate_admin");
+
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("rotated")),
         (old_admin, new_admin),
@@ -590,4 +597,44 @@ pub fn get_admin_audit_log(env: Env) -> Vec<crate::types::AdminAuditEntry> {
         .persistent()
         .get(&DataKey::AdminAuditLog)
         .unwrap_or(Vec::new(&env))
+}
+
+// ── Admin Key Expiry ──────────────────────────────────────────────────────────
+
+pub fn set_admin_key_expiry(env: Env, admin_signers: Vec<Address>, admin: Address, expiry: u64) {
+    require_admin_approval(&env, &admin_signers);
+
+    let cfg = config(&env);
+    assert!(
+        cfg.admins.iter().any(|a| a == admin),
+        "address is not an admin"
+    );
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::AdminKeyExpiry(admin.clone()), &expiry);
+
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "set_admin_key_expiry");
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("expiry")),
+        (admin, expiry),
+    );
+}
+
+pub fn get_admin_key_expiry(env: Env, admin: Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AdminKeyExpiry(admin))
+        .unwrap_or(0)
+}
+
+pub fn is_admin_key_expired(env: &Env, admin: &Address) -> bool {
+    let expiry: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AdminKeyExpiry(admin.clone()))
+        .unwrap_or(0);
+
+    expiry > 0 && env.ledger().timestamp() > expiry
 }

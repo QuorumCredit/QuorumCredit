@@ -16,6 +16,8 @@ pub mod vouch;
 #[cfg(test)]
 mod admin_audit_log_test;
 #[cfg(test)]
+mod admin_key_rotation_test;
+#[cfg(test)]
 mod bug_condition_test;
 #[cfg(test)]
 mod borrower_whitelist_test;
@@ -584,5 +586,13 @@ impl QuorumCreditContract {
 
     pub fn get_admin_audit_log(env: Env) -> Vec<AdminAuditEntry> {
         admin::get_admin_audit_log(env)
+    }
+
+    pub fn set_admin_key_expiry(env: Env, admin_signers: Vec<Address>, admin: Address, expiry: u64) {
+        admin::set_admin_key_expiry(env, admin_signers, admin, expiry)
+    }
+
+    pub fn get_admin_key_expiry(env: Env, admin: Address) -> u64 {
+        admin::get_admin_key_expiry(env, admin)
     }
 }
