@@ -7,6 +7,7 @@ use soroban_sdk::{
 pub mod admin;
 pub mod errors;
 pub mod governance;
+pub mod health;
 pub mod helpers;
 pub mod loan;
 pub mod reputation;
@@ -41,6 +42,8 @@ mod get_loan_status_test;
 mod governance_test;
 #[cfg(test)]
 mod grace_period_test;
+#[cfg(test)]
+mod health_check_test;
 #[cfg(test)]
 mod initialize_test;
 #[cfg(test)]
@@ -678,5 +681,11 @@ impl QuorumCreditContract {
 
     pub fn get_governance_token(env: Env) -> Option<Address> {
         governance::get_governance_token(env)
+    }
+
+    // ── Health Check ──────────────────────────────────────────────────────────
+
+    pub fn health_check(env: Env) -> health::HealthStatus {
+        health::health_check(&env)
     }
 }
