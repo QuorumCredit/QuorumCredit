@@ -3,6 +3,7 @@ use crate::helpers::{
     add_slash_balance, config, get_active_loan_record, require_not_paused, validate_loan_active,
 };
 use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
+use soroban_sdk::panic_with_error;
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.
@@ -119,7 +120,7 @@ pub fn set_slash_vote_quorum(env: &Env, quorum_bps: u32) {
         .set(&DataKey::SlashVoteQuorum, &quorum_bps);
 }
 
-pub fn get_slash_vote_quorum(env: Env) -> u32 {
+pub fn get_slash_vote_quorum(env: &Env) -> u32 {
     env.storage()
         .instance()
         .get(&DataKey::SlashVoteQuorum)
@@ -131,7 +132,7 @@ pub fn get_slash_vote_quorum(env: Env) -> u32 {
 pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
     require_not_paused(&env)?;
 
-    let vote = env
+    let vote: SlashVoteRecord = env
         .storage()
         .persistent()
         .get(&DataKey::SlashVote(borrower.clone()))
@@ -150,7 +151,7 @@ pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractErr
     let total_stake: i128 = vouches.iter().map(|v| v.amount).sum();
 
     // Retrieve quorum threshold
-    let quorum_bps: u32 = get_slash_vote_quorum(env);
+    let quorum_bps: u32 = get_slash_vote_quorum(&env);
 
     // Calculate required quorum stake
     let quorum_stake = total_stake * quorum_bps as i128 / 10_000;
@@ -196,7 +197,9 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     let slash_bps = env
         .storage()
         .persistent()
-        .get::<DataKey, crate::types::TokenConfig>(&DataKey::TokenConfig(loan.token_address.clone()))
+        .get::<DataKey, crate::types::TokenConfig>(&DataKey::TokenConfig(
+            loan.token_address.clone(),
+        ))
         .map(|tc| tc.slash_bps)
         .unwrap_or(cfg.slash_bps);
 
@@ -251,7 +254,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 /// Implements a two-step slash with timelock pattern:
 /// 1. propose_slash: Admin creates a proposal, sets execution time (eta)
 /// 2. execute_slash_proposal: After delay, anyone can execute
-
+///
 /// Propose a slash action with a delay before execution.
 /// This implements the "confirmation window" for the slash action.
 pub fn propose_slash(

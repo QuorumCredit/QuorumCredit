@@ -162,7 +162,9 @@ pub fn request_loan(
     let yield_bps = env
         .storage()
         .persistent()
-        .get::<crate::types::DataKey, crate::types::TokenConfig>(&crate::types::DataKey::TokenConfig(token_addr.clone()))
+        .get::<crate::types::DataKey, crate::types::TokenConfig>(
+            &crate::types::DataKey::TokenConfig(token_addr.clone()),
+        )
         .map(|tc| tc.yield_bps)
         .unwrap_or(cfg.yield_bps);
     let total_yield = bps_of(amount, yield_bps);
@@ -250,10 +252,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     // Total obligation = principal + yield locked in at disbursement.
     let total_owed = loan.amount + loan.total_yield;
     let outstanding = total_owed - loan.amount_repaid;
-    assert!(
-        payment > 0 && payment <= outstanding,
-        "invalid payment amount"
-    );
+    if payment <= 0 || payment > outstanding {
+        return Err(ContractError::InvalidAmount);
+    }
 
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
 

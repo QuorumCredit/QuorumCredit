@@ -1,4 +1,8 @@
-use crate::helpers::{config, extend_ttl, require_admin_approval, require_valid_token, validate_admin_config};
+use crate::errors::ContractError;
+use crate::helpers::{
+    config, extend_ttl, is_zero_address, require_admin_approval, require_valid_token,
+    validate_admin_config,
+};
 use crate::types::{Config, DataKey, TokenConfig};
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
@@ -296,17 +300,16 @@ pub fn update_config(
     let mut cfg = config(&env);
 
     if let Some(new_yield_bps) = yield_bps {
-        if new_yield_bps < 0 || new_yield_bps > 10_000 {
+        if !(0..=10_000).contains(&new_yield_bps) {
             panic_with_error!(&env, ContractError::InvalidBps);
         }
         cfg.yield_bps = new_yield_bps;
     }
 
     if let Some(new_slash_bps) = slash_bps {
-        assert!(
-            new_slash_bps > 0 && new_slash_bps <= 10_000,
-            "slash_bps must be 1-10000"
-        );
+        if !(0..=10_000).contains(&new_slash_bps) {
+            panic_with_error!(&env, ContractError::InvalidBps);
+        }
         cfg.slash_bps = new_slash_bps;
     }
 
@@ -359,7 +362,8 @@ pub fn set_min_loan_amount(
     cfg.min_loan_amount = amount;
     env.storage().instance().set(&DataKey::Config, &cfg);
     Ok(())
-}pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
+}
+pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
     require_admin_approval(&env, &admin_signers);
     assert!(amount >= 0, "max loan amount cannot be negative");
     env.storage()
@@ -458,7 +462,11 @@ pub fn get_config(env: Env) -> Config {
     config(&env)
 }
 
-pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
+pub fn add_allowed_token(
+    env: Env,
+    admin_signers: Vec<Address>,
+    token: Address,
+) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     require_valid_token(&env, &token).unwrap_or_else(|e| panic_with_error!(&env, e));
     let mut cfg = config(&env);
@@ -508,9 +516,7 @@ pub fn set_token_config(
 }
 
 pub fn get_token_config(env: Env, token: Address) -> Option<TokenConfig> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::TokenConfig(token))
+    env.storage().persistent().get(&DataKey::TokenConfig(token))
 }
 
 pub fn get_admins(env: Env) -> Vec<Address> {
@@ -528,10 +534,14 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
         .unwrap_or(false)
 }
 
-pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+pub fn propose_admin(
+    env: Env,
+    admin_signers: Vec<Address>,
+    new_admin: Address,
+) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
 
-    if new_admin == Address::zero(&env) {
+    if is_zero_address(&env, &new_admin) {
         return Err(ContractError::ZeroAddress);
     }
 
@@ -548,7 +558,7 @@ pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) 
 }
 
 pub fn accept_admin(env: Env) -> Result<(), ContractError> {
-    let new_admin = env
+    let new_admin: Address = env
         .storage()
         .instance()
         .get(&DataKey::PendingAdmin)

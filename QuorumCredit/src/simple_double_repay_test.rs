@@ -1,10 +1,10 @@
 /// Simple test to verify double repay panic functionality
 #[cfg(test)]
-mod simple_double_repay_test {
+mod simple_double_repay_tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
-        token::{StellarAssetClient, TokenClient},
+        token::StellarAssetClient,
         Address, Env, String, Vec,
     };
 

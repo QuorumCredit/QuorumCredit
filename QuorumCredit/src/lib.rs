@@ -26,11 +26,9 @@ mod bug_condition_test;
 #[cfg(test)]
 mod borrower_whitelist_test;
 #[cfg(test)]
+mod bug_condition_test;
+#[cfg(test)]
 mod config_bps_test;
-#[cfg(test)]
-mod invalid_bps_test;
-#[cfg(test)]
-mod grace_period_test;
 #[cfg(test)]
 mod double_repay_test;
 #[cfg(test)]
@@ -42,11 +40,17 @@ mod get_loan_status_test;
 #[cfg(test)]
 mod governance_test;
 #[cfg(test)]
+mod grace_period_test;
+#[cfg(test)]
 mod initialize_test;
+#[cfg(test)]
+mod invalid_bps_test;
+#[cfg(test)]
+mod loan_purpose_query_test;
 #[cfg(test)]
 mod loan_purpose_test;
 #[cfg(test)]
-mod loan_purpose_query_test;
+mod max_loan_amount_test;
 #[cfg(test)]
 mod multi_asset_test;
 #[cfg(test)]
@@ -57,8 +61,6 @@ mod repay_overpayment_test;
 mod request_loan_insufficient_stake_test;
 #[cfg(test)]
 mod security_fixes_test;
-#[cfg(test)]
-mod max_loan_amount_test;
 #[cfg(test)]
 mod set_min_loan_amount_test;
 #[cfg(test)]
@@ -354,7 +356,15 @@ impl QuorumCreditContract {
         admin::set_max_loan_to_stake_ratio(env, admin_signers, ratio)
     }
 
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
+    pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
+        admin::set_grace_period(env, admin_signers, period)
+    }
+
+    pub fn add_allowed_token(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+    ) -> Result<(), ContractError> {
         admin::add_allowed_token(env, admin_signers, token)
     }
 
@@ -396,14 +406,18 @@ impl QuorumCreditContract {
     }
 
     pub fn get_slash_vote_quorum(env: Env) -> u32 {
-        governance::get_slash_vote_quorum(env)
+        governance::get_slash_vote_quorum(&env)
     }
 
     pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
         governance::execute_slash_vote(env, borrower)
     }
 
-    pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
+    pub fn propose_admin(
+        env: Env,
+        admin_signers: Vec<Address>,
+        new_admin: Address,
+    ) -> Result<(), ContractError> {
         admin::propose_admin(env, admin_signers, new_admin)
     }
 

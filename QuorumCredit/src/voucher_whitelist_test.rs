@@ -4,7 +4,7 @@ mod tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
-    fn setup(env: &Env) -> (QuorumCreditContractClient, Address, Address) {
+    fn setup(env: &Env) -> (QuorumCreditContractClient<'_>, Address, Address) {
         let token_admin = Address::generate(env);
         let token = env
             .register_stellar_asset_contract_v2(token_admin)
@@ -13,7 +13,12 @@ mod tests {
         let client = QuorumCreditContractClient::new(env, &contract_id);
         let deployer = Address::generate(env);
         let admin = Address::generate(env);
-        client.initialize(&deployer, &Vec::from_array(env, [admin.clone()]), &1, &token);
+        client.initialize(
+            &deployer,
+            &Vec::from_array(env, [admin.clone()]),
+            &1,
+            &token,
+        );
         (client, admin, token)
     }
 
