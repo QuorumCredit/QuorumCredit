@@ -16,6 +16,7 @@ pub const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
 pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+pub const DEFAULT_ADMIN_TIMELOCK_SECONDS: u64 = 48 * 60 * 60; // 48 hours
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
 
@@ -69,6 +70,24 @@ pub enum DataKey {
     SlashVoteQuorum, // u32 quorum in basis points (e.g. 5000 = 50%)
     ReferredBy(Address), // borrower → Address of referrer
     ReferralBonusBps, // u32 referral bonus in basis points (default 100 = 1%)
+    AdminAuditLog,   // Vec<AdminAuditEntry> audit log of all admin actions
+    AdminKeyExpiry(Address), // admin → u64 expiry timestamp (0 = no expiry)
+    GovernanceToken, // Address of governance token for voting
+    GovernanceProposal(u64), // proposal_id → GovernanceProposal
+    GovernanceProposalCounter, // u64 monotonically increasing proposal ID
+    AdminActionTimelock(u64), // action_id → AdminTimelockAction
+    AdminActionTimelockCounter, // u64 monotonically increasing action ID
+    GovernanceTokenAddress, // Address of governance token for voting
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminAuditEntry {
+    pub admin: Address,
+    pub action: soroban_sdk::String,
+    pub timestamp: u64,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -80,6 +99,39 @@ pub struct SlashVoteRecord {
     pub reject_stake: i128,   // total stake voting to reject slash
     pub voters: Vec<Address>, // addresses that have already voted
     pub executed: bool,       // true once slash has been auto-executed
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct GovernanceProposal {
+    pub id: u64,
+    pub proposer: Address,
+    pub description: soroban_sdk::String,
+    pub approve_votes: i128,
+    pub reject_votes: i128,
+    pub voters: Vec<Address>,
+    pub voting_end: u64,
+    pub executed: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub enum AdminTimelockAction {
+    Pause,
+    Unpause,
+    UpdateConfig(Config),
+    SetAdminThreshold(u32),
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminTimelock {
+    pub id: u64,
+    pub action: AdminTimelockAction,
+    pub proposer: Address,
+    pub eta: u64,
+    pub executed: bool,
+    pub cancelled: bool,
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────

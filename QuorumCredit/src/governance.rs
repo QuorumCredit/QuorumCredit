@@ -395,3 +395,187 @@ pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockPropo
         .instance()
         .get(&DataKey::Timelock(proposal_id))
 }
+
+
+// ── Governance Token Voting ───────────────────────────────────────────────────
+
+/// Propose a governance change (token holder only).
+pub fn propose_governance_change(
+    env: Env,
+    proposer: Address,
+    description: soroban_sdk::String,
+    voting_period_secs: u64,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+    require_not_paused(&env)?;
+
+    // Check if governance token is set
+    let gov_token_addr: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceTokenAddress)
+        .ok_or(ContractError::InvalidToken)?;
+
+    // Check proposer has governance tokens
+    let gov_token = soroban_sdk::token::Client::new(&env, &gov_token_addr);
+    let balance = gov_token.balance(&proposer);
+    if balance == 0 {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    let proposal_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposalCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("proposal ID overflow");
+
+    let voting_end = env.ledger().timestamp() + voting_period_secs;
+
+    let proposal = crate::types::GovernanceProposal {
+        id: proposal_id,
+        proposer: proposer.clone(),
+        description,
+        approve_votes: 0,
+        reject_votes: 0,
+        voters: Vec::new(&env),
+        voting_end,
+        executed: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposalCounter, &proposal_id);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("proposed")),
+        (proposal_id, proposer, voting_end),
+    );
+
+    Ok(proposal_id)
+}
+
+/// Vote on a governance proposal (token holder only).
+pub fn vote_on_governance_change(
+    env: Env,
+    voter: Address,
+    proposal_id: u64,
+    approve: bool,
+) -> Result<(), ContractError> {
+    voter.require_auth();
+    require_not_paused(&env)?;
+
+    // Check if governance token is set
+    let gov_token_addr: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceTokenAddress)
+        .ok_or(ContractError::InvalidToken)?;
+
+    // Check voter has governance tokens
+    let gov_token = soroban_sdk::token::Client::new(&env, &gov_token_addr);
+    let balance = gov_token.balance(&voter);
+    if balance == 0 {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    let mut proposal: crate::types::GovernanceProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    // Check voting period hasn't ended
+    if env.ledger().timestamp() > proposal.voting_end {
+        return Err(ContractError::TimelockExpired);
+    }
+
+    // Prevent double voting
+    if proposal.voters.iter().any(|v| v == voter) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    if approve {
+        proposal.approve_votes += balance;
+    } else {
+        proposal.reject_votes += balance;
+    }
+    proposal.voters.push_back(voter.clone());
+
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("voted")),
+        (voter, proposal_id, approve, balance),
+    );
+
+    Ok(())
+}
+
+/// Execute a governance proposal after voting period ends.
+pub fn execute_governance_change(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let mut proposal: crate::types::GovernanceProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    // Check voting period has ended
+    if env.ledger().timestamp() <= proposal.voting_end {
+        return Err(ContractError::TimelockNotReady);
+    }
+
+    // Check proposal hasn't been executed
+    if proposal.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    // Check if approve votes exceed reject votes (simple majority)
+    if proposal.approve_votes <= proposal.reject_votes {
+        return Err(ContractError::QuorumNotMet);
+    }
+
+    proposal.executed = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("executed")),
+        (proposal_id, proposal.approve_votes, proposal.reject_votes),
+    );
+
+    Ok(())
+}
+
+/// Get a governance proposal by ID.
+pub fn get_governance_proposal(
+    env: Env,
+    proposal_id: u64,
+) -> Option<crate::types::GovernanceProposal> {
+    env.storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+}
+
+/// Set the governance token address (admin only).
+pub fn set_governance_token(env: &Env, token_addr: Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceTokenAddress, &token_addr);
+}
+
+/// Get the governance token address.
+pub fn get_governance_token(env: Env) -> Option<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::GovernanceTokenAddress)
+}

@@ -157,6 +157,7 @@ pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>)
 pub fn pause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
     env.storage().instance().set(&DataKey::Paused, &true);
+    env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::Paused);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("pause")),
         (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
@@ -166,10 +167,45 @@ pub fn pause(env: Env, admin_signers: Vec<Address>) {
 pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
     env.storage().instance().set(&DataKey::Paused, &false);
+    env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::None);
+    env.storage().instance().remove(&DataKey::ThawState);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("unpause")),
         (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
     );
+}
+
+/// Pause the contract with a gradual thaw period allowing emergency withdrawals
+pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64) {
+    require_admin_approval(&env, &admin_signers);
+    let now = env.ledger().timestamp();
+    
+    env.storage().instance().set(&DataKey::Paused, &true);
+    env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::Thawing);
+    env.storage().instance().set(
+        &DataKey::ThawState,
+        &crate::types::ThawState {
+            pause_timestamp: now,
+            thaw_duration,
+            thaw_start_timestamp: now,
+        },
+    );
+    
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("pause_thaw")),
+        (admin_signers.get(0).unwrap(), now, thaw_duration),
+    );
+}
+
+/// Check if contract is in thaw period and allow emergency withdrawals
+pub fn is_in_thaw_period(env: &Env) -> bool {
+    if let Some(thaw_state) = env.storage().instance().get::<_, crate::types::ThawState>(&DataKey::ThawState) {
+        let now = env.ledger().timestamp();
+        let thaw_end = thaw_state.thaw_start_timestamp + thaw_state.thaw_duration;
+        now <= thaw_end
+    } else {
+        false
+    }
 }
 
 pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {

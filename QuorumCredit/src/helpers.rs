@@ -166,6 +166,11 @@ pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
             config.admins.iter().any(|a| a == signer),
             "signer is not a registered admin"
         );
+        // Check if admin key is expired
+        assert!(
+            !crate::admin::is_admin_key_expired(env, signer),
+            "admin key has expired"
+        );
         signer.require_auth();
     }
 }
