@@ -237,11 +237,7 @@ pub fn validate_admin_config(
 mod ttl_tests {
     use super::*;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{
-        testutils::Address as _,
-        token::{StellarAssetClient, TokenClient},
-        Address, Env, Vec,
-    };
+    use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
     /// Verify extend_ttl does not panic when called on an existing persistent key.
     #[test]

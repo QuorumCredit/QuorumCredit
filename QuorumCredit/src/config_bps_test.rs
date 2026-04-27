@@ -4,7 +4,7 @@
 /// Covers issue #169: Move YIELD_BPS / SLASH_BPS constants to Config struct.
 #[cfg(test)]
 mod config_bps_tests {
-    use crate::{Config, QuorumCreditContract, QuorumCreditContractClient};
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::StellarAssetClient,
@@ -119,7 +119,7 @@ mod config_bps_tests {
         do_vouch(&s, &voucher, &borrower, stake);
         do_loan(&s, &borrower, 100_000, stake);
 
-        let admin_signers = Vec::from_array(&s.env, [s.admin.clone()]);
+        let _admin_signers = Vec::from_array(&s.env, [s.admin.clone()]);
         let proposal_id = s.client.propose_slash(&s.admin, &borrower, &0);
         s.client.execute_slash_proposal(&proposal_id);
 

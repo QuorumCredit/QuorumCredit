@@ -44,5 +44,6 @@ pub enum ContractError {
     AlreadyRepaid = 35,
     /// Voucher and borrower must be different addresses.
     SelfVouchNotAllowed = 38,
-    DuplicateToken = 39,
+    InvalidBps = 39,
+    DuplicateToken = 40,
 }

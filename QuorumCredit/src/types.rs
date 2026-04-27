@@ -60,10 +60,10 @@ pub enum DataKey {
     TimelockCounter, // u64 monotonically increasing proposal ID
     Blacklisted(Address), // borrower → bool permanently banned
     VoucherWhitelist(Address), // voucher → bool allowed to vouch
-    VoucherWhitelistEnabled,   // bool: true when voucher whitelist is enforced
+    VoucherWhitelistEnabled, // bool: true when voucher whitelist is enforced
     BorrowerWhitelist(Address), // borrower → bool allowed to request loans
-    BorrowerWhitelistEnabled,  // bool: true when borrower whitelist is enforced
-    TokenConfig(Address),      // token → TokenConfig (per-token yield/slash overrides)
+    BorrowerWhitelistEnabled, // bool: true when borrower whitelist is enforced
+    TokenConfig(Address), // token → TokenConfig (per-token yield/slash overrides)
     ExtensionConsents(Address), // borrower → Vec<Address> vouchers who consented to extension
     SlashVote(Address), // borrower → SlashVoteRecord
     SlashVoteQuorum, // u32 quorum in basis points (e.g. 5000 = 50%)

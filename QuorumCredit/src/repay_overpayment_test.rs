@@ -8,7 +8,9 @@ mod repay_overpayment_tests {
     use crate::errors::ContractError;
     use crate::{LoanStatus, QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
-        testutils::Address as _, token::StellarAssetClient, Address, Env, String, Vec,
+        testutils::{Address as _, Ledger},
+        token::StellarAssetClient,
+        Address, Env, String, Vec,
     };
 
     /// principal=1_000_000, yield_bps=200 → yield=20_000, total_owed=1_020_000
@@ -40,6 +42,8 @@ mod repay_overpayment_tests {
         borrower: &Address,
     ) {
         client.vouch(voucher, borrower, &5_000_000, token_id);
+        // Advance past MIN_VOUCH_AGE (60s) so the vouch is usable.
+        env.ledger().with_mut(|l| l.timestamp += 61);
         client.request_loan(
             borrower,
             &PRINCIPAL,
@@ -81,7 +85,9 @@ mod repay_overpayment_tests {
 
         client.repay(&borrower, &TOTAL_OWED);
 
-        let loan = client.get_loan(&borrower).expect("loan record should exist");
+        let loan = client
+            .get_loan(&borrower)
+            .expect("loan record should exist");
         assert_eq!(loan.status, LoanStatus::Repaid);
         assert_eq!(loan.amount_repaid, TOTAL_OWED);
     }

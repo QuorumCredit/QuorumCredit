@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod governance_tests {
-    use crate::{ContractError, DataKey, QuorumCreditContract, QuorumCreditContractClient};
+    use crate::{ContractError, QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::StellarAssetClient,
-        Address, Env, Vec,
+        Address, Env, String, Vec,
     };
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -12,6 +12,7 @@ mod governance_tests {
     struct Setup {
         env: Env,
         client: QuorumCreditContractClient<'static>,
+        #[allow(dead_code)]
         contract_id: Address,
         admin: Address,
         token_id: Address,
@@ -55,7 +56,7 @@ mod governance_tests {
     /// Request a loan for `borrower` (vouches must already meet threshold).
     fn do_loan(s: &Setup, borrower: &Address, amount: i128, threshold: i128) {
         // Advance time to ensure vouches are old enough (MIN_VOUCH_AGE = 60s)
-        s.env.ledger().with_mut(|l| l.timestamp = l.timestamp + 61);
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
         s.client.request_loan(
             borrower,
             &amount,
@@ -259,7 +260,7 @@ mod governance_tests {
         // Create stakes: voucher_a = 3000, voucher_b = 3000 → total = 6000
         do_vouch(&s, &voucher_a, &borrower, 3_000_000);
         do_vouch(&s, &voucher_b, &borrower, 3_000_000);
-        do_loan(&s, &borrower, 100_000, 10_000_000);
+        do_loan(&s, &borrower, 100_000, 6_000_000);
 
         // Vote approve with only voucher_a (50% < 60% quorum)
         s.client.vote_slash(&voucher_a, &borrower, &true);
@@ -276,11 +277,21 @@ mod governance_tests {
     #[test]
     fn test_propose_admin_zero_address_rejected() {
         let s = setup();
-        let zero_addr = Address::zero(&s.env);
+        let zero_account = Address::from_string(&String::from_str(
+            &s.env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        ));
+        let zero_contract = Address::from_string(&String::from_str(
+            &s.env,
+            "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+        ));
+        // Test with zero account address
         let admins = Vec::from_array(&s.env, [s.admin.clone()]);
+        let result = s.client.try_propose_admin(&admins, &zero_account);
+        assert_eq!(result, Err(Ok(ContractError::ZeroAddress)));
 
-        // Attempt to propose zero address should fail
-        let result = s.client.try_propose_admin(&admins, &zero_addr);
+        // Test with zero contract address
+        let result = s.client.try_propose_admin(&admins, &zero_contract);
         assert_eq!(result, Err(Ok(ContractError::ZeroAddress)));
     }
 }
