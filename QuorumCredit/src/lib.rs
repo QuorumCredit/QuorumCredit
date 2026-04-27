@@ -12,6 +12,7 @@ pub mod helpers;
 pub mod loan;
 pub mod reputation;
 pub mod types;
+pub mod upgrade;
 pub mod vouch;
 
 #[cfg(test)]
@@ -70,6 +71,8 @@ mod set_min_loan_amount_test;
 mod simple_double_repay_test;
 #[cfg(test)]
 mod token_config_test;
+#[cfg(test)]
+mod upgrade_validation_test;
 #[cfg(test)]
 mod vouch_min_stake_test;
 #[cfg(test)]
@@ -687,5 +690,11 @@ impl QuorumCreditContract {
 
     pub fn health_check(env: Env) -> health::HealthStatus {
         health::health_check(&env)
+    }
+
+    // ── Upgrade Safety ────────────────────────────────────────────────────────
+
+    pub fn validate_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), ContractError> {
+        upgrade::validate_upgrade(&env, new_wasm_hash)
     }
 }
