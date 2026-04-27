@@ -77,6 +77,7 @@ pub enum DataKey {
     GovernanceProposalCounter, // u64 monotonically increasing proposal ID
     AdminActionTimelock(u64), // action_id → AdminTimelockAction
     AdminActionTimelockCounter, // u64 monotonically increasing action ID
+    GovernanceTokenAddress, // Address of governance token for voting
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────

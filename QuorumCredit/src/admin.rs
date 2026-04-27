@@ -773,3 +773,18 @@ pub fn get_admin_timelock(env: Env, action_id: u64) -> Option<crate::types::Admi
         .instance()
         .get(&DataKey::AdminActionTimelock(action_id))
 }
+
+pub fn set_governance_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    require_valid_token(&env, &token)?;
+
+    governance::set_governance_token(&env, token.clone());
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "set_governance_token");
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("gov_token")),
+        token,
+    );
+
+    Ok(())
+}
