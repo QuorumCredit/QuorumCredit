@@ -79,6 +79,8 @@ mod yield_reserve_solvency_test;
 mod slash_escrow_test;
 #[cfg(test)]
 mod fuzz_loan_state_machine_test;
+#[cfg(test)]
+mod property_based_yield_test;
 
 use helpers::{require_valid_token, validate_admin_config};
 use reputation::ReputationNftExternalClient;
