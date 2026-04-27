@@ -12,6 +12,7 @@ pub mod reputation;
 mod tests;
 pub mod types;
 pub mod vouch;
+pub mod webhook_retry;
 
 pub use contract::QuorumCreditContract;
 pub use errors::ContractError;
