@@ -317,10 +317,9 @@ impl QuorumCreditContract {
     /// * `u32` - The referral bonus in basis points
     pub fn get_referral_bonus_bps(env: Env) -> u32 {
         env.storage()
-            .persistent()
-            .set(&DataKey::Vouches(borrower), &vouches);
-        
-        Ok(())
+            .instance()
+            .get(&DataKey::ReferralBonusBps)
+            .unwrap_or(crate::types::DEFAULT_REFERRAL_BONUS_BPS)
     }
 
     /// Request a loan from the protocol.
@@ -352,6 +351,8 @@ impl QuorumCreditContract {
         borrower: Address,
         amount: i128,
         threshold: i128,
+        loan_purpose: soroban_sdk::String,
+        token: Address,
     ) -> Result<(), ContractError> {
         loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
     }
