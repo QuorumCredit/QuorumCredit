@@ -15,6 +15,8 @@ pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
     cfg.admins.push_back(new_admin.clone());
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "add_admin");
+
     env.events()
         .publish((symbol_short!("admin"), symbol_short!("added")), new_admin);
 }
@@ -213,6 +215,7 @@ pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>)
 pub fn pause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
     env.storage().instance().set(&DataKey::Paused, &true);
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "pause");
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("pause")),
         (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
@@ -222,6 +225,7 @@ pub fn pause(env: Env, admin_signers: Vec<Address>) {
 pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
     env.storage().instance().set(&DataKey::Paused, &false);
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "unpause");
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("unpause")),
         (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
@@ -558,4 +562,32 @@ pub fn accept_admin(env: Env) -> Result<(), ContractError> {
     );
 
     Ok(())
+}
+
+
+// ── Audit Logging ─────────────────────────────────────────────────────────────
+
+pub fn log_admin_action(env: &Env, admin: &Address, action: &str) {
+    let mut log: Vec<crate::types::AdminAuditEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::AdminAuditLog)
+        .unwrap_or(Vec::new(env));
+
+    log.push_back(crate::types::AdminAuditEntry {
+        admin: admin.clone(),
+        action: soroban_sdk::String::from_slice(env, action),
+        timestamp: env.ledger().timestamp(),
+    });
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::AdminAuditLog, &log);
+}
+
+pub fn get_admin_audit_log(env: Env) -> Vec<crate::types::AdminAuditEntry> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AdminAuditLog)
+        .unwrap_or(Vec::new(&env))
 }

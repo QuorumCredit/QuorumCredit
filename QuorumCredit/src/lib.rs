@@ -14,6 +14,8 @@ pub mod types;
 pub mod vouch;
 
 #[cfg(test)]
+mod admin_audit_log_test;
+#[cfg(test)]
 mod bug_condition_test;
 #[cfg(test)]
 mod borrower_whitelist_test;
@@ -578,5 +580,9 @@ impl QuorumCreditContract {
 
     pub fn get_config(env: Env) -> Config {
         admin::get_config(env)
+    }
+
+    pub fn get_admin_audit_log(env: Env) -> Vec<AdminAuditEntry> {
+        admin::get_admin_audit_log(env)
     }
 }
