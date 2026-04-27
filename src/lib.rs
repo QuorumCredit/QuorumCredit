@@ -8,6 +8,9 @@ pub mod helpers;
 pub mod insurance;
 pub mod loan;
 pub mod reputation;
+pub mod signature;
+pub mod cache;
+pub mod pagination;
 #[cfg(test)]
 mod tests;
 pub mod types;
