@@ -5,16 +5,21 @@ use soroban_sdk::{
 };
 
 pub mod admin;
+pub mod benchmarks;
 pub mod errors;
 pub mod governance;
+pub mod health;
 pub mod helpers;
 pub mod loan;
 pub mod reputation;
 pub mod types;
+pub mod upgrade;
 pub mod vouch;
 
 #[cfg(test)]
 mod admin_audit_log_test;
+#[cfg(test)]
+mod benchmarks_test;
 #[cfg(test)]
 mod admin_key_rotation_test;
 #[cfg(test)]
@@ -42,6 +47,8 @@ mod governance_test;
 #[cfg(test)]
 mod grace_period_test;
 #[cfg(test)]
+mod health_check_test;
+#[cfg(test)]
 mod initialize_test;
 #[cfg(test)]
 mod invalid_bps_test;
@@ -67,6 +74,8 @@ mod set_min_loan_amount_test;
 mod simple_double_repay_test;
 #[cfg(test)]
 mod token_config_test;
+#[cfg(test)]
+mod upgrade_validation_test;
 #[cfg(test)]
 mod vouch_min_stake_test;
 #[cfg(test)]
@@ -678,5 +687,17 @@ impl QuorumCreditContract {
 
     pub fn get_governance_token(env: Env) -> Option<Address> {
         governance::get_governance_token(env)
+    }
+
+    // ── Health Check ──────────────────────────────────────────────────────────
+
+    pub fn health_check(env: Env) -> health::HealthStatus {
+        health::health_check(&env)
+    }
+
+    // ── Upgrade Safety ────────────────────────────────────────────────────────
+
+    pub fn validate_upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), ContractError> {
+        upgrade::validate_upgrade(&env, new_wasm_hash)
     }
 }
