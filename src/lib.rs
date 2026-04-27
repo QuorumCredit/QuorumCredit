@@ -15,6 +15,7 @@ pub mod pagination;
 mod tests;
 pub mod types;
 pub mod vouch;
+pub mod webhook_retry;
 
 pub use contract::QuorumCreditContract;
 pub use errors::ContractError;
@@ -79,6 +80,10 @@ mod multi_token_vouch_test;
 mod yield_reserve_solvency_test;
 #[cfg(test)]
 mod slash_escrow_test;
+#[cfg(test)]
+mod fuzz_loan_state_machine_test;
+#[cfg(test)]
+mod property_based_yield_test;
 
 use helpers::{require_valid_token, validate_admin_config};
 use reputation::ReputationNftExternalClient;
