@@ -18,6 +18,8 @@ mod admin_audit_log_test;
 #[cfg(test)]
 mod admin_key_rotation_test;
 #[cfg(test)]
+mod admin_timelock_test;
+#[cfg(test)]
 mod bug_condition_test;
 #[cfg(test)]
 mod borrower_whitelist_test;
@@ -594,5 +596,30 @@ impl QuorumCreditContract {
 
     pub fn get_admin_key_expiry(env: Env, admin: Address) -> u64 {
         admin::get_admin_key_expiry(env, admin)
+    }
+
+    pub fn queue_admin_action(
+        env: Env,
+        admin_signers: Vec<Address>,
+        action: AdminTimelockAction,
+        delay_secs: u64,
+    ) -> Result<u64, ContractError> {
+        admin::queue_admin_action(env, admin_signers, action, delay_secs)
+    }
+
+    pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
+        admin::execute_admin_action(env, action_id)
+    }
+
+    pub fn cancel_admin_action(
+        env: Env,
+        caller: Address,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::cancel_admin_action(env, caller, action_id)
+    }
+
+    pub fn get_admin_timelock(env: Env, action_id: u64) -> Option<AdminTimelock> {
+        admin::get_admin_timelock(env, action_id)
     }
 }

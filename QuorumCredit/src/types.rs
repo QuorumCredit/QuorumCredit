@@ -16,6 +16,7 @@ pub const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
 pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+pub const DEFAULT_ADMIN_TIMELOCK_SECONDS: u64 = 48 * 60 * 60; // 48 hours
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
 

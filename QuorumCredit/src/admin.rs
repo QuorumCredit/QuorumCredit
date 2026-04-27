@@ -638,3 +638,138 @@ pub fn is_admin_key_expired(env: &Env, admin: &Address) -> bool {
 
     expiry > 0 && env.ledger().timestamp() > expiry
 }
+
+// ── Admin Action Timelock ────────────────────────────────────────────────────
+
+pub fn queue_admin_action(
+    env: Env,
+    admin_signers: Vec<Address>,
+    action: crate::types::AdminTimelockAction,
+    delay_secs: u64,
+) -> Result<u64, ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    let action_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelockCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("action ID overflow");
+
+    let eta = env.ledger().timestamp() + delay_secs;
+
+    let timelock = crate::types::AdminTimelock {
+        id: action_id,
+        action,
+        proposer: admin_signers.get(0).unwrap().clone(),
+        eta,
+        executed: false,
+        cancelled: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelock(action_id), &timelock);
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelockCounter, &action_id);
+
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "queue_admin_action");
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("queued")),
+        (action_id, eta),
+    );
+
+    Ok(action_id)
+}
+
+pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
+    let mut timelock: crate::types::AdminTimelock = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelock(action_id))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    if timelock.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+    if timelock.cancelled {
+        return Err(ContractError::TimelockNotFound);
+    }
+
+    if env.ledger().timestamp() < timelock.eta {
+        return Err(ContractError::TimelockNotReady);
+    }
+
+    const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+    if env.ledger().timestamp() > timelock.eta + TIMELOCK_EXPIRY {
+        return Err(ContractError::TimelockExpired);
+    }
+
+    timelock.executed = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelock(action_id), &timelock);
+
+    match &timelock.action {
+        crate::types::AdminTimelockAction::Pause => {
+            env.storage().instance().set(&DataKey::Paused, &true);
+        }
+        crate::types::AdminTimelockAction::Unpause => {
+            env.storage().instance().set(&DataKey::Paused, &false);
+        }
+        crate::types::AdminTimelockAction::UpdateConfig(cfg) => {
+            env.storage().instance().set(&DataKey::Config, cfg);
+        }
+        crate::types::AdminTimelockAction::SetAdminThreshold(threshold) => {
+            let mut cfg = config(&env);
+            cfg.admin_threshold = *threshold;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+    }
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("executed")),
+        action_id,
+    );
+
+    Ok(())
+}
+
+pub fn cancel_admin_action(env: Env, caller: Address, action_id: u64) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    let mut timelock: crate::types::AdminTimelock = env
+        .storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelock(action_id))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    if caller != timelock.proposer {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    if timelock.executed || timelock.cancelled {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    timelock.cancelled = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::AdminActionTimelock(action_id), &timelock);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("cancelled")),
+        action_id,
+    );
+
+    Ok(())
+}
+
+pub fn get_admin_timelock(env: Env, action_id: u64) -> Option<crate::types::AdminTimelock> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminActionTimelock(action_id))
+}
