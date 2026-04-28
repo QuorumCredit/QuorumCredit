@@ -82,6 +82,8 @@ mod vouch_min_stake_test;
 mod vouch_zero_stake_test;
 #[cfg(test)]
 mod voucher_whitelist_test;
+#[cfg(test)]
+mod get_voucher_history_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -548,6 +550,17 @@ impl QuorumCreditContract {
     }
 
     pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
+        vouch::voucher_history(env, voucher)
+    }
+
+    /// Issue #461: Get the list of borrowers a voucher has backed.
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the voucher
+    ///
+    /// # Returns
+    /// * `Vec<Address>` - Borrower addresses this voucher has backed (empty if none)
+    pub fn get_voucher_history(env: Env, voucher: Address) -> Vec<Address> {
         vouch::voucher_history(env, voucher)
     }
 
