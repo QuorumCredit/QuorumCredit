@@ -769,6 +769,27 @@ pub fn get_vouch_history(
         .unwrap_or(Vec::new(&env))
 }
 
+/// Issue #602: Get cumulative reputation statistics for a voucher.
+///
+/// Returns a `VoucherStats` struct with:
+/// - `successful_vouches`: number of vouches that ended in full repayment
+/// - `total_vouches_slashed`: number of vouches that ended in a slash
+/// - `total_yield_earned`: cumulative yield earned in stroops
+/// - `total_slashed`: cumulative stake slashed in stroops
+///
+/// Returns zeroed stats if the voucher has no history.
+pub fn get_voucher_stats(env: Env, voucher: Address) -> crate::types::VoucherStats {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VoucherStats(voucher))
+        .unwrap_or(crate::types::VoucherStats {
+            successful_vouches: 0,
+            total_vouches_slashed: 0,
+            total_yield_earned: 0,
+            total_slashed: 0,
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

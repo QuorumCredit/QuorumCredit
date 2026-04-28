@@ -370,6 +370,23 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 &v.voucher,
                 &(v.stake + voucher_yield),
             );
+
+            // Issue #602: Update voucher reputation stats on successful repayment.
+            let mut stats: crate::types::VoucherStats = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VoucherStats(v.voucher.clone()))
+                .unwrap_or(crate::types::VoucherStats {
+                    successful_vouches: 0,
+                    total_vouches_slashed: 0,
+                    total_yield_earned: 0,
+                    total_slashed: 0,
+                });
+            stats.successful_vouches += 1;
+            stats.total_yield_earned += voucher_yield;
+            env.storage()
+                .persistent()
+                .set(&DataKey::VoucherStats(v.voucher.clone()), &stats);
         }
 
         // Issue #553: Store yield distribution for this loan

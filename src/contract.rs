@@ -1035,6 +1035,18 @@ impl QuorumCreditContract {
         vouch::voucher_history(env, voucher)
     }
 
+    /// Get cumulative reputation statistics for a voucher (issue #602).
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the voucher
+    ///
+    /// # Returns
+    /// * `VoucherStats` - Struct with successful_vouches, total_vouches_slashed,
+    ///   total_yield_earned, and total_slashed. Returns zeroed stats if no history.
+    pub fn get_voucher_stats(env: Env, voucher: Address) -> VoucherStats {
+        vouch::get_voucher_stats(env, voucher)
+    }
+
     /// Get the reputation score for a borrower.
     ///
     /// # Arguments

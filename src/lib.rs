@@ -79,6 +79,8 @@ mod multi_token_vouch_test;
 #[cfg(test)]
 mod yield_reserve_solvency_test;
 #[cfg(test)]
+mod voucher_stats_test;
+#[cfg(test)]
 mod slash_escrow_test;
 #[cfg(test)]
 mod fuzz_loan_state_machine_test;

@@ -119,6 +119,7 @@ pub enum DataKey {
     YieldReserve,            // i128 balance of the yield reserve
     SlashEscrow(Address),    // borrower → (i128 amount, u64 release_timestamp)
     SlashAudit(Address),     // borrower → SlashAuditRecord
+    VoucherStats(Address),   // voucher → VoucherStats (reputation/history tracking)
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -348,6 +349,23 @@ pub struct PaginatedVouches {
     pub total: u32,
     pub limit: u32,
     pub offset: u32,
+}
+
+// ── Voucher Stats ─────────────────────────────────────────────────────────────
+
+/// Cumulative reputation statistics for a voucher address.
+/// Updated on every repayment (success) and slash (default) event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoucherStats {
+    /// Total number of vouches that ended in a successful repayment.
+    pub successful_vouches: u32,
+    /// Total number of vouches that ended in a slash (default).
+    pub total_vouches_slashed: u32,
+    /// Cumulative yield earned across all successful repayments, in stroops.
+    pub total_yield_earned: i128,
+    /// Cumulative stake amount slashed across all defaults, in stroops.
+    pub total_slashed: i128,
 }
 
 // ── Pause Mode ────────────────────────────────────────────────────────────────
