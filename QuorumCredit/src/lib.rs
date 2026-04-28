@@ -555,6 +555,17 @@ impl QuorumCreditContract {
         vouch::voucher_history(env, voucher)
     }
 
+    /// Issue #461: Get the list of borrowers a voucher has backed.
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the voucher
+    ///
+    /// # Returns
+    /// * `Vec<Address>` - Borrower addresses this voucher has backed (empty if none)
+    pub fn get_voucher_history(env: Env, voucher: Address) -> Vec<Address> {
+        vouch::voucher_history(env, voucher)
+    }
+
     pub fn get_reputation(env: Env, borrower: Address) -> u32 {
         let nft_addr: Address = match env
             .storage()
