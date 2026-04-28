@@ -702,6 +702,9 @@ pub fn refinance_loan(
             deadline,
             loan_purpose: soroban_sdk::String::from_slice(&env, "refinance"),
             token_address: new_token.clone(),
+            amortization_schedule: Vec::new(&env),
+            reminder_sent: false,
+            risk_score: 0,
         },
     );
     env.storage()
@@ -773,7 +776,7 @@ pub fn deposit_collateral(
         .set(&DataKey::BorrowerCollateral(borrower.clone()), &new_collateral);
 
     env.events().publish(
-        (symbol_short!("collateral"), symbol_short!("deposit")),
+        (symbol_short!("coll"), symbol_short!("deposit")),
         (borrower, amount),
     );
 
@@ -896,7 +899,7 @@ pub fn repay_partial(
         .set(&DataKey::Loan(loan.id), &loan);
 
     env.events().publish(
-        (symbol_short!("loan"), symbol_short!("partial_repay")),
+        (symbol_short!("loan"), symbol_short!("part_rep")),
         (borrower.clone(), payment),
     );
 
@@ -944,7 +947,7 @@ pub fn get_yield_reserve_balance(env: Env) -> i128 {
 /// Release slashed funds from escrow after the escrow period expires.
 /// Admin-only function.
 pub fn release_slash_escrow(env: Env, admin_signers: Vec<Address>, borrower: Address) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     let escrow_data: Option<(i128, u64)> = env
         .storage()
@@ -963,7 +966,7 @@ pub fn release_slash_escrow(env: Env, admin_signers: Vec<Address>, borrower: Add
         .remove(&DataKey::SlashEscrow(borrower.clone()));
 
     env.events().publish(
-        (symbol_short!("slash"), symbol_short!("escrow_released")),
+        (symbol_short!("slash"), symbol_short!("esc_rel")),
         (borrower.clone(), amount),
     );
 
@@ -972,7 +975,7 @@ pub fn release_slash_escrow(env: Env, admin_signers: Vec<Address>, borrower: Add
 
 /// Set the yield reserve balance. Admin-only.
 pub fn set_yield_reserve(env: Env, admin_signers: Vec<Address>, amount: i128) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     if amount < 0 {
         return Err(ContractError::InvalidAmount);
@@ -983,7 +986,7 @@ pub fn set_yield_reserve(env: Env, admin_signers: Vec<Address>, amount: i128) ->
         .set(&DataKey::YieldReserve, &amount);
 
     env.events().publish(
-        (symbol_short!("yield"), symbol_short!("reserve_set")),
+        (symbol_short!("yield"), symbol_short!("rsrv_set")),
         amount,
     );
 
@@ -992,7 +995,7 @@ pub fn set_yield_reserve(env: Env, admin_signers: Vec<Address>, amount: i128) ->
 
 /// Set the risk score for a borrower. Admin-only.
 pub fn set_borrower_risk_score(env: Env, admin_signers: Vec<Address>, borrower: Address, risk_score: u32) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     if risk_score > 100 {
         return Err(ContractError::InvalidAmount);
@@ -1011,7 +1014,7 @@ pub fn set_borrower_risk_score(env: Env, admin_signers: Vec<Address>, borrower: 
         .set(&DataKey::Loan(loan.id), &loan);
 
     env.events().publish(
-        (symbol_short!("borrower"), symbol_short!("risk_score_set")),
+        (symbol_short!("borrower"), symbol_short!("risk_set")),
         (borrower.clone(), risk_score),
     );
 

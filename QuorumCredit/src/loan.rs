@@ -1,16 +1,18 @@
 use crate::errors::ContractError;
 use crate::helpers::{
     bps_of, config, extend_ttl, get_active_loan_record, get_slash_balance, has_active_loan,
-    next_loan_id, require_allowed_token, require_not_paused, validate_loan_active,
+    next_loan_id, require_allowed_token, require_not_paused, require_not_paused_for,
+    validate_loan_active,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
-    DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
+    DataKey, LoanRecord, LoanStatus, PauseFlag, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS,
+    MIN_VOUCH_AGE, SECONDS_PER_DAY, TIME_WEIGHTED_YIELD_BONUS_MULTIPLIER,
+    TIME_WEIGHTED_YIELD_BONUS_THRESHOLD_DAYS,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 /// Register a referrer for a borrower. Must be called before `request_loan`.
-/// The referrer cannot be the borrower themselves.
 pub fn register_referral(
     env: Env,
     borrower: Address,
@@ -24,7 +26,6 @@ pub fn register_referral(
         !has_active_loan(&env, &borrower),
         "cannot set referral with active loan"
     );
-    // Idempotent: overwrite is fine (borrower signs).
     env.storage()
         .persistent()
         .set(&DataKey::ReferredBy(borrower.clone()), &referrer);
@@ -44,6 +45,7 @@ pub fn get_referrer(env: Env, borrower: Address) -> Option<Address> {
         .get(&DataKey::ReferredBy(borrower))
 }
 
+/// Backward-compatible request_loan (no co-borrowers).
 pub fn request_loan(
     env: Env,
     borrower: Address,
@@ -54,7 +56,45 @@ pub fn request_loan(
 ) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_paused(&env)?;
+    require_not_paused_for(&env, PauseFlag::LoanRequest)?;
+    let empty: Vec<Address> = Vec::new(&env);
+    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, empty)
+}
 
+/// Task 3: Request a loan with co-borrowers who share repayment responsibility.
+pub fn request_loan_with_co_borrowers(
+    env: Env,
+    borrower: Address,
+    amount: i128,
+    threshold: i128,
+    loan_purpose: soroban_sdk::String,
+    token_addr: Address,
+    co_borrowers: Vec<Address>,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+    require_not_paused_for(&env, PauseFlag::LoanRequest)?;
+
+    for i in 0..co_borrowers.len() {
+        let cb = co_borrowers.get(i).unwrap();
+        cb.require_auth();
+        if cb == borrower {
+            return Err(ContractError::SelfVouchNotAllowed);
+        }
+    }
+
+    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, co_borrowers)
+}
+
+fn request_loan_internal(
+    env: Env,
+    borrower: Address,
+    amount: i128,
+    threshold: i128,
+    loan_purpose: soroban_sdk::String,
+    token_addr: Address,
+    co_borrowers: Vec<Address>,
+) -> Result<(), ContractError> {
     if env
         .storage()
         .persistent()
@@ -64,7 +104,6 @@ pub fn request_loan(
         return Err(ContractError::Blacklisted);
     }
 
-    // Borrower whitelist check: if enabled, borrower must be whitelisted.
     let whitelist_enabled: bool = env
         .storage()
         .instance()
@@ -81,9 +120,7 @@ pub fn request_loan(
         }
     }
 
-    // Validate token is allowed before any other checks.
     let token_client = require_allowed_token(&env, &token_addr)?;
-
     let cfg = config(&env);
 
     assert!(
@@ -112,7 +149,6 @@ pub fn request_loan(
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(&env));
 
-    // Only count vouches denominated in the requested token.
     let mut token_vouches: Vec<VouchRecord> = Vec::new(&env);
     for v in vouches.iter() {
         if v.token == token_addr {
@@ -174,7 +210,7 @@ pub fn request_loan(
         &LoanRecord {
             id: loan_id,
             borrower: borrower.clone(),
-            co_borrowers: Vec::new(&env),
+            co_borrowers,
             amount,
             amount_repaid: 0,
             total_yield,
@@ -220,12 +256,11 @@ pub fn request_loan(
 pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_paused(&env)?;
+    require_not_paused_for(&env, PauseFlag::Repay)?;
 
-    // First try to get active loan record
     let mut loan = match get_active_loan_record(&env, &borrower) {
         Ok(loan) => loan,
         Err(ContractError::NoActiveLoan) => {
-            // Check if there's a latest loan that is already repaid
             if let Some(latest_loan) = crate::helpers::get_latest_loan_record(&env, &borrower) {
                 if latest_loan.status == LoanStatus::Repaid {
                     return Err(ContractError::AlreadyRepaid);
@@ -236,20 +271,21 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         Err(e) => return Err(e),
     };
 
-    for cb in loan.co_borrowers.iter() {
-        cb.require_auth();
-    }
-
-    if borrower != loan.borrower {
+    // Task 3: Allow primary borrower or any co-borrower to repay.
+    // The auth was already required above for `borrower`; we just need to
+    // verify they are actually associated with this loan.
+    let is_primary = borrower == loan.borrower;
+    let is_co = loan.co_borrowers.iter().any(|cb| cb == borrower);
+    if !is_primary && !is_co {
         return Err(ContractError::UnauthorizedCaller);
     }
+
     validate_loan_active(&loan)?;
     assert!(
         env.ledger().timestamp() <= loan.deadline,
         "loan deadline has passed"
     );
 
-    // Total obligation = principal + yield locked in at disbursement.
     let total_owed = loan.amount + loan.total_yield;
     let outstanding = total_owed - loan.amount_repaid;
     if payment <= 0 || payment > outstanding {
@@ -257,7 +293,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     }
 
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
-
     token.transfer(&borrower, &env.current_contract_address(), &payment);
     loan.amount_repaid += payment;
     let fully_repaid = loan.amount_repaid >= total_owed;
@@ -266,61 +301,68 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         let vouches: Vec<VouchRecord> = env
             .storage()
             .persistent()
-            .get(&DataKey::Vouches(borrower.clone()))
+            .get(&DataKey::Vouches(loan.borrower.clone()))
             .unwrap_or(Vec::new(&env));
 
         if vouches.is_empty() {
             panic!("no vouchers found for borrower");
         }
 
-        // Issue 112: Only distribute yield to vouches in the same token as the loan.
-        // Verify that available funds exclude slash balance to prevent fund leakage.
         let loan_token = soroban_sdk::token::Client::new(&env, &loan.token_address);
         let _slash_balance = get_slash_balance(&env);
 
-        let mut total_stake: i128 = 0;
-        for v in vouches.iter() {
-            if v.token == loan.token_address {
-                total_stake += v.amount;
-            }
-        }
-
-        // Issue 112: Ensure yield distribution respects available funds (excluding slash balance)
-        let available_for_yield = loan.total_yield;
-        let mut total_distributed: i128 = 0;
+        // Task 2: Time-weighted yield distribution.
+        let now = env.ledger().timestamp();
+        let mut total_tw: i128 = 0;
+        // Collect (voucher, original_stake, adjusted_tw) for token-matching vouches
+        let mut tw_entries: Vec<(Address, i128, i128)> = Vec::new(&env);
 
         for v in vouches.iter() {
             if v.token != loan.token_address {
                 continue;
             }
-            let voucher_yield = if total_stake > 0 {
-                (available_for_yield * v.amount) / total_stake
+            let days = (now.saturating_sub(v.vouch_timestamp)) / SECONDS_PER_DAY;
+            let tw = v.amount * days as i128;
+            let multiplier = if days >= TIME_WEIGHTED_YIELD_BONUS_THRESHOLD_DAYS {
+                TIME_WEIGHTED_YIELD_BONUS_MULTIPLIER
+            } else {
+                10
+            };
+            let adj = tw * multiplier / 10;
+            total_tw = total_tw
+                .checked_add(adj)
+                .ok_or(ContractError::StakeOverflow)?;
+            tw_entries.push_back((v.voucher.clone(), v.amount, adj));
+        }
+
+        let available_yield = loan.total_yield;
+        let mut distributed: i128 = 0;
+
+        for (voucher, stake, adj) in tw_entries.iter() {
+            let voucher_yield = if total_tw > 0 {
+                (available_yield * adj) / total_tw
             } else {
                 0
             };
-            total_distributed += voucher_yield;
-
-            // Assert that we're not exceeding available yield
+            distributed += voucher_yield;
             assert!(
-                total_distributed <= available_for_yield,
+                distributed <= available_yield,
                 "yield distribution would exceed available funds"
             );
-
             loan_token.transfer(
                 &env.current_contract_address(),
-                &v.voucher,
-                &(v.amount + voucher_yield),
+                &voucher,
+                &(stake + voucher_yield),
             );
         }
 
         loan.status = LoanStatus::Repaid;
         loan.repayment_timestamp = Some(env.ledger().timestamp());
 
-        // Pay referral bonus if a referrer is registered.
         if let Some(referrer) = env
             .storage()
             .persistent()
-            .get::<DataKey, Address>(&DataKey::ReferredBy(borrower.clone()))
+            .get::<DataKey, Address>(&DataKey::ReferredBy(loan.borrower.clone()))
         {
             let bonus_bps: u32 = env
                 .storage()
@@ -328,13 +370,11 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 .get(&DataKey::ReferralBonusBps)
                 .unwrap_or(DEFAULT_REFERRAL_BONUS_BPS);
             let bonus = loan.amount * bonus_bps as i128 / 10_000;
-
-            // Issue 112: Ensure bonus doesn't use slash funds
             if bonus > 0 {
                 loan_token.transfer(&env.current_contract_address(), &referrer, &bonus);
                 env.events().publish(
                     (symbol_short!("referral"), symbol_short!("bonus")),
-                    (referrer, borrower.clone(), bonus),
+                    (referrer, loan.borrower.clone(), bonus),
                 );
             }
         }
@@ -342,31 +382,31 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         let count: u32 = env
             .storage()
             .persistent()
-            .get(&DataKey::RepaymentCount(borrower.clone()))
+            .get(&DataKey::RepaymentCount(loan.borrower.clone()))
             .unwrap_or(0);
         env.storage()
             .persistent()
-            .set(&DataKey::RepaymentCount(borrower.clone()), &(count + 1));
-        extend_ttl(&env, &DataKey::RepaymentCount(borrower.clone()));
+            .set(&DataKey::RepaymentCount(loan.borrower.clone()), &(count + 1));
+        extend_ttl(&env, &DataKey::RepaymentCount(loan.borrower.clone()));
 
         if let Some(nft_addr) = env
             .storage()
             .instance()
             .get::<DataKey, Address>(&DataKey::ReputationNft)
         {
-            ReputationNftExternalClient::new(&env, &nft_addr).mint(&borrower);
+            ReputationNftExternalClient::new(&env, &nft_addr).mint(&loan.borrower);
         }
 
         env.storage()
             .persistent()
-            .remove(&DataKey::ActiveLoan(borrower.clone()));
+            .remove(&DataKey::ActiveLoan(loan.borrower.clone()));
         env.storage()
             .persistent()
-            .remove(&DataKey::Vouches(borrower.clone()));
+            .remove(&DataKey::Vouches(loan.borrower.clone()));
 
         env.events().publish(
             (symbol_short!("loan"), symbol_short!("repaid")),
-            (borrower.clone(), loan.amount),
+            (loan.borrower.clone(), loan.amount),
         );
     }
 
@@ -405,19 +445,16 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
     if threshold <= 0 {
         return false;
     }
-
     if let Some(loan) = crate::helpers::get_latest_loan_record(&env, &borrower) {
         if loan.status == LoanStatus::Active {
             return false;
         }
     }
-
     let vouches: Vec<VouchRecord> = env
         .storage()
         .persistent()
         .get(&DataKey::Vouches(borrower))
         .unwrap_or(Vec::new(&env));
-
     let total_stake: i128 = vouches.iter().map(|v| v.amount).sum();
     total_stake >= threshold
 }

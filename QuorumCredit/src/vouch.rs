@@ -1,8 +1,9 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    extend_ttl, has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
+    extend_ttl, has_active_loan, require_allowed_token, require_not_paused, 
+    require_not_paused_for, require_positive_amount,
 };
-use crate::types::{DataKey, VouchRecord};
+use crate::types::{DataKey, PauseFlag, VouchRecord};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 pub fn vouch(
@@ -14,6 +15,8 @@ pub fn vouch(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for vouch operations
+    require_not_paused_for(&env, PauseFlag::Vouch)?;
 
     // Voucher whitelist check: if enabled, voucher must be whitelisted.
     let whitelist_enabled: bool = env
@@ -138,6 +141,8 @@ pub fn batch_vouch(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for vouch operations
+    require_not_paused_for(&env, PauseFlag::Vouch)?;
 
     assert!(
         borrowers.len() == stakes.len(),
@@ -162,6 +167,8 @@ pub fn increase_stake(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for vouch operations
+    require_not_paused_for(&env, PauseFlag::Vouch)?;
 
     require_positive_amount(&env, additional)?;
 
@@ -200,6 +207,8 @@ pub fn decrease_stake(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for withdraw operations
+    require_not_paused_for(&env, PauseFlag::Withdraw)?;
 
     if voucher == borrower {
         return Err(ContractError::SelfVouchNotAllowed);
@@ -250,6 +259,8 @@ pub fn decrease_stake(
 pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for withdraw operations
+    require_not_paused_for(&env, PauseFlag::Withdraw)?;
 
     assert!(!has_active_loan(&env, &borrower), "loan already active");
 
@@ -298,6 +309,8 @@ pub fn transfer_vouch(
 ) -> Result<(), ContractError> {
     from.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for vouch operations
+    require_not_paused_for(&env, PauseFlag::Vouch)?;
 
     if from == to {
         return Ok(());

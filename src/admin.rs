@@ -192,7 +192,7 @@ pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64
     );
     
     env.events().publish(
-        (symbol_short!("admin"), symbol_short!("pause_thaw")),
+        (symbol_short!("admin"), symbol_short!("ps_thaw")),
         (admin_signers.get(0).unwrap(), now, thaw_duration),
     );
 }
@@ -527,10 +527,6 @@ pub fn withdraw_slash_treasury(
 pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
 
-    if new_admin == Address::zero(&env) {
-        return Err(ContractError::ZeroAddress);
-    }
-
     env.storage()
         .instance()
         .set(&DataKey::PendingAdmin, &new_admin);
@@ -544,7 +540,7 @@ pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) 
 }
 
 pub fn accept_admin(env: Env) -> Result<(), ContractError> {
-    let new_admin = env
+    let new_admin: Address = env
         .storage()
         .instance()
         .get(&DataKey::PendingAdmin)

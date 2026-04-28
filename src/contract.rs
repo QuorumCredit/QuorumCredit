@@ -58,6 +58,7 @@ impl QuorumCreditContract {
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
                 min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
+                prepayment_penalty_bps: 0,
             },
         );
 
@@ -1118,7 +1119,7 @@ impl QuorumCreditContract {
         let params = crate::pagination::normalize_pagination(limit, offset);
         let loans = Vec::new(&env);
         let total = 0u32;
-        crate::pagination::paginate_loans(loans, total, params.limit, params.offset)
+        crate::pagination::paginate_loans(&env, loans, total, params.limit, params.offset)
     }
 
     /// Get paginated vouches for a borrower.
@@ -1139,7 +1140,7 @@ impl QuorumCreditContract {
         let params = crate::pagination::normalize_pagination(limit, offset);
         if let Some(vouches) = env.storage().persistent().get::<_, Vec<VouchRecord>>(&DataKey::Vouches(borrower)) {
             let total = vouches.len() as u32;
-            crate::pagination::paginate_vouches(vouches, total, params.limit, params.offset)
+            crate::pagination::paginate_vouches(&env, vouches, total, params.limit, params.offset)
         } else {
             crate::types::PaginatedVouches {
                 vouches: Vec::new(&env),

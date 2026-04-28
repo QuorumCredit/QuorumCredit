@@ -324,6 +324,74 @@ impl QuorumCreditContract {
         admin::unpause(env, admin_signers)
     }
 
+    // Task 1: Granular pause functions
+    pub fn pause_function(
+        env: Env,
+        admin_signers: Vec<Address>,
+        function_name: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        admin::pause_function(env, admin_signers, function_name)
+    }
+
+    pub fn unpause_function(
+        env: Env,
+        admin_signers: Vec<Address>,
+        function_name: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        admin::unpause_function(env, admin_signers, function_name)
+    }
+
+    pub fn get_pause_status(env: Env, function_name: soroban_sdk::String) -> bool {
+        admin::get_pause_status(env, function_name)
+    }
+
+    // Task 3: Co-borrower support
+    pub fn request_loan_with_co_borrowers(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        threshold: i128,
+        loan_purpose: soroban_sdk::String,
+        token: Address,
+        co_borrowers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        loan::request_loan_with_co_borrowers(env, borrower, amount, threshold, loan_purpose, token, co_borrowers)
+    }
+
+    // Task 4: Dispute mechanism
+    pub fn dispute_slash(
+        env: Env,
+        borrower: Address,
+        evidence_hash: soroban_sdk::String,
+    ) -> Result<u64, ContractError> {
+        governance::dispute_slash(env, borrower, evidence_hash)
+    }
+
+    pub fn vote_dispute(
+        env: Env,
+        voucher: Address,
+        dispute_id: u64,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        governance::vote_dispute(env, voucher, dispute_id, approve)
+    }
+
+    pub fn resolve_dispute(env: Env, dispute_id: u64) -> Result<(), ContractError> {
+        governance::resolve_dispute(env, dispute_id)
+    }
+
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Option<crate::types::DisputeRecord> {
+        governance::get_dispute(env, dispute_id)
+    }
+
+    pub fn set_dispute_window(env: Env, admin_signers: Vec<Address>, window_secs: u64) {
+        governance::set_dispute_window(env, admin_signers, window_secs)
+    }
+
+    pub fn get_dispute_window(env: Env) -> u64 {
+        governance::get_dispute_window(env)
+    }
+
     pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
         admin::blacklist(env, admin_signers, borrower)
     }

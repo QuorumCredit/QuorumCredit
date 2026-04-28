@@ -4,6 +4,7 @@ use crate::helpers::{
     validate_admin_config,
 };
 use crate::types::{Config, DataKey, TokenConfig};
+use crate::governance;
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
@@ -241,6 +242,62 @@ pub fn unpause(env: Env, admin_signers: Vec<Address>) {
         (symbol_short!("admin"), symbol_short!("unpause")),
         (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
     );
+}
+
+// ── Task 1: Granular Pause Functions ─────────────────────────────────────────
+
+/// Pause a specific function while allowing others to continue.
+/// Valid flags: "vouch", "loan_request", "repay", "slash", "withdraw"
+pub fn pause_function(
+    env: Env,
+    admin_signers: Vec<Address>,
+    function_name: soroban_sdk::String,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    
+    let flag = crate::types::PauseFlag::from_string(&env, &function_name)
+        .ok_or(ContractError::InvalidPauseFlag)?;
+    
+    env.storage().instance().set(&DataKey::PauseFlag(flag.clone()), &true);
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "pause_function");
+    
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("paused_fn")),
+        (admin_signers.get(0).unwrap(), function_name, env.ledger().timestamp()),
+    );
+    
+    Ok(())
+}
+
+/// Unpause a specific function that was previously paused.
+pub fn unpause_function(
+    env: Env,
+    admin_signers: Vec<Address>,
+    function_name: soroban_sdk::String,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    
+    let flag = crate::types::PauseFlag::from_string(&env, &function_name)
+        .ok_or(ContractError::InvalidPauseFlag)?;
+    
+    env.storage().instance().set(&DataKey::PauseFlag(flag.clone()), &false);
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "unpause_function");
+    
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("unpause_f")),
+        (admin_signers.get(0).unwrap(), function_name, env.ledger().timestamp()),
+    );
+    
+    Ok(())
+}
+
+/// Get the pause status for a specific function
+pub fn get_pause_status(env: Env, function_name: soroban_sdk::String) -> bool {
+    let flag = crate::types::PauseFlag::from_string(&env, &function_name);
+    match flag {
+        Some(f) => crate::helpers::is_paused_for(&env, f),
+        None => false,
+    }
 }
 
 pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {

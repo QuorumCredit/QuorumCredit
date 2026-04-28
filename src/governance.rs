@@ -144,7 +144,7 @@ pub fn get_slash_vote_quorum(env: Env) -> u32 {
 pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
     require_not_paused(&env)?;
 
-    let vote = env
+    let vote: SlashVoteRecord = env
         .storage()
         .persistent()
         .get(&DataKey::SlashVote(borrower.clone()))
@@ -163,7 +163,7 @@ pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractErr
     let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
 
     // Retrieve quorum threshold
-    let quorum_bps: u32 = get_slash_vote_quorum(env);
+    let quorum_bps: u32 = get_slash_vote_quorum(env.clone());
 
     // Calculate required quorum stake
     let quorum_stake = total_stake * quorum_bps as i128 / 10_000;
@@ -512,7 +512,7 @@ pub fn vote_on_slash_appeal(
         .set(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()), &appeal);
 
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("appeal_vote")),
+        (symbol_short!("gov"), symbol_short!("appl_vote")),
         (borrower, voucher, approve),
     );
 
@@ -572,7 +572,7 @@ pub fn execute_slash_appeal(
         .remove(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()));
 
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("appeal_executed")),
+        (symbol_short!("gov"), symbol_short!("appl_exec")),
         (borrower, voucher),
     );
 

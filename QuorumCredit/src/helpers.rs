@@ -41,6 +41,52 @@ pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
     }
 }
 
+/// Task 1: Check if a specific function is paused
+pub fn require_not_paused_for(env: &Env, flag: crate::types::PauseFlag) -> Result<(), ContractError> {
+    // First check global pause
+    let global_paused: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false);
+    if global_paused {
+        return Err(ContractError::ContractPaused);
+    }
+
+    // Then check specific pause flag
+    let is_paused: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::PauseFlag(flag.clone()))
+        .unwrap_or(false);
+    
+    if is_paused {
+        Err(ContractError::FunctionPaused)
+    } else {
+        Ok(())
+    }
+}
+
+/// Task 1: Check if global pause is active (for backward compatibility)
+pub fn is_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
+}
+
+/// Task 1: Check if a specific pause flag is active
+pub fn is_paused_for(env: &Env, flag: crate::types::PauseFlag) -> bool {
+    // If global pause is active, all functions are paused
+    if is_paused(env) {
+        return true;
+    }
+    env.storage()
+        .instance()
+        .get(&DataKey::PauseFlag(flag))
+        .unwrap_or(false)
+}
+
 /// Returns `Err(InsufficientFunds)` if `amount` is not strictly positive (≤ 0).
 /// Use this for all numeric inputs that must be > 0 (stakes, loan amounts, thresholds).
 pub fn require_positive_amount(_env: &Env, amount: i128) -> Result<(), ContractError> {
@@ -168,7 +214,7 @@ pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
         );
         // Check if admin key is expired
         assert!(
-            !crate::admin::is_admin_key_expired(env, signer),
+            !crate::admin::is_admin_key_expired(env, &signer),
             "admin key has expired"
         );
         signer.require_auth();

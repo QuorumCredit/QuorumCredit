@@ -2,7 +2,7 @@ use crate::errors::ContractError;
 use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
-use crate::types::{DataKey, VouchRecord, VouchHistoryEntry};
+use crate::types::{DataKey, VouchRecord, VouchHistoryEntry, WithdrawalRequest, WITHDRAWAL_TIMELOCK_DELAY};
 use soroban_sdk::{panic_with_error, symbol_short, token, Address, Env, Vec};
 
 /// Cached instance-storage values read once per vouch call to reduce storage reads (#501).
@@ -246,20 +246,21 @@ pub fn batch_vouch(
     let cfg = VouchConfig::load(&env);
 
     // ── Phase 1: Validate all vouches before committing any ──────────────────
-    // Collect (token_client, vouches) for each entry so Phase 2 can reuse them.
-    let mut validated: Vec<(token::Client, Vec<VouchRecord>)> = Vec::new(&env);
+    // Use a plain Rust vec (not soroban Vec) since token::Client is not contracttype.
+    let mut validated: soroban_sdk::Vec<soroban_sdk::Vec<VouchRecord>> = soroban_sdk::Vec::new(&env);
     for i in 0..borrowers.len() {
         let borrower = borrowers.get(i).unwrap();
         let stake = stakes.get(i).unwrap();
-        let result = validate_vouch(&env, &cfg, &voucher, &borrower, stake, &token)?;
-        validated.push_back(result);
+        let (_token_client, vouches) = validate_vouch(&env, &cfg, &voucher, &borrower, stake, &token)?;
+        validated.push_back(vouches);
     }
 
     // ── Phase 2: Commit all vouches now that every entry is valid ─────────────
     for i in 0..borrowers.len() {
         let borrower = borrowers.get(i).unwrap();
         let stake = stakes.get(i).unwrap();
-        let (token_client, vouches) = validated.get(i).unwrap();
+        let vouches = validated.get(i).unwrap();
+        let token_client = token::Client::new(&env, &token);
         commit_vouch(
             &env,
             &token_client,
@@ -767,6 +768,103 @@ pub fn get_vouch_history(
         .persistent()
         .get(&DataKey::VouchHistory(borrower, voucher, token))
         .unwrap_or(Vec::new(&env))
+}
+
+/// Request a vouch withdrawal with a timelock delay (Issue #537).
+/// The withdrawal will be executable after WITHDRAWAL_TIMELOCK_DELAY seconds.
+pub fn request_vouch_withdrawal(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    // Ensure the vouch exists
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let exists = vouches.iter().any(|v| v.voucher == voucher && v.token == token);
+    if !exists {
+        return Err(ContractError::VoucherNotFound);
+    }
+
+    let request = WithdrawalRequest {
+        voucher: voucher.clone(),
+        borrower: borrower.clone(),
+        token: token.clone(),
+        requested_at: env.ledger().timestamp(),
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::VouchWithdrawal(voucher.clone(), borrower.clone(), token.clone()), &request);
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("wdraw_req")),
+        (voucher, borrower, token),
+    );
+
+    Ok(())
+}
+
+/// Execute a vouch withdrawal after the timelock has expired (Issue #537).
+pub fn execute_vouch_withdrawal(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let request: WithdrawalRequest = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchWithdrawal(voucher.clone(), borrower.clone(), token.clone()))
+        .ok_or(ContractError::VoucherNotFound)?;
+
+    let now = env.ledger().timestamp();
+    if now < request.requested_at + WITHDRAWAL_TIMELOCK_DELAY {
+        return Err(ContractError::TimelockNotReady);
+    }
+
+    // Remove the withdrawal request
+    env.storage()
+        .persistent()
+        .remove(&DataKey::VouchWithdrawal(voucher.clone(), borrower.clone(), token.clone()));
+
+    // Remove the vouch record
+    let mut vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    if let Some(idx) = vouches.iter().position(|v| v.voucher == voucher && v.token == token) {
+        let vouch_rec = vouches.get(idx as u32).unwrap();
+        let stake = vouch_rec.stake;
+
+        // Return stake to voucher
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &voucher, &stake);
+
+        vouches.remove(idx as u32);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &vouches);
+    }
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("wdraw_ok")),
+        (voucher, borrower, token),
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -119,6 +119,12 @@ pub enum DataKey {
     YieldReserve,            // i128 balance of the yield reserve
     SlashEscrow(Address),    // borrower → (i128 amount, u64 release_timestamp)
     SlashAudit(Address),     // borrower → SlashAuditRecord
+    PrepaymentPenaltyBps,    // u32 prepayment penalty in basis points
+    AdminActionCounter,      // u64 monotonically increasing admin action ID
+    AdminAction(u64),        // action_id → AdminActionProposal
+    SlashAppeal(Address, Address), // (borrower, voucher) → SlashAppealRecord
+    YieldDistribution(u64),  // loan_id → Vec<YieldDistributionEntry>
+    VouchWithdrawal(Address, Address, Address), // (voucher, borrower, token) → WithdrawalRequest
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -167,6 +173,8 @@ pub struct Config {
     pub grace_period: u64,
     /// Minimum age of a vouch before it can be used for loan eligibility, in seconds (default 24 hours).
     pub min_vouch_age_secs: u64,
+    /// Prepayment penalty in basis points (e.g. 100 = 1%). Applied when loan is repaid early.
+    pub prepayment_penalty_bps: u32,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
