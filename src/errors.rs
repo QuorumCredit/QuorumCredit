@@ -54,4 +54,12 @@ pub enum ContractError {
     InsufficientYieldReserve = 41,
     /// Reminder already sent for this loan.
     ReminderAlreadySent = 42,
+    /// Basis points value is invalid (e.g. > 10_000).
+    InvalidBps = 43,
+    /// Insurance claim has already been made for this loan.
+    InsuranceClaimAlreadyMade = 44,
+    /// Insurance pool has no funds to pay out.
+    InsurancePoolEmpty = 45,
+    /// Loan has already been repaid.
+    AlreadyRepaid = 46,
 }

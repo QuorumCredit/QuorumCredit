@@ -702,6 +702,9 @@ pub fn refinance_loan(
             deadline,
             loan_purpose: soroban_sdk::String::from_slice(&env, "refinance"),
             token_address: new_token.clone(),
+            amortization_schedule: Vec::new(&env),
+            reminder_sent: false,
+            risk_score: 0,
         },
     );
     env.storage()
@@ -773,7 +776,7 @@ pub fn deposit_collateral(
         .set(&DataKey::BorrowerCollateral(borrower.clone()), &new_collateral);
 
     env.events().publish(
-        (symbol_short!("collateral"), symbol_short!("deposit")),
+        (symbol_short!("cltrl"), symbol_short!("deposit")),
         (borrower, amount),
     );
 
@@ -896,7 +899,7 @@ pub fn repay_partial(
         .set(&DataKey::Loan(loan.id), &loan);
 
     env.events().publish(
-        (symbol_short!("loan"), symbol_short!("partial_repay")),
+        (symbol_short!("loan"), symbol_short!("part_rpay")),
         (borrower.clone(), payment),
     );
 
@@ -944,7 +947,7 @@ pub fn get_yield_reserve_balance(env: Env) -> i128 {
 /// Release slashed funds from escrow after the escrow period expires.
 /// Admin-only function.
 pub fn release_slash_escrow(env: Env, admin_signers: Vec<Address>, borrower: Address) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     let escrow_data: Option<(i128, u64)> = env
         .storage()
@@ -963,7 +966,7 @@ pub fn release_slash_escrow(env: Env, admin_signers: Vec<Address>, borrower: Add
         .remove(&DataKey::SlashEscrow(borrower.clone()));
 
     env.events().publish(
-        (symbol_short!("slash"), symbol_short!("escrow_released")),
+        (symbol_short!("slash"), symbol_short!("escrow_rl")),
         (borrower.clone(), amount),
     );
 
@@ -972,7 +975,7 @@ pub fn release_slash_escrow(env: Env, admin_signers: Vec<Address>, borrower: Add
 
 /// Set the yield reserve balance. Admin-only.
 pub fn set_yield_reserve(env: Env, admin_signers: Vec<Address>, amount: i128) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     if amount < 0 {
         return Err(ContractError::InvalidAmount);
@@ -983,7 +986,7 @@ pub fn set_yield_reserve(env: Env, admin_signers: Vec<Address>, amount: i128) ->
         .set(&DataKey::YieldReserve, &amount);
 
     env.events().publish(
-        (symbol_short!("yield"), symbol_short!("reserve_set")),
+        (symbol_short!("yield"), symbol_short!("rsrv_set")),
         amount,
     );
 
@@ -992,7 +995,7 @@ pub fn set_yield_reserve(env: Env, admin_signers: Vec<Address>, amount: i128) ->
 
 /// Set the risk score for a borrower. Admin-only.
 pub fn set_borrower_risk_score(env: Env, admin_signers: Vec<Address>, borrower: Address, risk_score: u32) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     if risk_score > 100 {
         return Err(ContractError::InvalidAmount);
@@ -1011,9 +1014,224 @@ pub fn set_borrower_risk_score(env: Env, admin_signers: Vec<Address>, borrower: 
         .set(&DataKey::Loan(loan.id), &loan);
 
     env.events().publish(
-        (symbol_short!("borrower"), symbol_short!("risk_score_set")),
+        (symbol_short!("borrower"), symbol_short!("risk_set")),
         (borrower.clone(), risk_score),
     );
 
     Ok(())
+}
+
+/// Issue #601: Request a loan extension.
+///
+/// The borrower requests an extension of their active loan deadline. Vouchers must
+/// approve the extension. An extension fee (1% of remaining balance) is charged.
+/// A loan may be extended at most `MAX_EXTENSIONS_PER_LOAN` times.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - Address of the borrower (must sign)
+/// * `extension_secs` - Additional seconds to extend the deadline
+///
+/// # Errors
+/// * `NoActiveLoan` — borrower has no active loan
+/// * `InvalidAmount` — extension_secs is zero
+/// * `InvalidStateTransition` — loan has already been extended the maximum number of times
+/// * `ContractPaused` — contract is paused
+pub fn request_extension(
+    env: Env,
+    borrower: Address,
+    extension_secs: u64,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    if extension_secs == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let loan = get_active_loan_record(&env, &borrower)?;
+
+    if borrower != loan.borrower {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    // Check if an extension request already exists
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::LoanExtension(borrower.clone()))
+    {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    // Check extension count limit
+    let extension_count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LoanExtension(borrower.clone()))
+        .map(|r: crate::types::LoanExtensionRequest| r.extension_count)
+        .unwrap_or(0);
+
+    if extension_count >= crate::types::MAX_EXTENSIONS_PER_LOAN {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    let now = env.ledger().timestamp();
+    let request = crate::types::LoanExtensionRequest {
+        borrower: borrower.clone(),
+        loan_id: loan.id,
+        extension_secs,
+        requested_at: now,
+        approvals: Vec::new(&env),
+        fee_paid: 0,
+        extension_count,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::LoanExtension(borrower.clone()), &request);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("ext_req")),
+        (borrower, loan.id, extension_secs),
+    );
+
+    Ok(())
+}
+
+/// Issue #601: Approve a loan extension request (called by a voucher).
+///
+/// Once a majority of vouchers (by stake weight) approve, the extension is applied:
+/// - The loan deadline is extended by `extension_secs`
+/// - An extension fee (1% of remaining balance) is transferred from the borrower
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `voucher` - Address of the approving voucher (must sign)
+/// * `borrower` - Address of the borrower whose extension to approve
+///
+/// # Errors
+/// * `NoActiveLoan` — borrower has no active loan
+/// * `TimelockNotFound` — no extension request exists for this borrower
+/// * `VoucherNotFound` — caller is not a voucher for this borrower
+/// * `AlreadyVoted` — voucher has already approved this extension
+/// * `ContractPaused` — contract is paused
+pub fn approve_extension(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let loan = get_active_loan_record(&env, &borrower)?;
+
+    let mut request: crate::types::LoanExtensionRequest = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LoanExtension(borrower.clone()))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    // Verify the voucher is actually vouching for this borrower
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let voucher_stake: i128 = vouches
+        .iter()
+        .filter(|v| v.voucher == voucher && v.token == loan.token_address)
+        .map(|v| v.stake)
+        .sum();
+
+    if voucher_stake == 0 {
+        return Err(ContractError::VoucherNotFound);
+    }
+
+    // Check for duplicate approval
+    for a in request.approvals.iter() {
+        if a == voucher {
+            return Err(ContractError::AlreadyVoted);
+        }
+    }
+
+    request.approvals.push_back(voucher.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::LoanExtension(borrower.clone()), &request);
+
+    // Calculate total stake and approval stake to determine quorum
+    let total_stake: i128 = vouches
+        .iter()
+        .filter(|v| v.token == loan.token_address)
+        .map(|v| v.stake)
+        .sum();
+
+    let approval_stake: i128 = vouches
+        .iter()
+        .filter(|v| request.approvals.iter().any(|a| a == v.voucher) && v.token == loan.token_address)
+        .map(|v| v.stake)
+        .sum();
+
+    // Quorum: >50% of total stake must approve
+    let quorum_met = total_stake > 0 && approval_stake * 2 > total_stake;
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("ext_vote")),
+        (voucher, borrower.clone(), quorum_met),
+    );
+
+    if quorum_met {
+        // Apply the extension
+        let mut updated_loan = loan;
+        updated_loan.deadline += request.extension_secs;
+
+        // Charge extension fee (1% of remaining balance)
+        let remaining = updated_loan.amount + updated_loan.total_yield - updated_loan.amount_repaid;
+        let fee = remaining * crate::types::EXTENSION_FEE_BPS / crate::types::BPS_DENOMINATOR;
+
+        if fee > 0 {
+            let token = soroban_sdk::token::Client::new(&env, &updated_loan.token_address);
+            token.transfer(&borrower, &env.current_contract_address(), &fee);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(updated_loan.id), &updated_loan);
+
+        // Update extension count and clear the request
+        let new_count = request.extension_count + 1;
+        let cleared = crate::types::LoanExtensionRequest {
+            extension_count: new_count,
+            approvals: Vec::new(&env),
+            fee_paid: fee,
+            ..request
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanExtension(borrower.clone()), &cleared);
+
+        // Remove the pending request so a new one can be submitted
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanExtension(borrower.clone()));
+
+        env.events().publish(
+            (symbol_short!("loan"), symbol_short!("extended")),
+            (borrower, updated_loan.deadline, fee),
+        );
+    }
+
+    Ok(())
+}
+
+/// Issue #601: Get the pending extension request for a borrower.
+pub fn get_extension_request(
+    env: Env,
+    borrower: Address,
+) -> Option<crate::types::LoanExtensionRequest> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::LoanExtension(borrower))
 }

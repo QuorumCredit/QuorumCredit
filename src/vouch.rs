@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use crate::errors::ContractError;
 use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
@@ -247,19 +249,19 @@ pub fn batch_vouch(
 
     // ── Phase 1: Validate all vouches before committing any ──────────────────
     // Collect (token_client, vouches) for each entry so Phase 2 can reuse them.
-    let mut validated: Vec<(token::Client, Vec<VouchRecord>)> = Vec::new(&env);
+    // Use alloc::vec::Vec (not soroban Vec) because token::Client is not storable.
+    let mut validated: alloc::vec::Vec<(token::Client, soroban_sdk::Vec<VouchRecord>)> = alloc::vec::Vec::new();
     for i in 0..borrowers.len() {
         let borrower = borrowers.get(i).unwrap();
         let stake = stakes.get(i).unwrap();
         let result = validate_vouch(&env, &cfg, &voucher, &borrower, stake, &token)?;
-        validated.push_back(result);
+        validated.push(result);
     }
 
     // ── Phase 2: Commit all vouches now that every entry is valid ─────────────
-    for i in 0..borrowers.len() {
-        let borrower = borrowers.get(i).unwrap();
-        let stake = stakes.get(i).unwrap();
-        let (token_client, vouches) = validated.get(i).unwrap();
+    for (i, (token_client, vouches)) in validated.into_iter().enumerate() {
+        let borrower = borrowers.get(i as u32).unwrap();
+        let stake = stakes.get(i as u32).unwrap();
         commit_vouch(
             &env,
             &token_client,
@@ -343,6 +345,9 @@ pub fn increase_stake(
     Ok(())
 }
 
+/// Issue #599: Request a decrease in stake during an active loan.
+/// The decrease is timelocked for 7 days to prevent rug-pulling.
+/// If no active loan exists, the decrease is applied immediately.
 pub fn decrease_stake(
     env: Env,
     voucher: Address,
@@ -358,11 +363,8 @@ pub fn decrease_stake(
     if amount <= 0 {
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
-    if has_active_loan(&env, &borrower) {
-        return Err(ContractError::ActiveLoanExists);
-    }
 
-    let mut vouches: Vec<VouchRecord> = env
+    let vouches: Vec<VouchRecord> = env
         .storage()
         .persistent()
         .get(&DataKey::Vouches(borrower.clone()))
@@ -373,28 +375,51 @@ pub fn decrease_stake(
         .position(|v| v.voucher == voucher)
         .expect("vouch not found") as u32;
 
-    let mut vouch_rec = vouches.get(idx).unwrap();
+    let vouch_rec = vouches.get(idx).unwrap();
     if amount > vouch_rec.stake {
         panic_with_error!(&env, ContractError::InsufficientFunds);
     }
 
-    let token_client = require_allowed_token(&env, &vouch_rec.token)?;
-    let token = vouch_rec.token.clone();
-    vouch_rec.stake -= amount;
-    if vouch_rec.stake == 0 {
-        vouches.remove(idx);
-    } else {
-        vouches.set(idx, vouch_rec);
+    // Issue #599: If there is an active loan, queue a timelocked withdrawal instead of
+    // immediately reducing stake. This prevents vouchers from rug-pulling mid-loan.
+    if has_active_loan(&env, &borrower) {
+        let now = env.ledger().timestamp();
+        let unlock_at = now + crate::types::DECREASE_STAKE_TIMELOCK;
+        env.storage().persistent().set(
+            &DataKey::PendingWithdrawal(voucher.clone(), borrower.clone()),
+            &crate::types::WithdrawalRequest {
+                voucher: voucher.clone(),
+                borrower: borrower.clone(),
+                token: vouch_rec.token.clone(),
+                requested_at: now,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("vouch"), symbol_short!("dec_qued")),
+            (voucher, borrower, amount, unlock_at),
+        );
+        return Ok(());
     }
 
-    if vouches.is_empty() {
+    let token_client = require_allowed_token(&env, &vouch_rec.token)?;
+    let token = vouch_rec.token.clone();
+    let mut vouches_mut = vouches;
+    let mut vouch_rec_mut = vouches_mut.get(idx).unwrap();
+    vouch_rec_mut.stake -= amount;
+    if vouch_rec_mut.stake == 0 {
+        vouches_mut.remove(idx);
+    } else {
+        vouches_mut.set(idx, vouch_rec_mut);
+    }
+
+    if vouches_mut.is_empty() {
         env.storage()
             .persistent()
             .remove(&DataKey::Vouches(borrower.clone()));
     } else {
         env.storage()
             .persistent()
-            .set(&DataKey::Vouches(borrower.clone()), &vouches);
+            .set(&DataKey::Vouches(borrower.clone()), &vouches_mut);
     }
 
     token_client.transfer(&env.current_contract_address(), &voucher, &amount);
@@ -428,6 +453,10 @@ pub fn decrease_stake(
     Ok(())
 }
 
+/// Issue #600: Withdraw a vouch completely and return the stake to the voucher.
+///
+/// Enforces a minimum lock period of 7 days from the vouch timestamp to prevent
+/// flash-loan-style attacks where an attacker stakes, borrows, then immediately withdraws.
 pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
@@ -449,6 +478,17 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
         .ok_or(ContractError::UnauthorizedCaller)? as u32;
 
     let vouch_rec = vouches.get(idx).unwrap();
+
+    // Issue #600: Enforce minimum lock period (7 days) before withdrawal is allowed.
+    // This prevents flash-loan attacks: stake → borrow → immediately withdraw.
+    // The lock only applies when there is an active loan (no loan = no attack vector).
+    let now = env.ledger().timestamp();
+    if has_active_loan(&env, &borrower)
+        && now < vouch_rec.vouch_timestamp + crate::types::MIN_VOUCH_LOCK_PERIOD
+    {
+        return Err(ContractError::VouchTooRecent);
+    }
+
     let stake = vouch_rec.stake;
     let token_addr = vouch_rec.token.clone();
     vouches.remove(idx);
@@ -492,6 +532,83 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
     );
 
     Ok(())
+}
+
+/// Issue #600/#537: Request a vouch withdrawal with a timelock.
+///
+/// Records a pending withdrawal request. The actual withdrawal can be executed
+/// after `WITHDRAWAL_TIMELOCK_DELAY` seconds via `execute_vouch_withdrawal`.
+pub fn request_vouch_withdrawal(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
+
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .ok_or(ContractError::NoVouchesForBorrower)?;
+
+    let _idx = vouches
+        .iter()
+        .position(|v| v.voucher == voucher && v.token == token)
+        .ok_or(ContractError::VoucherNotFound)?;
+
+    let now = env.ledger().timestamp();
+    env.storage().persistent().set(
+        &DataKey::PendingWithdrawal(voucher.clone(), borrower.clone()),
+        &crate::types::WithdrawalRequest {
+            voucher: voucher.clone(),
+            borrower: borrower.clone(),
+            token: token.clone(),
+            requested_at: now,
+        },
+    );
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("wdraw_req")),
+        (voucher, borrower, token, now),
+    );
+
+    Ok(())
+}
+
+/// Issue #600/#537: Execute a pending vouch withdrawal after the timelock expires.
+pub fn execute_vouch_withdrawal(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    token: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let request: crate::types::WithdrawalRequest = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingWithdrawal(voucher.clone(), borrower.clone()))
+        .ok_or(ContractError::TimelockNotFound)?;
+
+    let now = env.ledger().timestamp();
+    if now < request.requested_at + crate::types::WITHDRAWAL_TIMELOCK_DELAY {
+        return Err(ContractError::TimelockNotReady);
+    }
+
+    // Remove the pending request
+    env.storage()
+        .persistent()
+        .remove(&DataKey::PendingWithdrawal(voucher.clone(), borrower.clone()));
+
+    // Now perform the actual withdrawal (reuse withdraw_vouch logic)
+    withdraw_vouch(env, voucher, borrower)
 }
 
 pub fn transfer_vouch(

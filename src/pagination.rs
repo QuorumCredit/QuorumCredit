@@ -17,24 +17,24 @@ pub fn normalize_pagination(limit: Option<u32>, offset: Option<u32>) -> Paginati
 
 /// Paginate a vector of loan records
 pub fn paginate_loans(
+    env: &Env,
     loans: Vec<LoanRecord>,
     total: u32,
     limit: u32,
     offset: u32,
 ) -> PaginatedLoans {
-    let start = offset as usize;
-    let end = (offset + limit) as usize;
-    let end = if end > loans.len() { loans.len() } else { end };
-    
-    let mut paginated = Vec::new(&soroban_sdk::Env::new());
+    let start = offset;
+    let end = offset.saturating_add(limit).min(loans.len());
+
+    let mut paginated = Vec::new(env);
     if start < loans.len() {
         for i in start..end {
-            if let Some(loan) = loans.get(i as u32) {
+            if let Some(loan) = loans.get(i) {
                 paginated.push_back(loan);
             }
         }
     }
-    
+
     PaginatedLoans {
         loans: paginated,
         total,
@@ -45,24 +45,24 @@ pub fn paginate_loans(
 
 /// Paginate a vector of vouch records
 pub fn paginate_vouches(
+    env: &Env,
     vouches: Vec<VouchRecord>,
     total: u32,
     limit: u32,
     offset: u32,
 ) -> PaginatedVouches {
-    let start = offset as usize;
-    let end = (offset + limit) as usize;
-    let end = if end > vouches.len() { vouches.len() } else { end };
-    
-    let mut paginated = Vec::new(&soroban_sdk::Env::new());
+    let start = offset;
+    let end = offset.saturating_add(limit).min(vouches.len());
+
+    let mut paginated = Vec::new(env);
     if start < vouches.len() {
         for i in start..end {
-            if let Some(vouch) = vouches.get(i as u32) {
+            if let Some(vouch) = vouches.get(i) {
                 paginated.push_back(vouch);
             }
         }
     }
-    
+
     PaginatedVouches {
         vouches: paginated,
         total,
