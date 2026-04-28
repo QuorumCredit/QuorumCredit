@@ -82,6 +82,10 @@ mod vouch_min_stake_test;
 mod vouch_zero_stake_test;
 #[cfg(test)]
 mod voucher_whitelist_test;
+#[cfg(test)]
+mod invariants_test;
+#[cfg(test)]
+mod regression_tests;
 
 pub use errors::ContractError;
 pub use types::*;
