@@ -46,4 +46,6 @@ pub enum ContractError {
     SelfVouchNotAllowed = 38,
     InvalidBps = 39,
     DuplicateToken = 40,
+    /// Voucher's stake for this borrower would exceed the admin-set limit.
+    StakeLimitExceeded = 41,
 }

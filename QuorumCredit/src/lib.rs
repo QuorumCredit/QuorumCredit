@@ -83,6 +83,8 @@ mod vouch_zero_stake_test;
 #[cfg(test)]
 mod voucher_whitelist_test;
 #[cfg(test)]
+mod voucher_stake_limit_test;
+#[cfg(test)]
 mod invariants_test;
 #[cfg(test)]
 mod regression_tests;
@@ -702,6 +704,20 @@ impl QuorumCreditContract {
 
     pub fn get_governance_token(env: Env) -> Option<Address> {
         governance::get_governance_token(env)
+    }
+
+    pub fn set_voucher_stake_limit(
+        env: Env,
+        admin_signers: Vec<Address>,
+        voucher: Address,
+        borrower: Address,
+        limit: i128,
+    ) {
+        admin::set_voucher_stake_limit(env, admin_signers, voucher, borrower, limit)
+    }
+
+    pub fn get_voucher_stake_limit(env: Env, voucher: Address, borrower: Address) -> Option<i128> {
+        admin::get_voucher_stake_limit(env, voucher, borrower)
     }
 
     // ── Health Check ──────────────────────────────────────────────────────────

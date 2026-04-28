@@ -78,6 +78,7 @@ pub enum DataKey {
     AdminActionTimelock(u64), // action_id → AdminTimelockAction
     AdminActionTimelockCounter, // u64 monotonically increasing action ID
     GovernanceTokenAddress, // Address of governance token for voting
+    VoucherStakeLimit(Address, Address), // (voucher, borrower) → i128 max stake
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────

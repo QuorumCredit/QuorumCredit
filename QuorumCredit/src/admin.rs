@@ -798,3 +798,25 @@ pub fn set_governance_token(env: Env, admin_signers: Vec<Address>, token: Addres
 
     Ok(())
 }
+
+pub fn set_voucher_stake_limit(
+    env: Env,
+    admin_signers: Vec<Address>,
+    voucher: Address,
+    borrower: Address,
+    limit: i128,
+) {
+    require_admin_approval(&env, &admin_signers);
+    assert!(limit > 0, "limit must be positive");
+    env.storage()
+        .persistent()
+        .set(&DataKey::VoucherStakeLimit(voucher.clone(), borrower.clone()), &limit);
+    extend_ttl(&env, &DataKey::VoucherStakeLimit(voucher.clone(), borrower.clone()));
+    log_admin_action(&env, &admin_signers.get(0).unwrap(), "set_voucher_stake_limit");
+}
+
+pub fn get_voucher_stake_limit(env: Env, voucher: Address, borrower: Address) -> Option<i128> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VoucherStakeLimit(voucher, borrower))
+}

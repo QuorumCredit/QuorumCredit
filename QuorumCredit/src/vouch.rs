@@ -61,6 +61,17 @@ fn do_vouch(
         return Err(ContractError::MinStakeNotMet);
     }
 
+    // Enforce per-voucher-per-borrower stake limit if set.
+    if let Some(limit) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, i128>(&DataKey::VoucherStakeLimit(voucher.clone(), borrower.clone()))
+    {
+        if stake > limit {
+            return Err(ContractError::StakeLimitExceeded);
+        }
+    }
+
     // Rate limiting: enforce cooldown between vouch calls from the same address.
     let _now = env.ledger().timestamp();
     let _last: u64 = env
@@ -179,6 +190,18 @@ pub fn increase_stake(
     let mut vouch_rec = vouches.get(idx).unwrap();
     // Use the token stored on the vouch record.
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
+
+    // Enforce per-voucher-per-borrower stake limit if set.
+    if let Some(limit) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, i128>(&DataKey::VoucherStakeLimit(voucher.clone(), borrower.clone()))
+    {
+        if vouch_rec.amount + additional > limit {
+            return Err(ContractError::StakeLimitExceeded);
+        }
+    }
+
     token_client.transfer(&voucher, &env.current_contract_address(), &additional);
 
     vouch_rec.amount += additional;
