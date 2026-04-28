@@ -1109,6 +1109,17 @@ impl QuorumCreditContract {
         loan::default_count(env, borrower)
     }
 
+    /// Get payment history for a loan. (#598)
+    pub fn get_payment_history(
+        env: Env,
+        loan_id: u64,
+    ) -> Vec<crate::types::PaymentRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PaymentHistory(loan_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
     // ── Pagination ────────────────────────────────────────────────────────────
 
     /// Get paginated loans for a borrower.

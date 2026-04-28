@@ -165,6 +165,8 @@ pub enum DataKey {
     PendingWithdrawal(Address, Address),
     /// Issue #601: borrower → LoanExtensionRequest
     LoanExtension(Address),
+    /// Issue #598: loan_id → Vec<PaymentRecord> (payment history)
+    PaymentHistory(u64),
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -260,6 +262,18 @@ pub struct LoanRecord {
     pub reminder_sent: bool,
     /// Risk score for the borrower (0-100), used for dynamic yield calculation.
     pub risk_score: u32,
+}
+
+/// A single payment event recorded against a loan.
+#[contracttype]
+#[derive(Clone)]
+pub struct PaymentRecord {
+    /// Amount paid in this transaction, in stroops.
+    pub amount: i128,
+    /// Ledger timestamp of this payment.
+    pub timestamp: u64,
+    /// Cumulative amount repaid after this payment, in stroops.
+    pub cumulative_repaid: i128,
 }
 
 #[contracttype]

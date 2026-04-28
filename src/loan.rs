@@ -297,6 +297,21 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     loan.amount_repaid += payment;
     let fully_repaid = loan.amount_repaid >= total_owed;
 
+    // #598: Record payment in history
+    let mut history: Vec<crate::types::PaymentRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PaymentHistory(loan.id))
+        .unwrap_or(Vec::new(&env));
+    history.push_back(crate::types::PaymentRecord {
+        amount: payment,
+        timestamp: env.ledger().timestamp(),
+        cumulative_repaid: loan.amount_repaid,
+    });
+    env.storage()
+        .persistent()
+        .set(&DataKey::PaymentHistory(loan.id), &history);
+
     if fully_repaid {
         let vouches: Vec<VouchRecord> = env
             .storage()
@@ -869,11 +884,50 @@ pub fn repay_partial(
     }
 
     let loan_token = require_allowed_token(&env, &token)?;
-    loan_token.transfer(&env.current_contract_address(), &borrower, &payment);
+    // #598 fix: borrower pays INTO the contract (was backwards)
+    loan_token.transfer(&borrower, &env.current_contract_address(), &payment);
 
     loan.amount_repaid = loan.amount_repaid + payment;
 
+    // #598: Record payment in history
+    let mut history: Vec<crate::types::PaymentRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PaymentHistory(loan.id))
+        .unwrap_or(Vec::new(&env));
+    history.push_back(crate::types::PaymentRecord {
+        amount: payment,
+        timestamp: env.ledger().timestamp(),
+        cumulative_repaid: loan.amount_repaid,
+    });
+    env.storage()
+        .persistent()
+        .set(&DataKey::PaymentHistory(loan.id), &history);
+
     if loan.amount_repaid >= loan.amount + loan.total_yield {
+        // #598: Distribute proportional yield to vouchers on full repayment
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let total_stake: i128 = vouches.iter().filter(|v| v.token == token).map(|v| v.stake).sum();
+
+        for v in vouches.iter() {
+            if v.token != token { continue; }
+            let voucher_yield = if total_stake > 0 {
+                loan.total_yield * v.stake / total_stake
+            } else {
+                0
+            };
+            loan_token.transfer(
+                &env.current_contract_address(),
+                &v.voucher,
+                &(v.stake + voucher_yield),
+            );
+        }
+
         loan.status = LoanStatus::Repaid;
         loan.repayment_timestamp = Some(env.ledger().timestamp());
 
@@ -1055,22 +1109,18 @@ pub fn request_extension(
         return Err(ContractError::UnauthorizedCaller);
     }
 
-    // Check if an extension request already exists
-    if env
+    // Check if an active pending request already exists (sentinel has extension_secs==0)
+    let existing: Option<crate::types::LoanExtensionRequest> = env
         .storage()
         .persistent()
-        .has(&DataKey::LoanExtension(borrower.clone()))
-    {
+        .get(&DataKey::LoanExtension(borrower.clone()));
+
+    let extension_count = existing.as_ref().map(|r| r.extension_count).unwrap_or(0);
+
+    // A pending request has extension_secs > 0
+    if existing.map(|r| r.extension_secs > 0).unwrap_or(false) {
         return Err(ContractError::InvalidStateTransition);
     }
-
-    // Check extension count limit
-    let extension_count: u32 = env
-        .storage()
-        .persistent()
-        .get(&DataKey::LoanExtension(borrower.clone()))
-        .map(|r: crate::types::LoanExtensionRequest| r.extension_count)
-        .unwrap_or(0);
 
     if extension_count >= crate::types::MAX_EXTENSIONS_PER_LOAN {
         return Err(ContractError::InvalidStateTransition);
@@ -1200,22 +1250,27 @@ pub fn approve_extension(
             .persistent()
             .set(&DataKey::Loan(updated_loan.id), &updated_loan);
 
-        // Update extension count and clear the request
+        // Persist extension count on the loan record via a dedicated counter key,
+        // then remove the pending request so a new one can be submitted.
         let new_count = request.extension_count + 1;
-        let cleared = crate::types::LoanExtensionRequest {
-            extension_count: new_count,
-            approvals: Vec::new(&env),
-            fee_paid: fee,
-            ..request
-        };
-        env.storage()
-            .persistent()
-            .set(&DataKey::LoanExtension(borrower.clone()), &cleared);
-
-        // Remove the pending request so a new one can be submitted
         env.storage()
             .persistent()
             .remove(&DataKey::LoanExtension(borrower.clone()));
+
+        // Store the new count back so request_extension can read it next time.
+        // We reuse LoanExtension with a sentinel (no approvals, extension_secs=0).
+        env.storage().persistent().set(
+            &DataKey::LoanExtension(borrower.clone()),
+            &crate::types::LoanExtensionRequest {
+                borrower: borrower.clone(),
+                loan_id: updated_loan.id,
+                extension_secs: 0,
+                requested_at: 0,
+                approvals: Vec::new(&env),
+                fee_paid: fee,
+                extension_count: new_count,
+            },
+        );
 
         env.events().publish(
             (symbol_short!("loan"), symbol_short!("extended")),
