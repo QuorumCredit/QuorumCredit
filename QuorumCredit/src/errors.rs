@@ -48,4 +48,6 @@ pub enum ContractError {
     DuplicateToken = 40,
     /// Voucher's stake for this borrower would exceed the admin-set limit.
     StakeLimitExceeded = 41,
+    /// admin_threshold exceeds the number of admins provided.
+    InvalidAdminThreshold = 42,
 }
