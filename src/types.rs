@@ -413,6 +413,23 @@ pub struct PaginatedVouches {
     pub offset: u32,
 }
 
+// ── Voucher Stats ─────────────────────────────────────────────────────────────
+
+/// Cumulative reputation statistics for a voucher address.
+/// Updated on every repayment (success) and slash (default) event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoucherStats {
+    /// Total number of vouches that ended in a successful repayment.
+    pub successful_vouches: u32,
+    /// Total number of vouches that ended in a slash (default).
+    pub total_vouches_slashed: u32,
+    /// Cumulative yield earned across all successful repayments, in stroops.
+    pub total_yield_earned: i128,
+    /// Cumulative stake amount slashed across all defaults, in stroops.
+    pub total_slashed: i128,
+}
+
 // ── Pause Mode ────────────────────────────────────────────────────────────────
 
 #[contracttype]
