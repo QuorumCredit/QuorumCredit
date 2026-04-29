@@ -46,6 +46,18 @@ pub enum ContractError {
     SelfVouchNotAllowed = 38,
     InvalidBps = 39,
     DuplicateToken = 40,
-    /// Voucher's stake for this borrower would exceed the admin-set limit.
-    StakeLimitExceeded = 41,
+    // Task 1: Loan Cancellation
+    LoanNotCancellable = 41,
+    CancellationWindowExpired = 42,
+    // Task 2: Large Loan Multi-Signature
+    LoanTooLarge = 43,
+    LargeLoanPendingApproval = 44,
+    LargeLoanNotApproved = 45,
+    LargeLoanDelayNotElapsed = 46,
+    LargeLoanAlreadyExecuted = 47,
+    // Task 3: Circular Vouch Detection
+    CircularVouchDetected = 48,
+    VouchDepthExceeded = 49,
+    // Task 4: Loan Category
+    InvalidLoanCategory = 50,
 }
