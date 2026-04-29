@@ -83,6 +83,14 @@ mod vouch_zero_stake_test;
 #[cfg(test)]
 mod voucher_whitelist_test;
 #[cfg(test)]
+mod voucher_stake_limit_test;
+#[cfg(test)]
+mod vouch_cooldown_test;
+#[cfg(test)]
+mod decrease_stake_full_withdrawal_test;
+#[cfg(test)]
+mod initialize_admin_threshold_test;
+#[cfg(test)]
 mod invariants_test;
 #[cfg(test)]
 mod regression_tests;
@@ -239,6 +247,41 @@ impl QuorumCreditContract {
 
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
         loan::repay(env, borrower, payment)
+    }
+
+    // Task 1: Loan Cancellation
+    pub fn cancel_loan(env: Env, borrower: Address) -> Result<(), ContractError> {
+        loan::cancel_loan(env, borrower)
+    }
+
+    // Task 2: Large Loan Multi-Signature
+    pub fn request_large_loan(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        threshold: i128,
+        loan_purpose: soroban_sdk::String,
+        loan_category: LoanCategory,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        loan::request_large_loan(env, borrower, amount, threshold, loan_purpose, loan_category, token)
+    }
+
+    pub fn approve_large_loan(
+        env: Env,
+        admin: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::approve_large_loan(env, admin, borrower)
+    }
+
+    pub fn execute_large_loan(env: Env, borrower: Address) -> Result<(), ContractError> {
+        loan::execute_large_loan(env, borrower)
+    }
+
+    // Task 4: Loan Category Analytics
+    pub fn get_loans_by_category(env: Env, category: LoanCategory) -> Vec<u64> {
+        loan::get_loans_by_category(env, category)
     }
 
     // ── Admin Functions (require admin_threshold signatures) ──────────────────
@@ -702,6 +745,20 @@ impl QuorumCreditContract {
 
     pub fn get_governance_token(env: Env) -> Option<Address> {
         governance::get_governance_token(env)
+    }
+
+    pub fn set_voucher_stake_limit(
+        env: Env,
+        admin_signers: Vec<Address>,
+        voucher: Address,
+        borrower: Address,
+        limit: i128,
+    ) {
+        admin::set_voucher_stake_limit(env, admin_signers, voucher, borrower, limit)
+    }
+
+    pub fn get_voucher_stake_limit(env: Env, voucher: Address, borrower: Address) -> Option<i128> {
+        admin::get_voucher_stake_limit(env, voucher, borrower)
     }
 
     // ── Health Check ──────────────────────────────────────────────────────────

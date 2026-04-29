@@ -2,13 +2,11 @@ use soroban_sdk::contracterror;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum ContractError {
     InsufficientFunds = 1,
-    /// Borrower already has an active (non-repaid, non-defaulted) loan.
     ActiveLoanExists = 2,
-    /// Total vouched stake overflowed i128.
     StakeOverflow = 3,
-    /// admin or token address must not be the zero address.
     ZeroAddress = 4,
     DuplicateVouch = 5,
     NoActiveLoan = 6,
@@ -27,7 +25,6 @@ pub enum ContractError {
     AlreadyInitialized = 19,
     VouchTooRecent = 20,
     VouchCooldownActive = 21,
-    BorrowerHasActiveLoan = 22,
     VoucherNotWhitelisted = 23,
     Blacklisted = 24,
     TimelockNotFound = 25,
@@ -35,7 +32,6 @@ pub enum ContractError {
     TimelockExpired = 27,
     NoVouchesForBorrower = 28,
     VoucherNotFound = 29,
-    /// Token address does not implement the SEP-41 token interface.
     InvalidToken = 30,
     AlreadyVoted = 31,
     SlashVoteNotFound = 32,
@@ -43,23 +39,10 @@ pub enum ContractError {
     LoanBelowMinAmount = 34,
     QuorumNotMet = 35,
     MaxVouchersPerBorrowerExceeded = 36,
-    /// Voucher has insufficient balance to stake the requested amount.
     InsufficientVoucherBalance = 37,
-    /// Voucher and borrower must be different addresses.
     SelfVouchNotAllowed = 38,
     DuplicateToken = 39,
-    /// Admin threshold must be > 0 and <= number of admins.
     InvalidAdminThreshold = 40,
-    /// Yield reserve is insufficient to cover promised yield.
     InsufficientYieldReserve = 41,
-    /// Reminder already sent for this loan.
     ReminderAlreadySent = 42,
-    /// Basis points value is invalid (e.g. > 10_000).
-    InvalidBps = 43,
-    /// Insurance claim has already been made for this loan.
-    InsuranceClaimAlreadyMade = 44,
-    /// Insurance pool has no funds to pay out.
-    InsurancePoolEmpty = 45,
-    /// Loan has already been repaid.
-    AlreadyRepaid = 46,
 }
