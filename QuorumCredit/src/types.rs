@@ -24,15 +24,41 @@ pub const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 // Task 4: Dispute constants
 pub const DEFAULT_DISPUTE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
 
+// ── Loan Size Tiers ───────────────────────────────────────────────────────────
+
+pub const SMALL_LOAN_THRESHOLD: i128 = 1_000_000;      // 1M stroops
+pub const MEDIUM_LOAN_THRESHOLD: i128 = 5_000_000;     // 5M stroops
+pub const LARGE_LOAN_THRESHOLD: i128 = 10_000_000;     // 10M stroops
+pub const CRITICAL_LOAN_THRESHOLD: i128 = 50_000_000;  // 50M stroops
+
+pub const LARGE_LOAN_DELAY_SECONDS: u64 = 48 * 60 * 60; // 48 hours review period
+pub const CANCELLATION_WINDOW_SECONDS: u64 = 60 * 60;   // 1 hour cancellation window
+pub const MAX_VOUCH_DEPTH: u32 = 3;                     // max circular vouch depth
+
 // ── Loan Status ───────────────────────────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LoanStatus {
     None,
+    Pending,
     Active,
     Repaid,
     Defaulted,
+    Cancelled,
+}
+
+// ── Loan Purpose Categories ───────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LoanCategory {
+    Business,
+    Education,
+    Medical,
+    Agriculture,
+    Personal,
+    Other,
 }
 
 // ── Task 1: Granular Pause Flags ─────────────────────────────────────────────
@@ -140,12 +166,10 @@ pub enum DataKey {
     AdminActionTimelock(u64), // action_id → AdminTimelockAction
     AdminActionTimelockCounter, // u64 monotonically increasing action ID
     GovernanceTokenAddress, // Address of governance token for voting
-    // Task 1: Granular pause flags
-    PauseFlag(PauseFlag), // PauseFlag → bool (true = paused)
-    // Task 4: Dispute records
-    Dispute(u64),         // dispute_id → DisputeRecord
-    DisputeCounter,       // u64 monotonically increasing dispute ID
-    DisputeWindowSecs,    // u64 dispute window in seconds (default 7 days)
+    LargeLoanApproval(Address), // borrower → LargeLoanApprovalRecord
+    LargeLoanRequest(Address), // borrower → LargeLoanRequestRecord
+    VouchGraph(Address, Address), // (voucher, borrower) → depth u32
+    LoanCategoryLoans(LoanCategory), // category → Vec<loan_id>
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────
@@ -248,7 +272,30 @@ pub struct LoanRecord {
     pub repayment_timestamp: Option<u64>,  // set once the loan is fully repaid
     pub deadline: u64,                     // repayment deadline (ledger timestamp)
     pub loan_purpose: soroban_sdk::String, // borrower-supplied purpose string
+    pub loan_category: LoanCategory,       // category of the loan
     pub token_address: Address,            // token used for this loan
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct LargeLoanApprovalRecord {
+    pub borrower: Address,
+    pub amount: i128,
+    pub approved_by: Vec<Address>, // admins who approved
+    pub approval_timestamp: u64,
+    pub executed: bool,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct LargeLoanRequestRecord {
+    pub borrower: Address,
+    pub amount: i128,
+    pub requested_at: u64,
+    pub token_address: Address,
+    pub threshold: i128,
+    pub loan_purpose: soroban_sdk::String,
+    pub loan_category: LoanCategory,
 }
 
 #[contracttype]

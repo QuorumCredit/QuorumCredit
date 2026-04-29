@@ -52,8 +52,44 @@ pub const DEFAULT_MAX_VOUCHERS_PER_BORROWER: u32 = 50;
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 /// Maximum window after `eta` within which a timelocked action must be executed, in seconds (72 hours).
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+/// Minimum lock period for a vouch before it can be withdrawn, in seconds (7 days).
+/// Protects against flash-loan-style attacks where an attacker stakes, borrows, then
+/// immediately withdraws.
+pub const MIN_VOUCH_LOCK_PERIOD: u64 = 7 * 24 * 60 * 60;
+
+/// Extension fee charged when a borrower requests a loan extension, in basis points (100 = 1%).
+pub const EXTENSION_FEE_BPS: i128 = 100;
+
+/// Maximum number of extensions allowed per loan.
+pub const MAX_EXTENSIONS_PER_LOAN: u32 = 2;
+
+/// Timelock delay for decrease_stake during an active loan, in seconds (7 days).
+pub const DECREASE_STAKE_TIMELOCK: u64 = 7 * 24 * 60 * 60;
+
 /// Withdrawal request timelock delay, in seconds (24 hours).
 pub const WITHDRAWAL_TIMELOCK_DELAY: u64 = 24 * 60 * 60;
+
+// ── Loan Extension ────────────────────────────────────────────────────────────
+
+/// A pending loan extension request. Created by the borrower; approved by vouchers.
+#[contracttype]
+#[derive(Clone)]
+pub struct LoanExtensionRequest {
+    /// The borrower requesting the extension.
+    pub borrower: Address,
+    /// Loan ID being extended.
+    pub loan_id: u64,
+    /// Requested additional duration in seconds.
+    pub extension_secs: u64,
+    /// Timestamp when the request was created.
+    pub requested_at: u64,
+    /// Vouchers who have approved this extension.
+    pub approvals: Vec<Address>,
+    /// Extension fee paid (in stroops), deducted from borrower on approval.
+    pub fee_paid: i128,
+    /// How many times this loan has already been extended.
+    pub extension_count: u32,
+}
 /// Slash escrow period before funds are permanently burned, in seconds (30 days).
 pub const SLASH_ESCROW_PERIOD: u64 = 30 * 24 * 60 * 60;
 
@@ -119,12 +155,18 @@ pub enum DataKey {
     YieldReserve,            // i128 balance of the yield reserve
     SlashEscrow(Address),    // borrower → (i128 amount, u64 release_timestamp)
     SlashAudit(Address),     // borrower → SlashAuditRecord
-    PrepaymentPenaltyBps,    // u32 prepayment penalty in basis points
-    AdminActionCounter,      // u64 monotonically increasing admin action ID
-    AdminAction(u64),        // action_id → AdminActionProposal
-    SlashAppeal(Address, Address), // (borrower, voucher) → SlashAppealRecord
+    // Issue #598-601 additions
+    PrepaymentPenaltyBps,    // u32: prepayment penalty in basis points
     YieldDistribution(u64),  // loan_id → Vec<YieldDistributionEntry>
-    VouchWithdrawal(Address, Address, Address), // (voucher, borrower, token) → WithdrawalRequest
+    AdminAction(u64),        // action_id → AdminActionProposal
+    AdminActionCounter,      // u64: monotonically increasing admin action ID
+    SlashAppeal(Address, Address), // (borrower, voucher) → SlashAppealRecord
+    /// Issue #599/#600: (voucher, borrower) → WithdrawalRequest (pending timelock withdrawal)
+    PendingWithdrawal(Address, Address),
+    /// Issue #601: borrower → LoanExtensionRequest
+    LoanExtension(Address),
+    /// Issue #598: loan_id → Vec<PaymentRecord> (payment history)
+    PaymentHistory(u64),
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -173,7 +215,8 @@ pub struct Config {
     pub grace_period: u64,
     /// Minimum age of a vouch before it can be used for loan eligibility, in seconds (default 24 hours).
     pub min_vouch_age_secs: u64,
-    /// Prepayment penalty in basis points (e.g. 100 = 1%). Applied when loan is repaid early.
+    /// Prepayment penalty in basis points (e.g. 100 = 1%). Applied to remaining principal
+    /// when a borrower repays early. 0 means no penalty.
     pub prepayment_penalty_bps: u32,
 }
 
@@ -219,6 +262,18 @@ pub struct LoanRecord {
     pub reminder_sent: bool,
     /// Risk score for the borrower (0-100), used for dynamic yield calculation.
     pub risk_score: u32,
+}
+
+/// A single payment event recorded against a loan.
+#[contracttype]
+#[derive(Clone)]
+pub struct PaymentRecord {
+    /// Amount paid in this transaction, in stroops.
+    pub amount: i128,
+    /// Ledger timestamp of this payment.
+    pub timestamp: u64,
+    /// Cumulative amount repaid after this payment, in stroops.
+    pub cumulative_repaid: i128,
 }
 
 #[contracttype]
@@ -356,6 +411,23 @@ pub struct PaginatedVouches {
     pub total: u32,
     pub limit: u32,
     pub offset: u32,
+}
+
+// ── Voucher Stats ─────────────────────────────────────────────────────────────
+
+/// Cumulative reputation statistics for a voucher address.
+/// Updated on every repayment (success) and slash (default) event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoucherStats {
+    /// Total number of vouches that ended in a successful repayment.
+    pub successful_vouches: u32,
+    /// Total number of vouches that ended in a slash (default).
+    pub total_vouches_slashed: u32,
+    /// Cumulative yield earned across all successful repayments, in stroops.
+    pub total_yield_earned: i128,
+    /// Cumulative stake amount slashed across all defaults, in stroops.
+    pub total_slashed: i128,
 }
 
 // ── Pause Mode ────────────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ pub fn paginate_loans(
 ) -> PaginatedLoans {
     let start = offset;
     let end = offset.saturating_add(limit).min(loans.len());
+
     let mut paginated = Vec::new(env);
     if start < loans.len() {
         for i in start..end {
@@ -32,7 +33,13 @@ pub fn paginate_loans(
             }
         }
     }
-    PaginatedLoans { loans: paginated, total, limit, offset }
+
+    PaginatedLoans {
+        loans: paginated,
+        total,
+        limit,
+        offset,
+    }
 }
 
 /// Paginate a vector of vouch records
@@ -45,6 +52,7 @@ pub fn paginate_vouches(
 ) -> PaginatedVouches {
     let start = offset;
     let end = offset.saturating_add(limit).min(vouches.len());
+
     let mut paginated = Vec::new(env);
     if start < vouches.len() {
         for i in start..end {
@@ -53,5 +61,29 @@ pub fn paginate_vouches(
             }
         }
     }
-    PaginatedVouches { vouches: paginated, total, limit, offset }
+
+    PaginatedVouches {
+        vouches: paginated,
+        total,
+        limit,
+        offset,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_pagination_defaults() {
+        let params = normalize_pagination(None, None);
+        assert_eq!(params.limit, DEFAULT_LIMIT);
+        assert_eq!(params.offset, 0);
+    }
+
+    #[test]
+    fn test_normalize_pagination_max_limit() {
+        let params = normalize_pagination(Some(200), None);
+        assert_eq!(params.limit, MAX_LIMIT);
+    }
 }

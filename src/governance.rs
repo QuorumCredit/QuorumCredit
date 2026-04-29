@@ -144,7 +144,7 @@ pub fn get_slash_vote_quorum(env: Env) -> u32 {
 pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
     require_not_paused(&env)?;
 
-    let vote: SlashVoteRecord = env
+    let vote: crate::types::SlashVoteRecord = env
         .storage()
         .persistent()
         .get(&DataKey::SlashVote(borrower.clone()))
@@ -236,6 +236,23 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         if remaining > 0 {
             loan_token.transfer(&env.current_contract_address(), &v.voucher, &remaining);
         }
+
+        // Issue #602: Update voucher reputation stats on slash.
+        let mut stats: crate::types::VoucherStats = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherStats(v.voucher.clone()))
+            .unwrap_or(crate::types::VoucherStats {
+                successful_vouches: 0,
+                total_vouches_slashed: 0,
+                total_yield_earned: 0,
+                total_slashed: 0,
+            });
+        stats.total_vouches_slashed += 1;
+        stats.total_slashed += slash_amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::VoucherStats(v.voucher.clone()), &stats);
     }
 
     // Store slashed funds in escrow instead of immediately burning

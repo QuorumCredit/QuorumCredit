@@ -258,14 +258,9 @@ pub fn validate_admin_config(
     admin_threshold: u32,
 ) -> Result<(), ContractError> {
     assert!(!admins.is_empty(), "at least one admin is required");
-    assert!(
-        admin_threshold > 0,
-        "admin threshold must be greater than zero"
-    );
-    assert!(
-        admin_threshold <= admins.len(),
-        "admin threshold cannot exceed admin count"
-    );
+    if admin_threshold == 0 || admin_threshold > admins.len() {
+        return Err(ContractError::InvalidAdminThreshold);
+    }
 
     let admin_count = admins.len();
     for i in 0..admin_count {

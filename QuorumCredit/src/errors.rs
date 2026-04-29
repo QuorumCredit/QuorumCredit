@@ -46,15 +46,18 @@ pub enum ContractError {
     SelfVouchNotAllowed = 38,
     InvalidBps = 39,
     DuplicateToken = 40,
-    // Task 1: Granular pause errors
-    FunctionPaused = 41,
-    InvalidPauseFlag = 42,
-    // Task 3: Co-borrower errors
-    CoBorrowerNotFound = 43,
-    DuplicateCoBorrower = 44,
-    // Task 4: Dispute errors
-    DisputeNotFound = 45,
-    DisputeWindowExpired = 46,
-    DisputeAlreadyResolved = 47,
-    InvalidEvidenceHash = 48,
+    // Task 1: Loan Cancellation
+    LoanNotCancellable = 41,
+    CancellationWindowExpired = 42,
+    // Task 2: Large Loan Multi-Signature
+    LoanTooLarge = 43,
+    LargeLoanPendingApproval = 44,
+    LargeLoanNotApproved = 45,
+    LargeLoanDelayNotElapsed = 46,
+    LargeLoanAlreadyExecuted = 47,
+    // Task 3: Circular Vouch Detection
+    CircularVouchDetected = 48,
+    VouchDepthExceeded = 49,
+    // Task 4: Loan Category
+    InvalidLoanCategory = 50,
 }
