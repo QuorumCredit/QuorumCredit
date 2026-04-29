@@ -58,6 +58,7 @@ impl QuorumCreditContract {
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
                 min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
+                prepayment_penalty_bps: 0,
             },
         );
 
@@ -767,6 +768,16 @@ impl QuorumCreditContract {
         admin::remove_allowed_token(env, admin_signers, token)
     }
 
+    /// Set the grace period after loan deadline before slashing is allowed.
+    pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
+        admin::set_grace_period(env, admin_signers, period)
+    }
+
+    /// Enable or disable the voucher whitelist.
+    pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: bool) {
+        admin::set_whitelist_enabled(env, admin_signers, enabled)
+    }
+
     /// Withdraw funds from the slash treasury to a recipient address.
     /// Admin-gated. Emits an admin/slshwdraw event on success.
     ///
@@ -1098,6 +1109,17 @@ impl QuorumCreditContract {
         loan::default_count(env, borrower)
     }
 
+    /// Get payment history for a loan. (#598)
+    pub fn get_payment_history(
+        env: Env,
+        loan_id: u64,
+    ) -> Vec<crate::types::PaymentRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PaymentHistory(loan_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
     // ── Pagination ────────────────────────────────────────────────────────────
 
     /// Get paginated loans for a borrower.
@@ -1118,7 +1140,7 @@ impl QuorumCreditContract {
         let params = crate::pagination::normalize_pagination(limit, offset);
         let loans = Vec::new(&env);
         let total = 0u32;
-        crate::pagination::paginate_loans(loans, total, params.limit, params.offset)
+        crate::pagination::paginate_loans(&env, loans, total, params.limit, params.offset)
     }
 
     /// Get paginated vouches for a borrower.
@@ -1138,8 +1160,8 @@ impl QuorumCreditContract {
     ) -> crate::types::PaginatedVouches {
         let params = crate::pagination::normalize_pagination(limit, offset);
         if let Some(vouches) = env.storage().persistent().get::<_, Vec<VouchRecord>>(&DataKey::Vouches(borrower)) {
-            let total = vouches.len() as u32;
-            crate::pagination::paginate_vouches(vouches, total, params.limit, params.offset)
+            let total = vouches.len();
+            crate::pagination::paginate_vouches(&env, vouches, total, params.limit, params.offset)
         } else {
             crate::types::PaginatedVouches {
                 vouches: Vec::new(&env),
@@ -1436,5 +1458,67 @@ impl QuorumCreditContract {
         borrower: Address,
     ) -> Result<(), ContractError> {
         loan::release_slash_escrow(env, admin_signers, borrower)
+    }
+
+    // ── Issue #601: Loan Extension / Refinancing ──────────────────────────────
+
+    /// Request a loan extension. Requires voucher approval.
+    ///
+    /// The borrower requests an extension of their active loan deadline. Vouchers must
+    /// approve via `approve_extension`. An extension fee (1% of remaining balance) is
+    /// charged when the extension is applied. A loan may be extended at most 2 times.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower (must sign)
+    /// * `extension_secs` - Additional seconds to extend the deadline
+    ///
+    /// # Errors
+    /// * `NoActiveLoan` — borrower has no active loan
+    /// * `InvalidAmount` — extension_secs is zero
+    /// * `InvalidStateTransition` — already at max extensions or request already pending
+    /// * `ContractPaused` — contract is paused
+    pub fn request_extension(
+        env: Env,
+        borrower: Address,
+        extension_secs: u64,
+    ) -> Result<(), ContractError> {
+        loan::request_extension(env, borrower, extension_secs)
+    }
+
+    /// Approve a pending loan extension request (called by a voucher).
+    ///
+    /// Once >50% of total stake approves, the extension is applied automatically:
+    /// the deadline is extended and a 1% fee is charged from the borrower.
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the approving voucher (must sign)
+    /// * `borrower` - Address of the borrower whose extension to approve
+    ///
+    /// # Errors
+    /// * `NoActiveLoan` — borrower has no active loan
+    /// * `TimelockNotFound` — no extension request exists for this borrower
+    /// * `VoucherNotFound` — caller is not a voucher for this borrower
+    /// * `AlreadyVoted` — voucher has already approved this extension
+    /// * `ContractPaused` — contract is paused
+    pub fn approve_extension(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::approve_extension(env, voucher, borrower)
+    }
+
+    /// Get the pending extension request for a borrower.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower
+    ///
+    /// # Returns
+    /// * `Option<LoanExtensionRequest>` - The pending request if any
+    pub fn get_extension_request(
+        env: Env,
+        borrower: Address,
+    ) -> Option<crate::types::LoanExtensionRequest> {
+        loan::get_extension_request(env, borrower)
     }
 }

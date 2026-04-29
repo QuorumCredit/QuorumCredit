@@ -1,3 +1,5 @@
+extern crate alloc;
+
 use crate::errors::ContractError;
 use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
@@ -210,6 +212,27 @@ pub fn increase_stake(
         .expect("vouch not found") as u32;
 
     let mut vouch_rec = vouches.get(idx).unwrap();
+
+    // Issue #599: If there is an active loan, queue a timelocked withdrawal instead of
+    // immediately reducing stake. This prevents vouchers from rug-pulling mid-loan.
+    if has_active_loan(&env, &borrower) {
+        let now = env.ledger().timestamp();
+        let unlock_at = now + crate::types::DECREASE_STAKE_TIMELOCK;
+        env.storage().persistent().set(
+            &DataKey::PendingWithdrawal(voucher.clone(), borrower.clone()),
+            &crate::types::WithdrawalRequest {
+                voucher: voucher.clone(),
+                borrower: borrower.clone(),
+                token: vouch_rec.token.clone(),
+                requested_at: now,
+            },
+        );
+        env.events().publish(
+            (symbol_short!("vouch"), symbol_short!("dec_qued")),
+            (voucher, borrower, amount, unlock_at),
+        );
+        return Ok(());
+    }
 
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
     let contract = env.current_contract_address();
