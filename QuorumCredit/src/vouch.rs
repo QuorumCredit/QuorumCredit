@@ -2,8 +2,68 @@ use crate::errors::ContractError;
 use crate::helpers::{
     extend_ttl, has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
-use crate::types::{DataKey, VouchRecord};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
+use crate::types::{DataKey, VouchRecord, MAX_VOUCH_DEPTH};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
+
+// Task 3: Circular Vouch Detection - Detect circular vouching patterns
+fn detect_circular_vouch(
+    env: &Env,
+    voucher: Address,
+    borrower: Address,
+    current_depth: u32,
+    visited: &mut Vec<Address>,
+) -> bool {
+    // Prevent infinite recursion by checking depth limit
+    if current_depth > MAX_VOUCH_DEPTH {
+        return true; // Depth exceeded, treat as circular
+    }
+
+    // If we've seen this address before in the current path, we have a cycle
+    for v in visited.iter() {
+        if v == borrower {
+            return true;
+        }
+    }
+
+    // Add borrower to visited path
+    visited.push_back(borrower.clone());
+
+    // Check if borrower has vouched for anyone in the current path
+    let borrower_vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(env));
+
+    for bv in borrower_vouches.iter() {
+        // Check if the person borrower vouched for has vouched for our voucher
+        let mut new_visited = visited.clone();
+        if bv.voucher == voucher {
+            return true; // Circular: voucher -> borrower -> voucher
+        }
+        // Recursively check deeper connections
+        if detect_circular_vouch(env, voucher.clone(), bv.voucher.clone(), current_depth + 1, &mut new_visited) {
+            return true;
+        }
+    }
+
+    // Remove borrower from visited path (backtrack)
+    if let Some(idx) = visited.iter().position(|a| a == borrower) {
+        visited.remove(idx as u32);
+    }
+
+    false
+}
+
+// Task 3: Store vouch graph for circular detection
+fn record_vouch_graph(env: &Env, voucher: Address, borrower: Address) {
+    // Store the vouch relationship in the graph
+    // Depth 1 means direct vouch
+    env.storage()
+        .persistent()
+        .set(&DataKey::VouchGraph(voucher.clone(), borrower.clone()), &1u32);
+    extend_ttl(env, &DataKey::VouchGraph(voucher, borrower));
+}
 
 pub fn vouch(
     env: Env,
@@ -102,6 +162,12 @@ fn do_vouch(
         return Err(ContractError::ActiveLoanExists);
     }
 
+    // Task 3: Detect circular vouching patterns before processing
+    let mut visited = Vec::new(env);
+    if detect_circular_vouch(env, voucher.clone(), borrower.clone(), 1, &mut visited) {
+        panic_with_error!(env, ContractError::CircularVouchDetected);
+    }
+
     // Transfer stake from voucher into the contract.
     token_client.transfer(&voucher, &env.current_contract_address(), &stake);
 
@@ -127,6 +193,9 @@ fn do_vouch(
         .persistent()
         .set(&DataKey::Vouches(borrower.clone()), &vouches);
     extend_ttl(env, &DataKey::Vouches(borrower.clone()));
+
+    // Task 3: Record vouch in the graph for circular detection
+    record_vouch_graph(env, voucher.clone(), borrower.clone());
 
     // Record the timestamp of this vouch for rate limiting.
     env.storage().persistent().set(
