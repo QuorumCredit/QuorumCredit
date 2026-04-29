@@ -17,6 +17,12 @@ pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
 pub const DEFAULT_ADMIN_TIMELOCK_SECONDS: u64 = 48 * 60 * 60; // 48 hours
+// Task 2: Time-weighted yield constants
+pub const TIME_WEIGHTED_YIELD_BONUS_THRESHOLD_DAYS: u64 = 90; // 90 days for bonus
+pub const TIME_WEIGHTED_YIELD_BONUS_MULTIPLIER: i128 = 12; // 1.2x = 12/10
+pub const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+// Task 4: Dispute constants
+pub const DEFAULT_DISPUTE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
 
 // ── Loan Size Tiers ───────────────────────────────────────────────────────────
 
@@ -53,6 +59,62 @@ pub enum LoanCategory {
     Agriculture,
     Personal,
     Other,
+}
+
+// ── Task 1: Granular Pause Flags ─────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PauseFlag {
+    None,       // Not paused
+    Vouch,      // Pause vouch operations
+    LoanRequest, // Pause new loan requests
+    Repay,      // Pause repayments
+    Slash,      // Pause slash operations
+    Withdraw,   // Pause withdrawals
+}
+
+impl PauseFlag {
+    /// Convert a soroban String to PauseFlag by comparing against known flag names.
+    pub fn from_string(env: &soroban_sdk::Env, s: &soroban_sdk::String) -> Option<PauseFlag> {
+        if s == &soroban_sdk::String::from_str(env, "vouch") {
+            Some(PauseFlag::Vouch)
+        } else if s == &soroban_sdk::String::from_str(env, "loan_request") {
+            Some(PauseFlag::LoanRequest)
+        } else if s == &soroban_sdk::String::from_str(env, "repay") {
+            Some(PauseFlag::Repay)
+        } else if s == &soroban_sdk::String::from_str(env, "slash") {
+            Some(PauseFlag::Slash)
+        } else if s == &soroban_sdk::String::from_str(env, "withdraw") {
+            Some(PauseFlag::Withdraw)
+        } else {
+            None
+        }
+    }
+}
+
+// ── Task 4: Dispute Records ──────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub struct DisputeRecord {
+    pub borrower: Address,
+    pub loan_id: u64,
+    pub evidence_hash: soroban_sdk::String, // IPFS or other evidence reference
+    pub disputed_at: u64,                    // timestamp when dispute was filed
+    pub resolved: bool,                      // true if dispute has been resolved
+    pub resolved_at: Option<u64>,            // timestamp when resolved
+    pub resolution: Option<DisputeResolution>, // outcome of the dispute
+    pub voters: Vec<Address>,                // vouchers who voted on dispute
+    pub approve_votes: i128,                 // stake voting to uphold dispute
+    pub reject_votes: i128,                  // stake voting to reject dispute
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeResolution {
+    Upheld,   // Dispute valid, slash reversed
+    Rejected, // Dispute invalid, slash stands
 }
 
 // ── Storage Keys ──────────────────────────────────────────────────────────────

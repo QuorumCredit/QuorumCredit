@@ -4,6 +4,7 @@ use crate::helpers::{
     validate_admin_config,
 };
 use crate::types::{Config, DataKey, TokenConfig};
+use crate::governance;
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
 /// ─────────────────────────────────────────────

@@ -1,7 +1,8 @@
 use crate::errors::ContractError;
 use crate::helpers::{
     bps_of, config, extend_ttl, get_active_loan_record, get_slash_balance, has_active_loan,
-    next_loan_id, require_allowed_token, require_not_paused, validate_loan_active,
+    next_loan_id, require_allowed_token, require_not_paused, require_not_paused_for,
+    validate_loan_active,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
@@ -126,6 +127,7 @@ pub fn get_referrer(env: Env, borrower: Address) -> Option<Address> {
         .get(&DataKey::ReferredBy(borrower))
 }
 
+/// Backward-compatible request_loan (no co-borrowers).
 pub fn request_loan(
     env: Env,
     borrower: Address,
@@ -136,7 +138,45 @@ pub fn request_loan(
 ) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_paused(&env)?;
+    require_not_paused_for(&env, PauseFlag::LoanRequest)?;
+    let empty: Vec<Address> = Vec::new(&env);
+    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, empty)
+}
 
+/// Task 3: Request a loan with co-borrowers who share repayment responsibility.
+pub fn request_loan_with_co_borrowers(
+    env: Env,
+    borrower: Address,
+    amount: i128,
+    threshold: i128,
+    loan_purpose: soroban_sdk::String,
+    token_addr: Address,
+    co_borrowers: Vec<Address>,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+    require_not_paused_for(&env, PauseFlag::LoanRequest)?;
+
+    for i in 0..co_borrowers.len() {
+        let cb = co_borrowers.get(i).unwrap();
+        cb.require_auth();
+        if cb == borrower {
+            return Err(ContractError::SelfVouchNotAllowed);
+        }
+    }
+
+    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, co_borrowers)
+}
+
+fn request_loan_internal(
+    env: Env,
+    borrower: Address,
+    amount: i128,
+    threshold: i128,
+    loan_purpose: soroban_sdk::String,
+    token_addr: Address,
+    co_borrowers: Vec<Address>,
+) -> Result<(), ContractError> {
     if env
         .storage()
         .persistent()
@@ -213,7 +253,7 @@ pub fn request_loan(
         &LoanRecord {
             id: loan_id,
             borrower: borrower.clone(),
-            co_borrowers: Vec::new(&env),
+            co_borrowers,
             amount,
             amount_repaid: 0,
             total_yield,
@@ -282,6 +322,7 @@ pub fn request_loan(
 pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_paused(&env)?;
+    require_not_paused_for(&env, PauseFlag::Repay)?;
 
     let mut loan = get_active_loan_record(&env, &borrower)?;
 
@@ -299,7 +340,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     }
 
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
-
     token.transfer(&borrower, &env.current_contract_address(), &payment);
     loan.amount_repaid += payment;
 
@@ -342,19 +382,16 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
     if threshold <= 0 {
         return false;
     }
-
     if let Some(loan) = crate::helpers::get_latest_loan_record(&env, &borrower) {
         if loan.status == LoanStatus::Active {
             return false;
         }
     }
-
     let vouches: Vec<VouchRecord> = env
         .storage()
         .persistent()
         .get(&DataKey::Vouches(borrower))
         .unwrap_or(Vec::new(&env));
-
     let total_stake: i128 = vouches.iter().map(|v| v.amount).sum();
     total_stake >= threshold
 }

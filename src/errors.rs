@@ -45,4 +45,10 @@ pub enum ContractError {
     InvalidAdminThreshold = 40,
     InsufficientYieldReserve = 41,
     ReminderAlreadySent = 42,
+    /// Insurance pool has no funds to cover the claim.
+    InsurancePoolEmpty = 43,
+    /// Insurance claim already made for this loan.
+    InsuranceClaimAlreadyMade = 44,
+    /// Basis points value is invalid (must be 0–10000).
+    InvalidBps = 45,
 }

@@ -14,13 +14,13 @@ pub struct HealthStatus {
 }
 
 pub fn health_check(env: &Env) -> HealthStatus {
-    let mut issues = Vec::new();
+    let mut issues = Vec::new(env);
     let mut is_healthy = true;
 
     // Check if initialized
     let initialized = env.storage().instance().has(&DataKey::Config);
     if !initialized {
-        issues.push(String::from_str(env, "Contract not initialized"));
+        issues.push_back(String::from_str(env, "Contract not initialized"));
         is_healthy = false;
     }
 
@@ -51,7 +51,7 @@ pub fn health_check(env: &Env) -> HealthStatus {
     };
 
     if !yield_reserve_solvent && initialized {
-        issues.push(String::from_str(env, "Yield reserve below minimum threshold"));
+        issues.push_back(String::from_str(env, "Yield reserve below minimum threshold"));
         is_healthy = false;
     }
 

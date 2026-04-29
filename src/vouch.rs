@@ -4,7 +4,7 @@ use crate::errors::ContractError;
 use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
-use crate::types::{DataKey, VouchRecord, VouchHistoryEntry};
+use crate::types::{DataKey, VouchRecord, VouchHistoryEntry, WithdrawalRequest, WITHDRAWAL_TIMELOCK_DELAY};
 use soroban_sdk::{panic_with_error, symbol_short, token, Address, Env, Vec};
 
 struct VouchConfig {

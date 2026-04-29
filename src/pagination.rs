@@ -1,5 +1,5 @@
-use crate::types::{PaginationParams, PaginatedLoans, PaginatedVouches, LoanRecord, VouchRecord};
-use soroban_sdk::{Vec, Env};
+use crate::types::{LoanRecord, PaginatedLoans, PaginatedVouches, PaginationParams, VouchRecord};
+use soroban_sdk::{Env, Vec};
 
 /// Default pagination limit
 const DEFAULT_LIMIT: u32 = 10;
@@ -11,7 +11,6 @@ pub fn normalize_pagination(limit: Option<u32>, offset: Option<u32>) -> Paginati
     let limit = limit.unwrap_or(DEFAULT_LIMIT);
     let limit = if limit > MAX_LIMIT { MAX_LIMIT } else { limit };
     let offset = offset.unwrap_or(0);
-    
     PaginationParams { limit, offset }
 }
 

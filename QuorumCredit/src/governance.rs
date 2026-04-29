@@ -1,8 +1,10 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    add_slash_balance, config, get_active_loan_record, require_not_paused, validate_loan_active,
+    add_slash_balance, config, extend_ttl, get_active_loan_record, require_not_paused, 
+    require_not_paused_for, validate_loan_active,
 };
-use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
+use crate::types::{DataKey, DisputeRecord, DisputeResolution, PauseFlag, SlashVoteRecord, 
+    TimelockAction, TimelockProposal, DEFAULT_DISPUTE_WINDOW_SECS, VouchRecord};
 use soroban_sdk::panic_with_error;
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
@@ -22,6 +24,8 @@ pub fn vote_slash(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
 
     // Borrower must have an active loan to be slashable.
     let loan = get_active_loan_record(&env, &borrower)?;
@@ -131,6 +135,8 @@ pub fn get_slash_vote_quorum(env: &Env) -> u32 {
 /// Anyone can call this function to execute a slash once quorum is reached.
 pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
 
     let vote: SlashVoteRecord = env
         .storage()
@@ -265,6 +271,8 @@ pub fn propose_slash(
 ) -> Result<u64, ContractError> {
     proposer.require_auth();
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
 
     // Get or initialize timelock counter
     let proposal_id: u64 = env
@@ -304,6 +312,8 @@ pub fn propose_slash(
 /// Execute a previously proposed slash action after the delay has passed.
 pub fn execute_slash_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
     require_not_paused(&env)?;
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
 
     // Get the proposal
     let mut proposal: TimelockProposal = env
@@ -360,6 +370,8 @@ pub fn cancel_slash_proposal(
     proposal_id: u64,
 ) -> Result<(), ContractError> {
     caller.require_auth();
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
 
     let mut proposal: TimelockProposal = env
         .storage()
@@ -578,4 +590,251 @@ pub fn get_governance_token(env: Env) -> Option<Address> {
     env.storage()
         .instance()
         .get(&DataKey::GovernanceTokenAddress)
+}
+
+// ── Task 4: Dispute Mechanism for Defaulted Loans ───────────────────────────
+
+/// Dispute a slash/default decision.
+/// The borrower can file a dispute within the dispute window after being slashed.
+pub fn dispute_slash(
+    env: Env,
+    borrower: Address,
+    evidence_hash: soroban_sdk::String,
+) -> Result<u64, ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
+
+    // Validate evidence hash is not empty
+    assert!(
+        evidence_hash.len() > 0,
+        "evidence hash cannot be empty"
+    );
+
+    // Get the borrower's latest loan to verify it was defaulted
+    let loan = crate::helpers::get_latest_loan_record(&env, &borrower)
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    // Loan must be defaulted to file a dispute
+    if loan.status != crate::types::LoanStatus::Defaulted {
+        return Err(ContractError::NoActiveLoan);
+    }
+
+    // Check dispute window
+    let dispute_window: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::DisputeWindowSecs)
+        .unwrap_or(DEFAULT_DISPUTE_WINDOW_SECS);
+
+    // We need to track when the slash happened - for now, use the loan's repayment_timestamp
+    // or created_at as a proxy. In a real implementation, we'd store the slash timestamp.
+    let slash_timestamp = loan.repayment_timestamp.unwrap_or(loan.created_at);
+    let now = env.ledger().timestamp();
+
+    if now > slash_timestamp + dispute_window {
+        return Err(ContractError::DisputeWindowExpired);
+    }
+
+    // Generate dispute ID
+    let dispute_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::DisputeCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("dispute ID overflow");
+
+    let dispute = DisputeRecord {
+        borrower: borrower.clone(),
+        loan_id: loan.id,
+        evidence_hash,
+        disputed_at: now,
+        resolved: false,
+        resolved_at: None,
+        resolution: None,
+        voters: Vec::new(&env),
+        approve_votes: 0,
+        reject_votes: 0,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Dispute(dispute_id), &dispute);
+    extend_ttl(&env, &DataKey::Dispute(dispute_id));
+    env.storage()
+        .instance()
+        .set(&DataKey::DisputeCounter, &dispute_id);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("disputed")),
+        (dispute_id, borrower, loan.id),
+    );
+
+    Ok(dispute_id)
+}
+
+/// Vote on a dispute resolution.
+/// Vouchers who previously staked for this borrower can vote on whether to uphold or reject the dispute.
+pub fn vote_dispute(
+    env: Env,
+    voucher: Address,
+    dispute_id: u64,
+    approve: bool, // true = uphold dispute (reverse slash), false = reject dispute
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
+
+    let mut dispute: DisputeRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Dispute(dispute_id))
+        .ok_or(ContractError::DisputeNotFound)?;
+
+    if dispute.resolved {
+        return Err(ContractError::DisputeAlreadyResolved);
+    }
+
+    // Get the vouches for this borrower to verify the voter was a voucher
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(dispute.borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let voucher_stake = vouches
+        .iter()
+        .find(|v| v.voucher == voucher)
+        .map(|v| v.amount)
+        .ok_or(ContractError::VoucherNotFound)?;
+
+    // Prevent double voting
+    if dispute.voters.iter().any(|v| v == voucher) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    if approve {
+        dispute.approve_votes += voucher_stake;
+    } else {
+        dispute.reject_votes += voucher_stake;
+    }
+    dispute.voters.push_back(voucher.clone());
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Dispute(dispute_id), &dispute);
+    extend_ttl(&env, &DataKey::Dispute(dispute_id));
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("disp_vote")),
+        (dispute_id, voucher, approve, voucher_stake),
+    );
+
+    Ok(())
+}
+
+/// Resolve a dispute - can be called by anyone after voting is complete.
+/// If approved, the slash is reversed and the borrower is restored.
+pub fn resolve_dispute(env: Env, dispute_id: u64) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+    // Task 1: Check granular pause for slash operations
+    require_not_paused_for(&env, PauseFlag::Slash)?;
+
+    let mut dispute: DisputeRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Dispute(dispute_id))
+        .ok_or(ContractError::DisputeNotFound)?;
+
+    if dispute.resolved {
+        return Err(ContractError::DisputeAlreadyResolved);
+    }
+
+    // Get total stake for quorum check
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(dispute.borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+    let total_stake: i128 = vouches.iter().map(|v| v.amount).sum();
+
+    // Simple majority: approve votes must exceed reject votes
+    let resolution = if dispute.approve_votes > dispute.reject_votes && total_stake > 0 {
+        DisputeResolution::Upheld
+    } else {
+        DisputeResolution::Rejected
+    };
+
+    dispute.resolved = true;
+    dispute.resolved_at = Some(env.ledger().timestamp());
+    dispute.resolution = Some(resolution.clone());
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Dispute(dispute_id), &dispute);
+    extend_ttl(&env, &DataKey::Dispute(dispute_id));
+
+    // If dispute is upheld, reverse the slash by restoring the loan status
+    // and returning the slashed funds (simplified - in production would need more complex logic)
+    if let DisputeResolution::Upheld = resolution {
+        // Restore the loan to active status (simplified)
+        // In a full implementation, this would also restore the vouchers' stakes
+        if let Some(mut loan) = env.storage().persistent().get::<DataKey, crate::types::LoanRecord>(
+            &DataKey::Loan(dispute.loan_id),
+        ) {
+            loan.status = crate::types::LoanStatus::Active;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Loan(dispute.loan_id), &loan);
+            extend_ttl(&env, &DataKey::Loan(dispute.loan_id));
+            
+            // Restore active loan mapping
+            env.storage()
+                .persistent()
+                .set(&DataKey::ActiveLoan(dispute.borrower.clone()), &dispute.loan_id);
+            extend_ttl(&env, &DataKey::ActiveLoan(dispute.borrower.clone()));
+        }
+
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("disp_up")),
+            (dispute_id, dispute.borrower),
+        );
+    } else {
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("disp_rej")),
+            (dispute_id, dispute.borrower),
+        );
+    }
+
+    Ok(())
+}
+
+/// Get a dispute record by ID.
+pub fn get_dispute(env: Env, dispute_id: u64) -> Option<DisputeRecord> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Dispute(dispute_id))
+}
+
+/// Set the dispute window (in seconds).
+pub fn set_dispute_window(env: Env, admin_signers: Vec<Address>, window_secs: u64) {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::DisputeWindowSecs, &window_secs);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("disp_win")),
+        (admin_signers.get(0).unwrap(), window_secs),
+    );
+}
+
+/// Get the current dispute window.
+pub fn get_dispute_window(env: Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::DisputeWindowSecs)
+        .unwrap_or(DEFAULT_DISPUTE_WINDOW_SECS)
 }
