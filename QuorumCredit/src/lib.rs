@@ -87,6 +87,8 @@ mod voucher_stake_limit_test;
 #[cfg(test)]
 mod vouch_cooldown_test;
 #[cfg(test)]
+mod decrease_stake_full_withdrawal_test;
+#[cfg(test)]
 mod invariants_test;
 #[cfg(test)]
 mod regression_tests;
