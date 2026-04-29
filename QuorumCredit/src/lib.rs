@@ -241,6 +241,41 @@ impl QuorumCreditContract {
         loan::repay(env, borrower, payment)
     }
 
+    // Task 1: Loan Cancellation
+    pub fn cancel_loan(env: Env, borrower: Address) -> Result<(), ContractError> {
+        loan::cancel_loan(env, borrower)
+    }
+
+    // Task 2: Large Loan Multi-Signature
+    pub fn request_large_loan(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        threshold: i128,
+        loan_purpose: soroban_sdk::String,
+        loan_category: LoanCategory,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        loan::request_large_loan(env, borrower, amount, threshold, loan_purpose, loan_category, token)
+    }
+
+    pub fn approve_large_loan(
+        env: Env,
+        admin: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::approve_large_loan(env, admin, borrower)
+    }
+
+    pub fn execute_large_loan(env: Env, borrower: Address) -> Result<(), ContractError> {
+        loan::execute_large_loan(env, borrower)
+    }
+
+    // Task 4: Loan Category Analytics
+    pub fn get_loans_by_category(env: Env, category: LoanCategory) -> Vec<u64> {
+        loan::get_loans_by_category(env, category)
+    }
+
     // ── Admin Functions (require admin_threshold signatures) ──────────────────
 
     pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
