@@ -107,8 +107,6 @@ mod repayment_reminder_tests {
         let events_after = s.env.events().all().len();
         assert_eq!(events_after, events_before, "expected no events when no loans exist");
     }
-}
-
 
     /// Test send_repayment_reminder marks reminder_sent as true
     #[test]

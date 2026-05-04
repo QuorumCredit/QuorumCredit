@@ -145,8 +145,6 @@ mod dynamic_yield_tests {
         // 100_000 * 150 / 10_000 = 1_500
         assert_eq!(loan.total_yield, 1_500);
     }
-}
-
 
     /// Test set_borrower_risk_score updates the risk_score field
     #[test]

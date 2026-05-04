@@ -4,8 +4,8 @@ use crate::errors::ContractError;
 use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
-use crate::types::{DataKey, VouchRecord, VouchHistoryEntry, WithdrawalRequest, WITHDRAWAL_TIMELOCK_DELAY};
-use soroban_sdk::{panic_with_error, symbol_short, token, Address, Env, Vec};
+use crate::types::{DataKey, VouchRecord, VouchHistoryEntry};
+use soroban_sdk::{token, Address, Env, Vec};
 
 struct VouchConfig {
     whitelist_enabled: bool,
@@ -156,7 +156,7 @@ fn commit_vouch(
 
     vouch_history.push_back(VouchHistoryEntry {
         timestamp,
-        modification_type: soroban_sdk::String::from_slice(env, "created"),
+        modification_type: soroban_sdk::String::from_str(env, "created"),
         stake_amount: stake,
         delegate: None,
     });
@@ -169,11 +169,6 @@ fn commit_vouch(
     env.storage().persistent().set(
         &DataKey::LastVouchTimestamp(voucher.clone()),
         &timestamp,
-    );
-
-    env.events().publish(
-        (symbol_short!("vouch"), symbol_short!("added")),
-        (voucher, borrower, stake, token),
     );
 
     Ok(())
@@ -217,7 +212,7 @@ pub fn increase_stake(
     // immediately reducing stake. This prevents vouchers from rug-pulling mid-loan.
     if has_active_loan(&env, &borrower) {
         let now = env.ledger().timestamp();
-        let unlock_at = now + crate::types::DECREASE_STAKE_TIMELOCK;
+        let _unlock_at = now + crate::types::DECREASE_STAKE_TIMELOCK;
         env.storage().persistent().set(
             &DataKey::PendingWithdrawal(voucher.clone(), borrower.clone()),
             &crate::types::WithdrawalRequest {
@@ -226,10 +221,6 @@ pub fn increase_stake(
                 token: vouch_rec.token.clone(),
                 requested_at: now,
             },
-        );
-        env.events().publish(
-            (symbol_short!("vouch"), symbol_short!("dec_qued")),
-            (voucher, borrower, amount, unlock_at),
         );
         return Ok(());
     }
@@ -253,11 +244,6 @@ pub fn increase_stake(
     vouches.set(idx, vouch_rec.clone());
 
     env.storage().persistent().set(&DataKey::Vouches(borrower.clone()), &vouches);
-
-    env.events().publish(
-        (symbol_short!("vouch"), symbol_short!("increased")),
-        (voucher, borrower, additional),
-    );
 
     Ok(())
 }
