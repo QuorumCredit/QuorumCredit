@@ -1,5 +1,6 @@
 #![no_std]
 
+mod delegation;
 mod errors;
 mod helpers;
 mod types;
@@ -101,6 +102,52 @@ impl QuorumCreditContract {
         additional: i128,
     ) -> Result<(), ContractError> {
         vouch::increase_stake(env, voucher, borrower, additional)
+    }
+
+    // ─────────────────────────────────────────────
+    // Vouching Delegation
+    // ─────────────────────────────────────────────
+
+    /// Register a delegate that may vouch on behalf of `voucher` within stake limits.
+    pub fn delegate_vouching(
+        env: Env,
+        voucher: Address,
+        delegate: Address,
+        max_stake_per_vouch: i128,
+        max_total_stake: i128,
+        expires_at: Option<u64>,
+    ) -> Result<(), ContractError> {
+        delegation::delegate_vouching(env, voucher, delegate, max_stake_per_vouch, max_total_stake, expires_at)
+    }
+
+    /// Revoke an active delegation. Only the original voucher may call this.
+    pub fn revoke_delegation(env: Env, voucher: Address) -> Result<(), ContractError> {
+        delegation::revoke_delegation(env, voucher)
+    }
+
+    /// Vouch on behalf of `voucher` using delegated authority.
+    pub fn vouch_as_delegate(
+        env: Env,
+        delegate: Address,
+        voucher: Address,
+        borrower: Address,
+        stake: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        delegation::vouch_as_delegate(env, delegate, voucher, borrower, stake, token)
+    }
+
+    /// Returns the active delegation for `voucher`, or `None`.
+    pub fn get_delegation(
+        env: Env,
+        voucher: Address,
+    ) -> Option<crate::types::VouchingDelegation> {
+        delegation::get_delegation(env, voucher)
+    }
+
+    /// Returns total stake already committed by the delegate on behalf of `voucher`.
+    pub fn get_delegate_used_stake(env: Env, voucher: Address, delegate: Address) -> i128 {
+        delegation::get_delegate_used_stake(env, voucher, delegate)
     }
 
 }

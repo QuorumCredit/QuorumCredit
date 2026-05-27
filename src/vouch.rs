@@ -247,3 +247,19 @@ pub fn increase_stake(
 
     Ok(())
 }
+
+/// Vouch on behalf of `voucher` without requiring `voucher.require_auth()`.
+/// Called exclusively by `delegation::vouch_as_delegate`, which has already
+/// verified the delegate's authority and stake caps.
+pub fn vouch_on_behalf(
+    env: &Env,
+    voucher: Address,
+    borrower: Address,
+    stake: i128,
+    token: Address,
+) -> Result<(), ContractError> {
+    let cfg = VouchConfig::load(env);
+    let (token_client, vouches) =
+        validate_vouch(env, &cfg, &voucher, &borrower, stake, &token)?;
+    commit_vouch(env, &token_client, voucher, borrower, stake, token, vouches)
+}

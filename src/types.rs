@@ -167,6 +167,29 @@ pub enum DataKey {
     LoanExtension(Address),
     /// Issue #598: loan_id → Vec<PaymentRecord> (payment history)
     PaymentHistory(u64),
+    /// voucher → VouchingDelegation (global delegate + limits)
+    VouchingDelegation(Address),
+    /// (voucher, delegate) → i128 total stake used by delegate so far
+    DelegateUsedStake(Address, Address),
+}
+
+// ── Vouching Delegation ───────────────────────────────────────────────────────
+
+/// A global vouching delegation: the voucher authorises `delegate` to call
+/// `vouch_as_delegate` on their behalf, subject to per-vouch and total caps.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VouchingDelegation {
+    /// The address authorised to vouch on behalf of the voucher.
+    pub delegate: Address,
+    /// Maximum stake the delegate may commit per individual vouch (stroops).
+    pub max_stake_per_vouch: i128,
+    /// Maximum total stake the delegate may commit across all vouches (stroops).
+    pub max_total_stake: i128,
+    /// Ledger timestamp when this delegation was created.
+    pub created_at: u64,
+    /// Optional expiry timestamp; delegation is void after this time.
+    pub expires_at: Option<u64>,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
