@@ -180,6 +180,14 @@ pub enum DataKey {
     VoucherStats(Address),
     /// Withdrawal queue: borrower → Vec<QueuedWithdrawal>
     WithdrawalQueue(Address),
+    // #634: Liquidity Mining
+    LastMiningClaim(Address),
+    // #635: Vouch Snapshot for Governance
+    VouchSnapshot(u32),
+    // #636: Staking Derivatives
+    StakingDerivative(Address, Address),
+    // #637: Fraud Detection
+    VoucherFraudScore(Address),
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -231,6 +239,8 @@ pub struct Config {
     /// Prepayment penalty in basis points (e.g. 100 = 1%). Applied to remaining principal
     /// when a borrower repays early. 0 means no penalty.
     pub prepayment_penalty_bps: u32,
+    /// #634: Liquidity mining reward rate in basis points per epoch (e.g. 50 = 0.5% per 7 days).
+    pub liquidity_mining_rate_bps: u32,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -477,3 +487,47 @@ pub struct ThawState {
     pub thaw_duration: u64,
     pub thaw_start_timestamp: u64,
 }
+
+// ── #634: Liquidity Mining ────────────────────────────────────────────────────
+
+/// Epoch duration for liquidity mining rewards (7 days).
+pub const LIQUIDITY_MINING_EPOCH_SECS: u64 = 7 * 24 * 60 * 60;
+/// Default liquidity mining rate: 50 bps = 0.5% per epoch.
+pub const DEFAULT_LIQUIDITY_MINING_RATE_BPS: u32 = 50;
+
+// ── #635: Vouch Snapshot for Governance ──────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchSnapshotEntry {
+    pub borrower: Address,
+    pub total_stake: i128,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchSnapshotRecord {
+    pub ledger_sequence: u32,
+    pub timestamp: u64,
+    pub entries: Vec<VouchSnapshotEntry>,
+}
+
+// ── #636: Staking Derivatives ─────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub struct StakingDerivativeRecord {
+    pub voucher: Address,
+    pub borrower: Address,
+    pub stake_amount: i128,
+    pub minted_at: u64,
+    pub current_holder: Address,
+    pub is_active: bool,
+}
+
+// ── #637: Fraud Detection ─────────────────────────────────────────────────────
+
+pub const FRAUD_SCORE_HIGH_THRESHOLD: u32 = 70;
+pub const FRAUD_SCORE_MAX: u32 = 100;
+pub const FRAUD_SCORE_DEFAULT_WEIGHT: u32 = 20;
+pub const FRAUD_SCORE_CONCENTRATION_WEIGHT: u32 = 10;
