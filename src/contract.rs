@@ -65,6 +65,7 @@ impl QuorumCreditContract {
                 prepayment_penalty_bps: 0,
                 liquidity_mining_rate_bps: DEFAULT_LIQUIDITY_MINING_RATE_BPS,
                 dynamic_slash_threshold: DEFAULT_DYNAMIC_SLASH_THRESHOLD,
+                slash_delay_seconds: DEFAULT_SLASH_DELAY_SECONDS,
             },
         );
 

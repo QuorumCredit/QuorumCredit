@@ -3,7 +3,7 @@ use crate::helpers::{
     add_slash_balance, config, get_active_loan_record, get_latest_loan_record, require_not_paused,
 };
 use crate::types::{
-    DataKey, LoanStatus, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord,
+    DataKey, LoanStatus, PendingSlashRecord, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord,
     BPS_DENOMINATOR, SlashAppealRecord,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
@@ -104,7 +104,27 @@ pub fn vote_slash(
         env.storage()
             .persistent()
             .set(&DataKey::SlashVote(borrower.clone()), &vote);
-        execute_slash(&env, &borrower)?;
+        
+        // Instead of immediately executing, create a pending slash record
+        let cfg = config(&env);
+        let now = env.ledger().timestamp();
+        let executable_at = now + cfg.slash_delay_seconds;
+        
+        let pending_slash = PendingSlashRecord {
+            borrower: borrower.clone(),
+            approved_at: now,
+            executable_at,
+            executed: false,
+        };
+        
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingSlashExecution(borrower.clone()), &pending_slash);
+        
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("slash_pending")),
+            (borrower.clone(), now, executable_at),
+        );
     } else {
         env.storage()
             .persistent()
@@ -181,6 +201,44 @@ pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractErr
         .set(&DataKey::SlashVote(borrower.clone()), &updated_vote);
 
     execute_slash(&env, &borrower)?;
+
+    Ok(())
+}
+
+/// Execute a pending slash after the delay period has passed.
+/// Anyone can call this function to execute a pending slash once the delay has elapsed.
+pub fn execute_pending_slash(env: Env, borrower: Address) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let pending_slash: PendingSlashRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingSlashExecution(borrower.clone()))
+        .ok_or(ContractError::SlashVoteNotFound)?;
+
+    if pending_slash.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    // Check if delay period has passed
+    let now = env.ledger().timestamp();
+    if now < pending_slash.executable_at {
+        return Err(ContractError::DelayNotElapsed);
+    }
+
+    // Mark as executed and execute the slash
+    let mut updated_pending = pending_slash;
+    updated_pending.executed = true;
+    env.storage()
+        .persistent()
+        .set(&DataKey::PendingSlashExecution(borrower.clone()), &updated_pending);
+
+    execute_slash(&env, &borrower)?;
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("slash_executed")),
+        (borrower.clone(), now),
+    );
 
     Ok(())
 }

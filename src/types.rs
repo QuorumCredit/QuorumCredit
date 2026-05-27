@@ -90,6 +90,9 @@ pub const MAX_DYNAMIC_SLASH_BPS: i128 = 7_500;
 /// Health threshold below which slash penalty increases, in basis points (8000 = 80%).
 pub const HEALTH_THRESHOLD_BPS: i128 = 8_000;
 
+/// Default slash delay period to allow for disputes, in seconds (7 days).
+pub const DEFAULT_SLASH_DELAY_SECONDS: u64 = 7 * 24 * 60 * 60;
+
 // ── Loan Extension ────────────────────────────────────────────────────────────
 
 /// A pending loan extension request. Created by the borrower; approved by vouchers.
@@ -176,6 +179,7 @@ pub enum DataKey {
     InsuranceVoucherClaim(u64, Address), // (loan_id, voucher) → i128 amount already claimed
     VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
     VouchDelegation(Address, Address, Address), // (borrower, original_voucher, token) → Address (delegate)
+    PendingSlashExecution(Address), // borrower → PendingSlashRecord
     YieldReserve,            // i128 balance of the yield reserve
     SlashEscrow(Address),    // borrower → (i128 amount, u64 release_timestamp)
     SlashAudit(Address),     // borrower → SlashAuditRecord
@@ -222,6 +226,20 @@ pub struct SlashVoteRecord {
     pub executed: bool,
 }
 
+/// Record for a slash that is pending execution due to delay period.
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingSlashRecord {
+    /// Borrower address to be slashed.
+    pub borrower: Address,
+    /// Timestamp when the slash was approved (quorum reached).
+    pub approved_at: u64,
+    /// Timestamp when the slash can be executed (approved_at + slash_delay_seconds).
+    pub executable_at: u64,
+    /// Whether the slash has been executed.
+    pub executed: bool,
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -259,6 +277,8 @@ pub struct Config {
     /// Dynamic slash threshold enabled flag. When true, slash_bps adjusts based on protocol health.
     /// When false, uses static slash_bps value.
     pub dynamic_slash_threshold: bool,
+    /// Delay period before slash execution to allow for disputes, in seconds (default 7 days).
+    pub slash_delay_seconds: u64,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────

@@ -38,19 +38,20 @@ pub enum ContractError {
     SlashAlreadyExecuted = 33,
     LoanBelowMinAmount = 34,
     QuorumNotMet = 35,
-    MaxVouchersPerBorrowerExceeded = 36,
-    InsufficientVoucherBalance = 37,
-    SelfVouchNotAllowed = 38,
-    DuplicateToken = 39,
-    InvalidAdminThreshold = 40,
-    InsufficientYieldReserve = 41,
-    ReminderAlreadySent = 42,
+    DelayNotElapsed = 36,
+    MaxVouchersPerBorrowerExceeded = 37,
+    InsufficientVoucherBalance = 38,
+    SelfVouchNotAllowed = 39,
+    DuplicateToken = 40,
+    InvalidAdminThreshold = 41,
+    InsufficientYieldReserve = 42,
+    ReminderAlreadySent = 43,
     /// Insurance pool has no funds to cover the claim.
-    InsurancePoolEmpty = 43,
+    InsurancePoolEmpty = 44,
     /// Insurance claim already made for this loan.
-    InsuranceClaimAlreadyMade = 44,
+    InsuranceClaimAlreadyMade = 45,
     /// Basis points value is invalid (must be 0–10000).
-    InvalidBps = 45,
+    InvalidBps = 46,
     /// Withdrawal request already queued for this voucher/borrower pair.
     WithdrawalAlreadyQueued = 46,
     /// No queued withdrawal found for this voucher/borrower pair.
