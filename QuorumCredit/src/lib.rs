@@ -31,8 +31,6 @@ mod bug_condition_test;
 #[cfg(test)]
 mod borrower_whitelist_test;
 #[cfg(test)]
-mod bug_condition_test;
-#[cfg(test)]
 mod config_bps_test;
 #[cfg(test)]
 mod double_repay_test;
@@ -138,6 +136,14 @@ impl QuorumCreditContract {
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
+                allowed_purposes: Vec::new(&env),
+                insurance_premium_bps: 0,
+                base_yield_bps: DEFAULT_YIELD_BPS as u32,
+                min_yield_bps: 0,
+                max_yield_bps: 10_000,
+                utilization_weight: 0,
+                risk_weight: 0,
+                credit_weight: 0,
             },
         );
 
@@ -158,6 +164,18 @@ impl QuorumCreditContract {
         token: Address,
     ) -> Result<(), ContractError> {
         vouch::vouch(env, voucher, borrower, stake, token)
+    }
+
+    // #642: vouch with sector for diversification enforcement
+    pub fn vouch_with_sector(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        stake: i128,
+        token: Address,
+        sector: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
     }
 
     pub fn batch_vouch(
@@ -282,6 +300,31 @@ impl QuorumCreditContract {
     // Task 4: Loan Category Analytics
     pub fn get_loans_by_category(env: Env, category: LoanCategory) -> Vec<u64> {
         loan::get_loans_by_category(env, category)
+    }
+
+    // #645: Loan Restructuring
+    pub fn restructure_loan(
+        env: Env,
+        borrower: Address,
+        new_deadline: u64,
+        new_amount: i128,
+    ) -> Result<(), ContractError> {
+        loan::restructure_loan(env, borrower, new_deadline, new_amount)
+    }
+
+    pub fn approve_restructure(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::approve_restructure(env, voucher, borrower)
+    }
+
+    pub fn get_restructure_request(
+        env: Env,
+        borrower: Address,
+    ) -> Option<crate::types::RestructureRequest> {
+        loan::get_restructure_request(env, borrower)
     }
 
     // ── Admin Functions (require admin_threshold signatures) ──────────────────

@@ -6,7 +6,7 @@ use crate::helpers::{
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
-    DataKey, LoanCategory, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS,
+    DataKey, LoanCategory, LoanRecord, LoanStatus, PauseFlag, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS,
     MIN_VOUCH_AGE, CANCELLATION_WINDOW_SECONDS,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
@@ -140,7 +140,7 @@ pub fn request_loan(
     require_not_paused(&env)?;
     require_not_paused_for(&env, PauseFlag::LoanRequest)?;
     let empty: Vec<Address> = Vec::new(&env);
-    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, empty)
+    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, empty, None)
 }
 
 /// Task 3: Request a loan with co-borrowers who share repayment responsibility.
@@ -165,7 +165,7 @@ pub fn request_loan_with_co_borrowers(
         }
     }
 
-    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, co_borrowers)
+    request_loan_internal(env, borrower, amount, threshold, loan_purpose, token_addr, co_borrowers, None)
 }
 
 fn request_loan_internal(
@@ -176,6 +176,7 @@ fn request_loan_internal(
     loan_purpose: soroban_sdk::String,
     token_addr: Address,
     co_borrowers: Vec<Address>,
+    insurance_provider: Option<Address>,
 ) -> Result<(), ContractError> {
     if env
         .storage()
@@ -193,6 +194,14 @@ fn request_loan_internal(
         "loan amount must meet minimum threshold"
     );
     assert!(threshold > 0, "threshold must be greater than zero");
+
+    // #643: Validate loan_purpose against allowed_purposes whitelist
+    if !cfg.allowed_purposes.is_empty() {
+        let purpose_allowed = cfg.allowed_purposes.iter().any(|p| p == loan_purpose);
+        if !purpose_allowed {
+            return Err(ContractError::LoanPurposeNotAllowed);
+        }
+    }
 
     let token_client = require_allowed_token(&env, &token_addr)?;
 
@@ -228,6 +237,33 @@ fn request_loan_internal(
         panic_with_error!(&env, ContractError::InsufficientFunds);
     }
 
+    // #642: Enforce sector diversification — no single sector may contribute > 50% of total stake
+    if total_stake > 0 {
+        // Count stake per sector
+        let mut sector_stakes: Vec<(soroban_sdk::String, i128)> = Vec::new(&env);
+        for v in vouches.iter() {
+            let mut found = false;
+            for i in 0..sector_stakes.len() {
+                let (s, stake_val) = sector_stakes.get(i).unwrap();
+                if s == v.sector {
+                    sector_stakes.set(i, (s, stake_val + v.amount));
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                sector_stakes.push_back((v.sector.clone(), v.amount));
+            }
+        }
+        for i in 0..sector_stakes.len() {
+            let (_, sector_stake) = sector_stakes.get(i).unwrap();
+            // Reject if any sector contributes more than 50% of total stake
+            if sector_stake * 2 > total_stake {
+                return Err(ContractError::SectorConcentrationTooHigh);
+            }
+        }
+    }
+
     let deadline = now + cfg.loan_duration;
 
     let loan_id = next_loan_id(&env);
@@ -243,7 +279,20 @@ fn request_loan_internal(
         &cfg,
     );
 
-    let total_yield = bps_of(amount, yield_bps as u64);
+    let total_yield = bps_of(amount, yield_bps);
+
+    // #644: Collect insurance premium if configured
+    if cfg.insurance_premium_bps > 0 {
+        let premium = bps_of(amount, cfg.insurance_premium_bps);
+        if premium > 0 {
+            // Transfer premium from borrower to contract (held in insurance pool)
+            token_client.transfer(&borrower, &env.current_contract_address(), &premium);
+            // Add to insurance pool balance
+            let pool_key = DataKey::InsurancePool;
+            let pool_balance: i128 = env.storage().instance().get(&pool_key).unwrap_or(0);
+            env.storage().instance().set(&pool_key, &(pool_balance + premium));
+        }
+    }
 
     // Default to Personal category if not specified
     let loan_category = LoanCategory::Personal;
@@ -265,6 +314,7 @@ fn request_loan_internal(
             loan_purpose,
             loan_category: loan_category.clone(),
             token_address: token_addr.clone(),
+            insurance_provider,
         },
     );
 
@@ -492,6 +542,148 @@ pub fn get_loans_by_category(env: Env, category: LoanCategory) -> Vec<u64> {
         .unwrap_or(Vec::new(&env))
 }
 
+// #645: Loan Restructuring — borrower requests a restructure (extend deadline / reduce amount)
+// Vouchers must approve; once all current vouchers approve, the loan is updated.
+pub fn restructure_loan(
+    env: Env,
+    borrower: Address,
+    new_deadline: u64,
+    new_amount: i128,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    let loan = get_active_loan_record(&env, &borrower)?;
+    validate_loan_active(&loan)?;
+
+    // new_deadline must be in the future and after current deadline
+    assert!(
+        new_deadline > loan.deadline,
+        "new_deadline must be after current deadline"
+    );
+    // new_amount must be 0 (no change) or positive and <= outstanding
+    if new_amount != 0 {
+        let outstanding = loan.amount + loan.total_yield - loan.amount_repaid;
+        assert!(
+            new_amount > 0 && new_amount <= outstanding,
+            "new_amount must be positive and not exceed outstanding balance"
+        );
+    }
+
+    // Reject if a restructure is already pending
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::RestructureRequest(borrower.clone()))
+    {
+        return Err(ContractError::RestructureAlreadyPending);
+    }
+
+    let request = crate::types::RestructureRequest {
+        borrower: borrower.clone(),
+        new_deadline,
+        new_amount,
+        requested_at: env.ledger().timestamp(),
+        approvals: Vec::new(&env),
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::RestructureRequest(borrower.clone()), &request);
+    extend_ttl(&env, &DataKey::RestructureRequest(borrower.clone()));
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("restruct")),
+        (borrower, new_deadline, new_amount),
+    );
+
+    Ok(())
+}
+
+// #645: Voucher approves a pending restructure request.
+// Once all vouchers approve, the loan deadline (and optionally amount) is updated.
+pub fn approve_restructure(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let mut request: crate::types::RestructureRequest = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RestructureRequest(borrower.clone()))
+        .ok_or(ContractError::RestructureRequestNotFound)?;
+
+    // Verify voucher has a vouch for this borrower
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let is_voucher = vouches.iter().any(|v| v.voucher == voucher);
+    if !is_voucher {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    // Prevent double approval
+    if request.approvals.iter().any(|a| a == voucher) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    request.approvals.push_back(voucher.clone());
+
+    // Check if all vouchers have approved
+    let all_approved = vouches.iter().all(|v| request.approvals.iter().any(|a| a == v.voucher));
+
+    if all_approved {
+        // Apply the restructure
+        let mut loan = get_active_loan_record(&env, &borrower)?;
+        loan.deadline = request.new_deadline;
+        if request.new_amount > 0 {
+            // Reduce the outstanding amount by adjusting total_yield (forgiveness)
+            let outstanding = loan.amount + loan.total_yield - loan.amount_repaid;
+            let forgiven = outstanding - request.new_amount;
+            if forgiven > 0 && forgiven <= loan.total_yield {
+                loan.total_yield -= forgiven;
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan.id), &loan);
+        extend_ttl(&env, &DataKey::Loan(loan.id));
+
+        // Remove the restructure request
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RestructureRequest(borrower.clone()));
+
+        env.events().publish(
+            (symbol_short!("loan"), symbol_short!("rst_done")),
+            (borrower, loan.deadline),
+        );
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::RestructureRequest(borrower.clone()), &request);
+        extend_ttl(&env, &DataKey::RestructureRequest(borrower.clone()));
+    }
+
+    Ok(())
+}
+
+// #645: Get pending restructure request for a borrower
+pub fn get_restructure_request(
+    env: Env,
+    borrower: Address,
+) -> Option<crate::types::RestructureRequest> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RestructureRequest(borrower))
+}
+
 // Task 2: Large Loan Multi-Signature - Require admin approval for large loans
 pub fn request_large_loan(
     env: Env,
@@ -663,6 +855,7 @@ pub fn execute_large_loan(env: Env, borrower: Address) -> Result<(), ContractErr
             loan_purpose: request.loan_purpose,
             loan_category: request.loan_category,
             token_address: request.token_address.clone(),
+            insurance_provider: None,
         },
     );
     extend_ttl(&env, &DataKey::Loan(loan_id));

@@ -170,6 +170,15 @@ pub enum DataKey {
     LargeLoanRequest(Address), // borrower → LargeLoanRequestRecord
     VouchGraph(Address, Address), // (voucher, borrower) → depth u32
     LoanCategoryLoans(LoanCategory), // category → Vec<loan_id>
+    RestructureRequest(Address), // #645: borrower → RestructureRequest
+    InsurancePool,               // #644: i128 accumulated insurance premiums
+    PauseFlag(PauseFlag),        // granular pause per function group
+    VoucherStakeLimit(Address, Address), // (voucher, borrower) → i128 max stake
+    TotalLoans,                  // i128 total active loan principal
+    TotalStaked,                 // i128 total staked collateral
+    Dispute(u64),                // dispute_id → DisputeRecord
+    DisputeCounter,              // u64 monotonically increasing dispute ID
+    DisputeWindowSecs,           // u64 dispute window in seconds
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────
@@ -242,6 +251,15 @@ pub struct Config {
     pub loan_duration: u64,
     pub max_loan_to_stake_ratio: u32,
     pub grace_period: u64,
+    pub allowed_purposes: Vec<soroban_sdk::String>, // #643: whitelist of allowed loan purposes (empty = all allowed)
+    pub insurance_premium_bps: i128, // #644: insurance premium in basis points (0 = no insurance)
+    // Dynamic yield parameters
+    pub base_yield_bps: u32,
+    pub min_yield_bps: u32,
+    pub max_yield_bps: u32,
+    pub utilization_weight: u32,
+    pub risk_weight: u32,
+    pub credit_weight: u32,
 }
 
 // ── Per-Token Config ──────────────────────────────────────────────────────────
@@ -274,6 +292,7 @@ pub struct LoanRecord {
     pub loan_purpose: soroban_sdk::String, // borrower-supplied purpose string
     pub loan_category: LoanCategory,       // category of the loan
     pub token_address: Address,            // token used for this loan
+    pub insurance_provider: Option<Address>, // #644: optional insurance provider address
 }
 
 #[contracttype]
@@ -305,6 +324,7 @@ pub struct VouchRecord {
     pub amount: i128,         // in stroops
     pub vouch_timestamp: u64, // ledger timestamp when vouch was created; immutable after set
     pub token: Address,       // token this stake is denominated in
+    pub sector: soroban_sdk::String, // #642: sector/region of the voucher for diversification
 }
 
 #[contracttype]
@@ -334,3 +354,15 @@ pub enum TimelockAction {
     Slash(Address),
     SetConfig(Config),
 }
+
+// #645: Loan Restructuring - pending restructure request
+#[contracttype]
+#[derive(Clone)]
+pub struct RestructureRequest {
+    pub borrower: Address,
+    pub new_deadline: u64,
+    pub new_amount: i128,       // reduced outstanding amount (0 = no change)
+    pub requested_at: u64,
+    pub approvals: Vec<Address>, // vouchers who approved
+}
+
