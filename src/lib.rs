@@ -6,6 +6,7 @@ mod governance;
 mod helpers;
 mod key_manager;
 mod secure_delete;
+mod secure_random;
 mod types;
 mod vouch;
 mod vouch_snapshot;
