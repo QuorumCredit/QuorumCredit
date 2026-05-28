@@ -46,6 +46,10 @@ pub enum LoanStatus {
     Repaid,
     Defaulted,
     Cancelled,
+    /// #663: Borrower repaid some but less than partial_default_threshold_bps of total owed.
+    PartialDefault,
+    /// #664: Default was forgiven by admin.
+    ForgivenDefault,
 }
 
 // ── Loan Purpose Categories ───────────────────────────────────────────────────
@@ -179,6 +183,10 @@ pub enum DataKey {
     DerivativeTransfer(Address, Address, Address), // (from, to, borrower) → bool (pending transfer)
     // #637: Fraud Detection
     VoucherFraudScore(Address),  // voucher → u32 fraud score (0-100)
+    // #663: Partial default count per borrower
+    PartialDefaultCount(Address),
+    // #664: Slash record with forgiveness info per loan
+    SlashRecord(u64),
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────
@@ -441,3 +449,25 @@ pub const FRAUD_SCORE_MAX: u32 = 100;
 pub const FRAUD_SCORE_DEFAULT_WEIGHT: u32 = 20;
 /// Weight for vouching many borrowers simultaneously.
 pub const FRAUD_SCORE_CONCENTRATION_WEIGHT: u32 = 10;
+
+// ── #664: Slash Record with Forgiveness ───────────────────────────────────────
+
+/// Records a slash event against a loan, including optional forgiveness info.
+#[contracttype]
+#[derive(Clone)]
+pub struct SlashRecord {
+    /// Loan ID that was slashed.
+    pub loan_id: u64,
+    /// Borrower address.
+    pub borrower: Address,
+    /// Total amount slashed across all vouchers, in stroops.
+    pub total_slashed: i128,
+    /// Ledger timestamp when the slash occurred.
+    pub slash_timestamp: u64,
+    /// Whether this slash has been forgiven by an admin.
+    pub forgiven: bool,
+    /// Admin-supplied reason for forgiveness (empty string if not forgiven).
+    pub forgiveness_reason: soroban_sdk::String,
+    /// Timestamp when forgiveness was granted (0 if not forgiven).
+    pub forgiven_at: u64,
+}

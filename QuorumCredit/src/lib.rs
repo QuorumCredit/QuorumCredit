@@ -981,4 +981,304 @@ impl QuorumCreditContract {
     pub fn is_high_fraud_risk(env: Env, voucher: Address) -> bool {
         fraud_detection::is_high_fraud_risk(env, voucher)
     }
+
+    // ── #665: Batch Repayment ─────────────────────────────────────────────────
+
+    /// Batch multiple repayments into a single transaction.
+    ///
+    /// Each entry in `borrowers` / `payments` is processed in order using the same
+    /// logic as `repay()`. If one fails the error is returned immediately.
+    pub fn batch_repay(
+        env: Env,
+        borrowers: Vec<Address>,
+        payments: Vec<i128>,
+    ) -> Result<(), ContractError> {
+        use helpers::require_not_paused;
+        use helpers::get_active_loan_record;
+        use helpers::require_allowed_token;
+        use types::{DataKey, LoanStatus, VouchRecord};
+
+        require_not_paused(&env)?;
+
+        if borrowers.len() != payments.len() || borrowers.is_empty() {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        for i in 0..borrowers.len() {
+            let borrower = borrowers.get(i).unwrap();
+            let payment = payments.get(i).unwrap();
+
+            borrower.require_auth();
+
+            let mut loan_record = get_active_loan_record(&env, &borrower)?;
+
+            if payment <= 0 {
+                return Err(ContractError::InvalidAmount);
+            }
+
+            let total_owed = loan_record.amount + loan_record.total_yield;
+            let outstanding = total_owed - loan_record.amount_repaid;
+
+            if payment > outstanding {
+                return Err(ContractError::InvalidAmount);
+            }
+
+            let token_client = require_allowed_token(&env, &loan_record.token_address)?;
+            token_client.transfer(&borrower, &env.current_contract_address(), &payment);
+
+            loan_record.amount_repaid += payment;
+
+            if loan_record.amount_repaid >= total_owed {
+                loan_record.status = LoanStatus::Repaid;
+                loan_record.repayment_timestamp = Some(env.ledger().timestamp());
+
+                let vouches: Vec<VouchRecord> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Vouches(borrower.clone()))
+                    .unwrap_or(Vec::new(&env));
+
+                let total_stake: i128 = vouches
+                    .iter()
+                    .filter(|v| v.token == loan_record.token_address)
+                    .map(|v| v.amount)
+                    .sum();
+
+                for v in vouches.iter() {
+                    if v.token != loan_record.token_address {
+                        continue;
+                    }
+                    let yield_share = if total_stake > 0 {
+                        loan_record.total_yield * v.amount / total_stake
+                    } else {
+                        0
+                    };
+                    token_client.transfer(
+                        &env.current_contract_address(),
+                        &v.voucher,
+                        &(v.amount + yield_share),
+                    );
+                }
+
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::ActiveLoan(borrower.clone()));
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::Vouches(borrower.clone()));
+
+                env.events().publish(
+                    (soroban_sdk::symbol_short!("loan"), soroban_sdk::symbol_short!("repaid")),
+                    (borrower.clone(), loan_record.amount),
+                );
+            }
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Loan(loan_record.id), &loan_record);
+
+            env.events().publish(
+                (soroban_sdk::symbol_short!("loan"), soroban_sdk::symbol_short!("batch_pay")),
+                (borrower, payment),
+            );
+        }
+
+        Ok(())
+    }
+
+    // ── #663: Partial Default Handling ────────────────────────────────────────
+
+    /// Mark a loan as a partial default when the borrower has repaid some but not
+    /// enough to meet the `partial_default_threshold_bps` in Config.
+    pub fn mark_partial_default(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        use helpers::{require_not_paused, require_admin_approval, get_active_loan_record, require_allowed_token, config};
+        use types::{DataKey, LoanStatus, SlashRecord, VouchRecord};
+
+        require_not_paused(&env)?;
+        require_admin_approval(&env, &admin_signers);
+
+        let cfg = config(&env);
+
+        if cfg.partial_default_threshold_bps == 0 {
+            return Err(ContractError::InvalidStateTransition);
+        }
+
+        let mut loan_record = get_active_loan_record(&env, &borrower)?;
+
+        if loan_record.status != LoanStatus::Active {
+            return Err(ContractError::InvalidStateTransition);
+        }
+
+        let total_owed = loan_record.amount + loan_record.total_yield;
+        let repaid_bps = if total_owed > 0 {
+            loan_record.amount_repaid * 10_000 / total_owed
+        } else {
+            0
+        };
+
+        if repaid_bps >= cfg.partial_default_threshold_bps as i128 {
+            return Err(ContractError::InvalidStateTransition);
+        }
+
+        loan_record.status = LoanStatus::PartialDefault;
+
+        let unpaid_bps = 10_000 - repaid_bps;
+        let effective_slash_bps = cfg.slash_bps * unpaid_bps / 10_000;
+
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let token_client = require_allowed_token(&env, &loan_record.token_address)?;
+        let mut total_slashed: i128 = 0;
+
+        for v in vouches.iter() {
+            if v.token != loan_record.token_address {
+                continue;
+            }
+            let slash_amount = v.amount * effective_slash_bps / 10_000;
+            total_slashed += slash_amount;
+            let returned = v.amount - slash_amount;
+            if returned > 0 {
+                token_client.transfer(&env.current_contract_address(), &v.voucher, &returned);
+            }
+        }
+
+        let slash_record = SlashRecord {
+            loan_id: loan_record.id,
+            borrower: borrower.clone(),
+            total_slashed,
+            slash_timestamp: env.ledger().timestamp(),
+            forgiven: false,
+            forgiveness_reason: soroban_sdk::String::from_str(&env, ""),
+            forgiven_at: 0,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::SlashRecord(loan_record.id), &slash_record);
+
+        let prev: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PartialDefaultCount(borrower.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PartialDefaultCount(borrower.clone()), &(prev + 1));
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ActiveLoan(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_record.id), &loan_record);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("loan"), soroban_sdk::symbol_short!("part_def")),
+            (borrower, total_slashed),
+        );
+
+        Ok(())
+    }
+
+    // ── #664: Default Forgiveness Program ────────────────────────────────────
+
+    /// Admin forgives a default (Defaulted or PartialDefault) for hardship cases.
+    pub fn forgive_default(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        loan_id: u64,
+        forgiveness_reason: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        use helpers::{require_not_paused, require_admin_approval};
+        use types::{DataKey, LoanStatus, SlashRecord};
+
+        require_not_paused(&env)?;
+        require_admin_approval(&env, &admin_signers);
+
+        let mut loan_record: LoanRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Loan(loan_id))
+            .ok_or(ContractError::NoActiveLoan)?;
+
+        if loan_record.borrower != borrower {
+            return Err(ContractError::UnauthorizedCaller);
+        }
+
+        if loan_record.status != LoanStatus::Defaulted && loan_record.status != LoanStatus::PartialDefault {
+            return Err(ContractError::InvalidStateTransition);
+        }
+
+        loan_record.status = LoanStatus::ForgivenDefault;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan_id), &loan_record);
+
+        let mut slash_record: SlashRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SlashRecord(loan_id))
+            .unwrap_or(SlashRecord {
+                loan_id,
+                borrower: borrower.clone(),
+                total_slashed: 0,
+                slash_timestamp: 0,
+                forgiven: false,
+                forgiveness_reason: soroban_sdk::String::from_str(&env, ""),
+                forgiven_at: 0,
+            });
+
+        slash_record.forgiven = true;
+        slash_record.forgiveness_reason = forgiveness_reason.clone();
+        slash_record.forgiven_at = env.ledger().timestamp();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::SlashRecord(loan_id), &slash_record);
+
+        let default_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DefaultCount(borrower.clone()))
+            .unwrap_or(0);
+        if default_count > 0 {
+            env.storage()
+                .persistent()
+                .set(&DataKey::DefaultCount(borrower.clone()), &(default_count - 1));
+        }
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("loan"), soroban_sdk::symbol_short!("forgiven")),
+            (borrower, loan_id, forgiveness_reason),
+        );
+
+        Ok(())
+    }
+
+    /// Get the slash record for a loan (includes forgiveness info if applicable).
+    pub fn get_slash_record(env: Env, loan_id: u64) -> Option<SlashRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SlashRecord(loan_id))
+    }
+
+    /// Get the partial default count for a borrower.
+    pub fn get_partial_default_count(env: Env, borrower: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PartialDefaultCount(borrower))
+            .unwrap_or(0)
+    }
 }

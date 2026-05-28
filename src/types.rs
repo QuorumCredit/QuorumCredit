@@ -140,7 +140,11 @@ pub enum LoanStatus {
     None,
     Active,
     Repaid,
+    /// #663: Borrower repaid some but less than partial_default_threshold_bps of total owed.
+    PartialDefault,
     Defaulted,
+    /// #664: Default was forgiven by admin.
+    ForgivenDefault,
 }
 
 /// Interest rate type for a loan.
