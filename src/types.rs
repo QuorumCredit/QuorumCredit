@@ -372,6 +372,23 @@ pub struct VouchRecord {
     pub expiry_timestamp: Option<u64>,
     /// Optional delegate address; if set, this address can manage the vouch.
     pub delegate: Option<Address>,
+    /// Optional chain ID for cross-chain vouches. `None` means native Stellar.
+    /// When set, the token must originate from a registered bridge for that chain.
+    pub chain_id: Option<u32>,
+}
+
+/// Metadata for a registered cross-chain bridge.
+#[contracttype]
+#[derive(Clone)]
+pub struct BridgeRecord {
+    /// Numeric chain identifier (e.g. 1 = Ethereum mainnet, 137 = Polygon).
+    pub chain_id: u32,
+    /// Human-readable chain name (e.g. "ethereum", "polygon").
+    pub chain_name: soroban_sdk::String,
+    /// The Stellar-side bridge contract address that wraps/unwraps tokens.
+    pub bridge_address: Address,
+    /// Whether this bridge is currently active and accepted for new vouches.
+    pub active: bool,
 }
 
 #[contracttype]

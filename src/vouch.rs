@@ -5,7 +5,7 @@ use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
 use crate::types::{
-    DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord,
+    BridgeRecord, DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord,
     PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS, BPS_DENOMINATOR,
 };
 use soroban_sdk::{symbol_short, token, Address, Env, Vec};
@@ -50,11 +50,12 @@ pub fn vouch(
     borrower: Address,
     stake: i128,
     token: Address,
+    chain_id: Option<u32>,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
     let cfg = VouchConfig::load(&env);
-    do_vouch(&env, &cfg, voucher, borrower, stake, token)
+    do_vouch(&env, &cfg, voucher, borrower, stake, token, chain_id)
 }
 
 fn validate_vouch<'a>(
@@ -64,6 +65,7 @@ fn validate_vouch<'a>(
     borrower: &Address,
     stake: i128,
     token: &Address,
+    chain_id: Option<u32>,
 ) -> Result<(token::Client<'a>, Vec<VouchRecord>), ContractError> {
     require_positive_amount(env, stake)?;
 
@@ -92,6 +94,12 @@ fn validate_vouch<'a>(
     }
 
     let token_client = require_allowed_token(env, token)?;
+
+    // Bridge validation: if chain_id is provided, the token must originate from
+    // a registered, active bridge for that chain.
+    if let Some(cid) = chain_id {
+        validate_bridge(env, cid, token)?;
+    }
 
     if cfg.min_stake > 0 && stake < cfg.min_stake {
         return Err(ContractError::MinStakeNotMet);
@@ -144,6 +152,7 @@ fn commit_vouch(
     stake: i128,
     token: Address,
     mut vouches: Vec<VouchRecord>,
+    chain_id: Option<u32>,
 ) -> Result<(), ContractError> {
     let contract = env.current_contract_address();
 
@@ -178,6 +187,7 @@ fn commit_vouch(
         token: token.clone(),
         expiry_timestamp: None,
         delegate: None,
+        chain_id,
     });
 
     env.storage()
@@ -226,6 +236,7 @@ fn do_vouch(
     borrower: Address,
     stake: i128,
     token: Address,
+    chain_id: Option<u32>,
 ) -> Result<(), ContractError> {
     crate::helpers::register_borrower_if_needed(env, &borrower);
     let (token_client, vouches) = validate_vouch(env, cfg, &voucher, &borrower, stake, &token)?;
@@ -238,6 +249,7 @@ pub fn batch_vouch(
     borrowers: Vec<Address>,
     stakes: Vec<i128>,
     token: Address,
+    chain_id: Option<u32>,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
@@ -252,7 +264,7 @@ pub fn batch_vouch(
     for i in 0..borrowers.len() {
         let borrower = borrowers.get(i).unwrap();
         let stake = stakes.get(i).unwrap();
-        validate_vouch(&env, &cfg, &voucher, &borrower, stake, &token)?;
+        validate_vouch(&env, &cfg, &voucher, &borrower, stake, &token, chain_id)?;
     }
 
     // Phase 2: commit all — only reached if all validations passed
@@ -265,7 +277,7 @@ pub fn batch_vouch(
             .persistent()
             .get(&DataKey::Vouches(borrower.clone()))
             .unwrap_or(Vec::new(&env));
-        commit_vouch(&env, &token_client, voucher.clone(), borrower, stake, token.clone(), vouches)?;
+        commit_vouch(&env, &token_client, voucher.clone(), borrower, stake, token.clone(), vouches, chain_id)?;
     }
 
     Ok(())

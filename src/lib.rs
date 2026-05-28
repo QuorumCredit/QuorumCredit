@@ -23,6 +23,8 @@ mod config_update_voting_test;
 mod emergency_pause_test;
 #[cfg(test)]
 mod withdrawal_queue_test;
+#[cfg(test)]
+mod cross_chain_vouch_test;
 
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
@@ -83,8 +85,9 @@ impl QuorumCreditContract {
         borrower: Address,
         stake: i128,
         token: Address,
+        chain_id: Option<u32>,
     ) -> Result<(), ContractError> {
-        vouch::vouch(env, voucher, borrower, stake, token)
+        vouch::vouch(env, voucher, borrower, stake, token, chain_id)
     }
 
     pub fn batch_vouch(
@@ -93,8 +96,9 @@ impl QuorumCreditContract {
         borrowers: Vec<Address>,
         stakes: Vec<i128>,
         token: Address,
+        chain_id: Option<u32>,
     ) -> Result<(), ContractError> {
-        vouch::batch_vouch(env, voucher, borrowers, stakes, token)
+        vouch::batch_vouch(env, voucher, borrowers, stakes, token, chain_id)
     }
 
     pub fn increase_stake(
