@@ -351,6 +351,11 @@ pub struct ConfigUpdateProposal {
 pub struct Config {
     pub admins: Vec<Address>,
     pub admin_threshold: u32,
+    /// Admin addresses that are permitted to be configured as admins.
+    /// If empty, any valid admin address may be used.
+    pub admin_whitelist: Vec<Address>,
+    /// Admin addresses that are explicitly forbidden from being configured as admins.
+    pub admin_blacklist: Vec<Address>,
     /// Primary token contract address used for loans and vouches.
     pub token: Address,
     /// Additional token contract addresses accepted for loans/vouches.
@@ -555,22 +560,8 @@ pub enum TimelockAction {
     SetConfig(Config),
 }
 
-/// Escrow state for a repayment pending oracle verification.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum EscrowStatus {
-    /// No escrow in flight (default).
-    None,
-    /// Repayment held pending oracle approval.
-    Pending,
-    /// Oracle approved — funds released to vouchers.
-    Released,
-    /// Oracle rejected — funds returned to borrower.
-    Rejected,
-}
-
-/// A slash execution that has been approved by governance but is waiting for
-/// its `executable_at` delay to elapse before it can be carried out.
+/// A pending slash awaiting execution after the mandatory delay period.
+/// Created when a slash vote reaches quorum; executed via `execute_pending_slash`.
 #[contracttype]
 #[derive(Clone)]
 pub struct PendingSlashRecord {
@@ -630,21 +621,6 @@ pub struct WithdrawalRequest {
     pub borrower: Address,
     pub token: Address,
     pub requested_at: u64,
-}
-
-/// A pending slash awaiting execution after the mandatory delay period.
-/// Created when a slash vote reaches quorum; executed via `execute_pending_slash`.
-#[contracttype]
-#[derive(Clone)]
-pub struct PendingSlashRecord {
-    /// Borrower subject to the pending slash.
-    pub borrower: soroban_sdk::Address,
-    /// Ledger timestamp when the slash vote was approved.
-    pub approved_at: u64,
-    /// Earliest ledger timestamp at which the slash may be executed.
-    pub executable_at: u64,
-    /// True once the slash has been executed.
-    pub executed: bool,
 }
 
 /// A queued withdrawal request submitted during an active loan.
