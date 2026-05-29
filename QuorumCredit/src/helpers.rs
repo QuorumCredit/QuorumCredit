@@ -43,48 +43,54 @@ pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
 
 /// Task 1: Check if a specific function is paused
 pub fn require_not_paused_for(env: &Env, flag: crate::types::PauseFlag) -> Result<(), ContractError> {
-    // First check global pause
-    let global_paused: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false);
+    let global_paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
     if global_paused {
         return Err(ContractError::ContractPaused);
     }
-
-    // Then check specific pause flag
-    let is_paused: bool = env
-        .storage()
-        .instance()
-        .get(&DataKey::PauseFlag(flag.clone()))
-        .unwrap_or(false);
-    
-    if is_paused {
+    if is_paused_for(env, flag) {
         Err(ContractError::FunctionPaused)
     } else {
         Ok(())
     }
 }
 
-/// Task 1: Check if global pause is active (for backward compatibility)
 pub fn is_paused(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false)
+    env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
 }
 
-/// Task 1: Check if a specific pause flag is active
+/// Per-function pause flags stored as a u32 bitmask under symbol key "pflag".
 pub fn is_paused_for(env: &Env, flag: crate::types::PauseFlag) -> bool {
-    // If global pause is active, all functions are paused
     if is_paused(env) {
         return true;
     }
-    env.storage()
-        .instance()
-        .get(&DataKey::PauseFlag(flag))
-        .unwrap_or(false)
+    let flag_bit: u32 = match flag {
+        crate::types::PauseFlag::None => return false,
+        crate::types::PauseFlag::Vouch => 1,
+        crate::types::PauseFlag::LoanRequest => 2,
+        crate::types::PauseFlag::Repay => 3,
+        crate::types::PauseFlag::Slash => 4,
+        crate::types::PauseFlag::Withdraw => 5,
+    };
+    let bitmask: u32 = env.storage().instance().get(&soroban_sdk::symbol_short!("pflag")).unwrap_or(0u32);
+    (bitmask & (1u32 << flag_bit)) != 0
+}
+
+pub fn set_paused_for(env: &Env, flag: crate::types::PauseFlag, paused: bool) {
+    let flag_bit: u32 = match flag {
+        crate::types::PauseFlag::None => return,
+        crate::types::PauseFlag::Vouch => 1,
+        crate::types::PauseFlag::LoanRequest => 2,
+        crate::types::PauseFlag::Repay => 3,
+        crate::types::PauseFlag::Slash => 4,
+        crate::types::PauseFlag::Withdraw => 5,
+    };
+    let mut bitmask: u32 = env.storage().instance().get(&soroban_sdk::symbol_short!("pflag")).unwrap_or(0u32);
+    if paused {
+        bitmask |= 1u32 << flag_bit;
+    } else {
+        bitmask &= !(1u32 << flag_bit);
+    }
+    env.storage().instance().set(&soroban_sdk::symbol_short!("pflag"), &bitmask);
 }
 
 /// Returns `Err(InsufficientFunds)` if `amount` is not strictly positive (≤ 0).

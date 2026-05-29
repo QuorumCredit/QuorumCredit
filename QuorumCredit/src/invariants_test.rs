@@ -33,7 +33,7 @@ mod invariants_tests {
         let token_id = env.register_stellar_asset_contract_v2(admin.clone());
         let contract_id = env.register_contract(None, QuorumCreditContract);
 
-        StellarAssetClient::new(&env, &token_id.address()).mint(&contract_id, &1_000_000);
+        StellarAssetClient::new(&env, &token_id.address()).mint(&contract_id, &10_000_000);
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         client.initialize(&deployer, &admins, &1, &token_id.address());
@@ -105,7 +105,7 @@ mod invariants_tests {
 
                 // I2 — loan amount <= total vouched * ratio / 100 (active loans only)
                 if status == LoanStatus::Active {
-                    let total_vouched = s.client.total_vouched(borrower).unwrap_or(0);
+                    let total_vouched = s.client.total_vouched(borrower);
                     let max_ratio = cfg.max_loan_to_stake_ratio as i128;
                     assert!(
                         loan.amount <= total_vouched * max_ratio / 100,
@@ -120,7 +120,7 @@ mod invariants_tests {
             if status == LoanStatus::Active {
                 if let Some(vouches) = s.client.get_vouches(borrower) {
                     for v in vouches.iter() {
-                        total_locked_stake += v.stake;
+                        total_locked_stake += v.amount;
                     }
                 }
             }
@@ -151,13 +151,13 @@ mod invariants_tests {
         let s = setup();
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
-        mint(&s, &voucher, 10_000);
+        mint(&s, &voucher, 200_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         verify_invariants(&s, &[borrower.clone()]);
 
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
         verify_invariants(&s, &[borrower]);
     }
 
@@ -166,12 +166,12 @@ mod invariants_tests {
         let s = setup();
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
-        mint(&s, &voucher, 10_000);
-        mint(&s, &borrower, 1_000);
+        mint(&s, &voucher, 200_000);
+        mint(&s, &borrower, 102_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
         verify_invariants(&s, &[borrower.clone()]);
 
         let loan = s.client.get_loan(&borrower).unwrap();
@@ -185,11 +185,11 @@ mod invariants_tests {
         let s = setup();
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
-        mint(&s, &voucher, 10_000);
+        mint(&s, &voucher, 200_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
         verify_invariants(&s, &[borrower.clone()]);
 
         s.client.vote_slash(&voucher, &borrower, &true);
@@ -201,12 +201,12 @@ mod invariants_tests {
         let s = setup();
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
-        mint(&s, &voucher, 10_000);
-        mint(&s, &borrower, 50_000);
+        mint(&s, &voucher, 200_000);
+        mint(&s, &borrower, 200_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
 
         let loan = s.client.get_loan(&borrower).unwrap();
         let full = loan.amount + loan.total_yield;
@@ -220,12 +220,12 @@ mod invariants_tests {
         let s = setup();
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
-        mint(&s, &voucher, 10_000);
-        mint(&s, &borrower, 10_000);
+        mint(&s, &voucher, 200_000);
+        mint(&s, &borrower, 200_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
 
         let loan = s.client.get_loan(&borrower).unwrap();
         let full = loan.amount + loan.total_yield;
@@ -268,18 +268,18 @@ mod invariants_tests {
         let borrower = Address::generate(&s.env);
         let v1 = Address::generate(&s.env);
         let v2 = Address::generate(&s.env);
-        mint(&s, &v1, 10_000);
-        mint(&s, &v2, 10_000);
-        mint(&s, &borrower, 5_000);
+        mint(&s, &v1, 200_000);
+        mint(&s, &v2, 200_000);
+        mint(&s, &borrower, 102_000);
 
-        s.client.vouch(&v1, &borrower, &6_000, &s.token);
+        s.client.vouch(&v1, &borrower, &150_000, &s.token);
         verify_invariants(&s, &[borrower.clone()]);
 
-        s.client.vouch(&v2, &borrower, &4_000, &s.token);
+        s.client.vouch(&v2, &borrower, &150_000, &s.token);
         verify_invariants(&s, &[borrower.clone()]);
 
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
         verify_invariants(&s, &[borrower.clone()]);
 
         let loan = s.client.get_loan(&borrower).unwrap();

@@ -1,46 +1,41 @@
 #[cfg(test)]
 mod tests {
-    use crate::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String, Vec};
+
+    fn setup(env: &Env) -> (Address, Address, Address) {
+        let deployer = Address::generate(env);
+        let admin = Address::generate(env);
+        let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        QuorumCreditContractClient::new(env, &contract_id).initialize(
+            &deployer,
+            &Vec::from_array(env, [admin.clone()]),
+            &1,
+            &token,
+        );
+        (contract_id, admin, token)
+    }
 
     #[test]
     fn test_propose_governance_change() {
         let env = Env::default();
-        let admin = Address::random(&env);
-        let deployer = Address::random(&env);
-        let token = Address::random(&env);
-        let proposer = Address::random(&env);
-
         env.mock_all_auths();
+        let (contract_id, admin, token) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let proposer = Address::generate(&env);
 
-        QuorumCreditContract::initialize(
-            env.clone(),
-            deployer.clone(),
-            vec![&env, admin.clone()],
-            1,
-            token.clone(),
-        )
-        .unwrap();
+        // Mint governance tokens to proposer so they can propose
+        soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&proposer, &1_000_000);
 
-        QuorumCreditContract::set_governance_token(
-            env.clone(),
-            vec![&env, admin.clone()],
-            token.clone(),
-        )
-        .unwrap();
+        client.set_governance_token(&Vec::from_array(&env, [admin.clone()]), &token);
 
-        let description = String::from_slice(&env, "Increase yield to 3%");
-        let voting_period = 7 * 24 * 60 * 60; // 7 days
+        let description = String::from_str(&env, "Increase yield to 3%");
+        let voting_period = 7 * 24 * 60 * 60u64;
 
-        let proposal_id = QuorumCreditContract::propose_governance_change(
-            env.clone(),
-            proposer.clone(),
-            description,
-            voting_period,
-        )
-        .unwrap();
+        let proposal_id = client.propose_governance_change(&proposer, &description, &voting_period);
 
-        let proposal = QuorumCreditContract::get_governance_proposal(env.clone(), proposal_id).unwrap();
+        let proposal = client.get_governance_proposal(&proposal_id).unwrap();
         assert_eq!(proposal.id, proposal_id);
         assert_eq!(proposal.proposer, proposer);
         assert!(!proposal.executed);
@@ -49,50 +44,25 @@ mod tests {
     #[test]
     fn test_vote_on_governance_change() {
         let env = Env::default();
-        let admin = Address::random(&env);
-        let deployer = Address::random(&env);
-        let token = Address::random(&env);
-        let proposer = Address::random(&env);
-        let voter = Address::random(&env);
-
         env.mock_all_auths();
+        let (contract_id, admin, token) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let proposer = Address::generate(&env);
+        let voter = Address::generate(&env);
 
-        QuorumCreditContract::initialize(
-            env.clone(),
-            deployer.clone(),
-            vec![&env, admin.clone()],
-            1,
-            token.clone(),
-        )
-        .unwrap();
+        soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&proposer, &1_000_000);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&voter, &1_000_000);
 
-        QuorumCreditContract::set_governance_token(
-            env.clone(),
-            vec![&env, admin.clone()],
-            token.clone(),
-        )
-        .unwrap();
+        client.set_governance_token(&Vec::from_array(&env, [admin.clone()]), &token);
 
-        let description = String::from_slice(&env, "Increase yield to 3%");
-        let voting_period = 7 * 24 * 60 * 60;
+        let description = String::from_str(&env, "Increase yield to 3%");
+        let voting_period = 7 * 24 * 60 * 60u64;
 
-        let proposal_id = QuorumCreditContract::propose_governance_change(
-            env.clone(),
-            proposer.clone(),
-            description,
-            voting_period,
-        )
-        .unwrap();
+        let proposal_id = client.propose_governance_change(&proposer, &description, &voting_period);
 
-        QuorumCreditContract::vote_on_governance_change(
-            env.clone(),
-            voter.clone(),
-            proposal_id,
-            true,
-        )
-        .unwrap();
+        client.vote_on_governance_change(&voter, &proposal_id, &true);
 
-        let proposal = QuorumCreditContract::get_governance_proposal(env.clone(), proposal_id).unwrap();
+        let proposal = client.get_governance_proposal(&proposal_id).unwrap();
         assert!(proposal.approve_votes > 0);
         assert!(proposal.voters.iter().any(|v| v == voter));
     }
@@ -100,57 +70,29 @@ mod tests {
     #[test]
     fn test_execute_governance_change() {
         let env = Env::default();
-        let admin = Address::random(&env);
-        let deployer = Address::random(&env);
-        let token = Address::random(&env);
-        let proposer = Address::random(&env);
-        let voter = Address::random(&env);
-
         env.mock_all_auths();
+        let (contract_id, admin, token) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let proposer = Address::generate(&env);
+        let voter = Address::generate(&env);
 
-        QuorumCreditContract::initialize(
-            env.clone(),
-            deployer.clone(),
-            vec![&env, admin.clone()],
-            1,
-            token.clone(),
-        )
-        .unwrap();
+        soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&proposer, &1_000_000);
+        soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&voter, &1_000_000);
 
-        QuorumCreditContract::set_governance_token(
-            env.clone(),
-            vec![&env, admin.clone()],
-            token.clone(),
-        )
-        .unwrap();
+        client.set_governance_token(&Vec::from_array(&env, [admin.clone()]), &token);
 
-        let description = String::from_slice(&env, "Increase yield to 3%");
-        let voting_period = 1; // 1 second
+        let description = String::from_str(&env, "Increase yield to 3%");
+        let voting_period = 1u64;
 
-        let proposal_id = QuorumCreditContract::propose_governance_change(
-            env.clone(),
-            proposer.clone(),
-            description,
-            voting_period,
-        )
-        .unwrap();
+        let proposal_id = client.propose_governance_change(&proposer, &description, &voting_period);
 
-        QuorumCreditContract::vote_on_governance_change(
-            env.clone(),
-            voter.clone(),
-            proposal_id,
-            true,
-        )
-        .unwrap();
+        client.vote_on_governance_change(&voter, &proposal_id, &true);
 
-        // Advance ledger time past voting period
-        env.ledger().with_mut(|l| {
-            l.timestamp = l.timestamp + 2;
-        });
+        env.ledger().with_mut(|l| l.timestamp += 2);
 
-        QuorumCreditContract::execute_governance_change(env.clone(), proposal_id).unwrap();
+        client.execute_governance_change(&proposal_id);
 
-        let proposal = QuorumCreditContract::get_governance_proposal(env.clone(), proposal_id).unwrap();
+        let proposal = client.get_governance_proposal(&proposal_id).unwrap();
         assert!(proposal.executed);
     }
 }
