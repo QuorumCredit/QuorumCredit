@@ -7,7 +7,7 @@
 /// - Issue 114: Add Invariant Tests — Total Outflow Never Exceeds Total Inflow
 #[cfg(test)]
 mod security_fixes_tests {
-    use crate::{ContractError, DataKey, QuorumCreditContract, QuorumCreditContractClient};
+    use crate::{DataKey, QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::StellarAssetClient,
@@ -18,6 +18,7 @@ mod security_fixes_tests {
         env: Env,
         client: QuorumCreditContractClient<'static>,
         contract_id: Address,
+        #[allow(dead_code)]
         admin: Address,
         token_id: Address,
     }
@@ -54,7 +55,7 @@ mod security_fixes_tests {
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(voucher, &stake);
-        s.client.vouch(&voucher, &borrower, &stake, &s.token_id);
+        s.client.vouch(voucher, borrower, &stake, &s.token_id);
         // Advance time past MIN_VOUCH_AGE (60s) so the vouch is eligible
         s.env.ledger().with_mut(|l| l.timestamp += 61);
     }
@@ -67,16 +68,14 @@ mod security_fixes_tests {
     fn test_borrower_cannot_repay_another_borrower_loan() {
         let s = setup();
 
-        // Create two borrowers
         let borrower_a = Address::generate(&s.env);
         let borrower_b = Address::generate(&s.env);
-        let voucher = Address::generate(&s.env);
+        let voucher_a = Address::generate(&s.env);
+        let voucher_b = Address::generate(&s.env);
 
-        // Setup vouches for both borrowers
-        do_vouch(&s, &voucher, &borrower_a, 500_000);
-        do_vouch(&s, &voucher, &borrower_b, 500_000);
+        do_vouch(&s, &voucher_a, &borrower_a, 500_000);
+        do_vouch(&s, &voucher_b, &borrower_b, 500_000);
 
-        // Request loans for both
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(&borrower_a, &1_000_000);
         token.mint(&borrower_b, &1_000_000);
@@ -87,19 +86,15 @@ mod security_fixes_tests {
         s.client
             .request_loan(&borrower_b, &100_000, &500_000, &purpose, &s.token_id);
 
-        // Verify both loans exist
         assert!(s.client.get_loan(&borrower_a).is_some());
         assert!(s.client.get_loan(&borrower_b).is_some());
 
-        // Borrower A tries to repay Borrower B's loan by calling repay with B's address
-        // This should fail because we try to get A's active loan, not B's
         let result = s.client.try_repay(&borrower_a, &50_000);
         assert!(
             result.is_ok(),
             "Borrower A should be able to repay their own loan"
         );
 
-        // Now verify the loan was actually repaid (via get_loan showing updated amount_repaid)
         let loan_a = s.client.get_loan(&borrower_a);
         assert!(loan_a.is_some());
         assert!(
@@ -116,11 +111,12 @@ mod security_fixes_tests {
 
         let borrower_a = Address::generate(&s.env);
         let borrower_b = Address::generate(&s.env);
-        let voucher = Address::generate(&s.env);
+        let voucher_a = Address::generate(&s.env);
+        let voucher_b = Address::generate(&s.env);
 
-        // Setup
-        do_vouch(&s, &voucher, &borrower_a, 500_000);
-        do_vouch(&s, &voucher, &borrower_b, 500_000);
+        // Setup — use separate vouchers to avoid cooldown conflict
+        do_vouch(&s, &voucher_a, &borrower_a, 500_000);
+        do_vouch(&s, &voucher_b, &borrower_b, 500_000);
 
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(&borrower_a, &500_000);
@@ -133,7 +129,7 @@ mod security_fixes_tests {
         s.client
             .request_loan(&borrower_b, &100_000, &500_000, &purpose, &s.token_id);
 
-        let loan_a_before = s.client.get_loan(&borrower_a).unwrap();
+        let _loan_a_before = s.client.get_loan(&borrower_a).unwrap();
         let loan_b_before = s.client.get_loan(&borrower_b).unwrap();
 
         // Borrower A makes a payment
@@ -202,21 +198,17 @@ mod security_fixes_tests {
         let s = setup();
 
         // Track inflows and outflows
-        let mut total_inflow: i128 = 0;
-        let mut total_outflow: i128 = 0;
-
-        // Initial contract funding is an inflow
-        total_inflow = 100_000_000;
+        let total_inflow: i128 = 100_000_000 + 1_000_000 + 500_000;
 
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
 
+        let mut total_outflow: i128 = 0;
+
         do_vouch(&s, &voucher, &borrower, 1_000_000);
-        total_inflow += 1_000_000; // Voucher stakes their tokens
 
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(&borrower, &500_000);
-        total_inflow += 500_000; // Borrower gets tokens
 
         // Request a loan (outflow to borrower)
         let loan_amount = 100_000;
@@ -262,7 +254,7 @@ mod security_fixes_tests {
             .with_mut(|l| l.timestamp = 31 * 24 * 60 * 60 + 200);
 
         // If we could claim it as defaulted, total_obligation should not exceed contract balance
-        let contract_balance: i128 = s.env.as_contract(&s.contract_id, || {
+        let _contract_balance: i128 = s.env.as_contract(&s.contract_id, || {
             s.env
                 .storage()
                 .instance()
@@ -287,7 +279,7 @@ mod security_fixes_tests {
 
         // Verify that Timelock data structure exists in types
         // This is a compile-time test - if Timelock types are missing, this won't compile
-        let borrower = Address::generate(&s.env);
+        let _borrower = Address::generate(&s.env);
 
         // Once propose_slash is implemented, we should test:
         // 1. propose_slash creates a proposal

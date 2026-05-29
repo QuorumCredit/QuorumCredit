@@ -58,3 +58,7 @@ mod vouch_zero_stake_test;
 mod voucher_balance_check_test;
 #[path = "input_validation_test.rs"]
 mod input_validation_test;
+#[path = "invariants_test.rs"]
+mod invariants_test;
+#[path = "regression_tests.rs"]
+mod regression_tests;

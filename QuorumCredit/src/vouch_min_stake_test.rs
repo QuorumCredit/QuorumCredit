@@ -13,12 +13,14 @@ mod vouch_min_stake_tests {
             .address();
         let contract_id = env.register_contract(None, QuorumCreditContract);
         let client = QuorumCreditContractClient::new(env, &contract_id);
-        client.initialize(&deployer, &Vec::from_array(env, [admin.clone()]), &1, &token_id);
-        // Set min_stake to DEFAULT_MIN_YIELD_STAKE (50 stroops)
-        client.set_min_stake(
-            &Vec::from_array(env, [admin]),
-            &DEFAULT_MIN_YIELD_STAKE,
+        client.initialize(
+            &deployer,
+            &Vec::from_array(env, [admin.clone()]),
+            &1,
+            &token_id,
         );
+        // Set min_stake to DEFAULT_MIN_YIELD_STAKE (50 stroops)
+        client.set_min_stake(&Vec::from_array(env, [admin]), &DEFAULT_MIN_YIELD_STAKE);
         let voucher = Address::generate(env);
         StellarAssetClient::new(env, &token_id).mint(&voucher, &1_000_000);
         (contract_id, token_id, voucher, Address::generate(env))
@@ -32,7 +34,12 @@ mod vouch_min_stake_tests {
         let (contract_id, token_id, voucher, borrower) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
-        let result = client.try_vouch(&voucher, &borrower, &(DEFAULT_MIN_YIELD_STAKE - 1), &token_id);
+        let result = client.try_vouch(
+            &voucher,
+            &borrower,
+            &(DEFAULT_MIN_YIELD_STAKE - 1),
+            &token_id,
+        );
         assert_eq!(result, Err(Ok(ContractError::MinStakeNotMet)));
     }
 

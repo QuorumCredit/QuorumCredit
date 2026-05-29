@@ -4,7 +4,7 @@ mod tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
-    fn setup(env: &Env) -> (QuorumCreditContractClient, Address) {
+    fn setup(env: &Env) -> (QuorumCreditContractClient<'_>, Address) {
         let token_admin = Address::generate(env);
         let token = env
             .register_stellar_asset_contract_v2(token_admin)
@@ -13,7 +13,12 @@ mod tests {
         let client = QuorumCreditContractClient::new(env, &contract_id);
         let deployer = Address::generate(env);
         let admin = Address::generate(env);
-        client.initialize(&deployer, &Vec::from_array(env, [admin.clone()]), &1, &token);
+        client.initialize(
+            &deployer,
+            &Vec::from_array(env, [admin.clone()]),
+            &1,
+            &token,
+        );
         (client, admin)
     }
 
@@ -23,8 +28,7 @@ mod tests {
         env.mock_all_auths();
         let (client, admin) = setup(&env);
 
-        let result =
-            client.try_set_min_loan_amount(&Vec::from_array(&env, [admin.clone()]), &0);
+        let result = client.try_set_min_loan_amount(&Vec::from_array(&env, [admin.clone()]), &0);
         assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 
@@ -34,8 +38,7 @@ mod tests {
         env.mock_all_auths();
         let (client, admin) = setup(&env);
 
-        let result =
-            client.try_set_min_loan_amount(&Vec::from_array(&env, [admin.clone()]), &-1);
+        let result = client.try_set_min_loan_amount(&Vec::from_array(&env, [admin.clone()]), &-1);
         assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 
@@ -45,8 +48,7 @@ mod tests {
         env.mock_all_auths();
         let (client, admin) = setup(&env);
 
-        client
-            .set_min_loan_amount(&Vec::from_array(&env, [admin.clone()]), &500_000);
+        client.set_min_loan_amount(&Vec::from_array(&env, [admin.clone()]), &500_000);
 
         let cfg = client.get_config();
         assert_eq!(cfg.min_loan_amount, 500_000);

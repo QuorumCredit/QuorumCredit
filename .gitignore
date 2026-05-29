@@ -1,10 +1,41 @@
+# Build artifacts
 /target
+**/target
+
+# Environment files
 .env
 .env.example
+.env.local
+.env.*.local
+
+# Test snapshots
 test_snapshots/
+**/test_snapshots/
+**/*.snap
 
 # WASM build artifacts
 *.wasm
 
 # Windows installer binaries
 *.exe
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
+# Cargo.lock  # intentionally tracked
+
+# Coverage reports
+lcov.info
+coverage/
+tarpaulin-report.html

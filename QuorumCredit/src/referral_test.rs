@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod referral_tests {
-    use crate::{ContractError, QuorumCreditContract, QuorumCreditContractClient};
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
         token::{StellarAssetClient, TokenClient},
@@ -10,6 +10,7 @@ mod referral_tests {
     struct Setup {
         env: Env,
         client: QuorumCreditContractClient<'static>,
+        #[allow(dead_code)]
         contract_id: Address,
         token: Address,
         admin: Address,

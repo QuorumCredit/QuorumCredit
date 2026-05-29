@@ -10,8 +10,10 @@ mod token_config_tests {
     struct Setup {
         env: Env,
         client: QuorumCreditContractClient<'static>,
+        #[allow(dead_code)]
         xlm: Address,
         usdc: Address,
+        #[allow(dead_code)]
         admin: Address,
         admins: Vec<Address>,
     }
@@ -112,8 +114,7 @@ mod token_config_tests {
         s.client.repay(&borrower, &total_owed);
 
         // Voucher should receive stake + yield
-        let usdc_client =
-            soroban_sdk::token::TokenClient::new(&s.env, &s.usdc);
+        let usdc_client = soroban_sdk::token::TokenClient::new(&s.env, &s.usdc);
         let voucher_balance = usdc_client.balance(&voucher);
         assert_eq!(voucher_balance, stake + 25_000);
     }

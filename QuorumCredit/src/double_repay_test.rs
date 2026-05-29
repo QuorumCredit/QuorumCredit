@@ -7,7 +7,7 @@ mod double_repay_tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
-        token::{StellarAssetClient, TokenClient},
+        token::StellarAssetClient,
         Address, Env, String, Vec,
     };
 

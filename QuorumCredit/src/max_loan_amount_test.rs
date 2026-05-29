@@ -2,7 +2,11 @@
 mod max_loan_amount_tests {
     use crate::errors::ContractError;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, String, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        token::StellarAssetClient,
+        Address, Env, String, Vec,
+    };
 
     const MAX: i128 = 1_000_000;
 
@@ -14,14 +18,25 @@ mod max_loan_amount_tests {
             .address();
         let contract_id = env.register_contract(None, QuorumCreditContract);
         let client = QuorumCreditContractClient::new(env, &contract_id);
-        client.initialize(&deployer, &Vec::from_array(env, [admin.clone()]), &1, &token_id);
+        client.initialize(
+            &deployer,
+            &Vec::from_array(env, [admin.clone()]),
+            &1,
+            &token_id,
+        );
         // Set max_loan_amount to 1,000,000 stroops
         client.set_max_loan_amount(&Vec::from_array(env, [admin.clone()]), &MAX);
         // Fund contract so it can disburse loans
         StellarAssetClient::new(env, &token_id).mint(&contract_id, &10_000_000);
         let voucher = Address::generate(env);
         StellarAssetClient::new(env, &token_id).mint(&voucher, &10_000_000);
-        (contract_id, token_id, admin, voucher, Address::generate(env))
+        (
+            contract_id,
+            token_id,
+            admin,
+            voucher,
+            Address::generate(env),
+        )
     }
 
     /// Issue #475: request_loan() with 1,000,001 stroops must be rejected.
@@ -34,6 +49,8 @@ mod max_loan_amount_tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         client.vouch(&voucher, &borrower, &5_000_000, &token_id);
+        // Advance past MIN_VOUCH_AGE (60s) so the vouch is usable.
+        env.ledger().with_mut(|l| l.timestamp += 61);
 
         let result = client.try_request_loan(
             &borrower,
@@ -55,6 +72,8 @@ mod max_loan_amount_tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         client.vouch(&voucher, &borrower, &5_000_000, &token_id);
+        // Advance past MIN_VOUCH_AGE (60s) so the vouch is usable.
+        env.ledger().with_mut(|l| l.timestamp += 61);
 
         let result = client.try_request_loan(
             &borrower,

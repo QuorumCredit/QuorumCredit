@@ -1,13 +1,17 @@
 use crate::{
     admin,
     errors::ContractError,
+    fraud_detection,
     governance,
     helpers::{self, require_valid_token, validate_admin_config},
     insurance,
+    liquidity_mining,
     loan,
     reputation::ReputationNftExternalClient,
+    staking_derivatives,
     types::*,
     vouch,
+    vouch_snapshot,
 };
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, Address, BytesN, Env, Vec,
@@ -58,6 +62,15 @@ impl QuorumCreditContract {
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
                 min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
+                prepayment_penalty_bps: 0,
+                liquidity_mining_rate_bps: DEFAULT_LIQUIDITY_MINING_RATE_BPS,
+                recovery_percentage: 0,
+                redistribution_rule: RedistributionRule::Treasury,
+                immunity_period_seconds: 0,
+                insurance_premium_bps: 0,
+                voting_period_seconds: crate::types::DEFAULT_VOTING_PERIOD_SECONDS,
+                slash_cooldown_seconds: 0,
+                emergency_pause_enabled: false,
             },
         );
 
@@ -628,6 +641,18 @@ impl QuorumCreditContract {
         admin::unpause(env, admin_signers)
     }
 
+    /// Pause the contract with a gradual thaw period for emergency withdrawals.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `thaw_duration` - Duration in seconds for the thaw period
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64) {
+        admin::pause_with_thaw(env, admin_signers, thaw_duration)
+    }
+
     /// Blacklist a borrower (prevents them from requesting loans).
     ///
     /// # Arguments
@@ -668,6 +693,68 @@ impl QuorumCreditContract {
         slash_bps: Option<i128>,
     ) {
         admin::update_config(env, admin_signers, yield_bps, slash_bps)
+    }
+
+    /// Toggle dynamic slash threshold on/off.
+    /// When enabled, slash penalties adjust based on protocol health.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `enabled` - Whether to enable dynamic slash threshold
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    pub fn set_dynamic_slash_threshold(
+        env: Env,
+        admin_signers: Vec<Address>,
+        enabled: bool,
+    ) {
+        admin::set_dynamic_slash_threshold(env, admin_signers, enabled)
+    }
+
+    /// Get the current effective slash threshold (either static or dynamic).
+    /// This function can be called by anyone to see what slash rate would be applied.
+    ///
+    /// # Returns
+    /// * Current effective slash threshold in basis points
+    pub fn get_effective_slash_threshold(env: Env) -> i128 {
+        admin::get_effective_slash_threshold(env)
+    }
+
+    /// Toggle loan-size-based slash scaling on/off.
+    /// When enabled, slash percentage scales linearly with loan size relative to
+    /// total staked collateral. Small loans use `slash_bps`; large loans scale up
+    /// to `loan_size_slash_max_bps`.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `enabled` - Whether to enable loan-size-based slash scaling
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    pub fn set_loan_size_slash_enabled(
+        env: Env,
+        admin_signers: Vec<Address>,
+        enabled: bool,
+    ) {
+        admin::set_loan_size_slash_enabled(env, admin_signers, enabled)
+    }
+
+    /// Set the maximum slash rate for the largest loans when loan-size scaling is enabled.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    /// * `max_bps` - Maximum slash rate in basis points (must be >= slash_bps, <= 10_000)
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    /// * If max_bps < slash_bps or max_bps > 10_000
+    pub fn set_loan_size_slash_max_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        max_bps: i128,
+    ) {
+        admin::set_loan_size_slash_max_bps(env, admin_signers, max_bps)
     }
 
     /// Set the reputation NFT contract address.
@@ -758,6 +845,16 @@ impl QuorumCreditContract {
         admin::remove_allowed_token(env, admin_signers, token)
     }
 
+    /// Set the grace period after loan deadline before slashing is allowed.
+    pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
+        admin::set_grace_period(env, admin_signers, period)
+    }
+
+    /// Enable or disable the voucher whitelist.
+    pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: bool) {
+        admin::set_whitelist_enabled(env, admin_signers, enabled)
+    }
+
     /// Withdraw funds from the slash treasury to a recipient address.
     /// Admin-gated. Emits an admin/slshwdraw event on success.
     ///
@@ -808,7 +905,7 @@ impl QuorumCreditContract {
             .get(&DataKey::FeeTreasury);
         match fee_treasury {
             Some(address) => {
-                let token_client = helpers::token(&env);
+                let token_client = helpers::primary_token(&env);
                 token_client.balance(&address)
             }
             None => 0,
@@ -1012,7 +1109,7 @@ impl QuorumCreditContract {
     /// # Returns
     /// * `i128` - The contract balance in stroops
     pub fn get_contract_balance(env: Env) -> i128 {
-        helpers::token(&env).balance(&env.current_contract_address())
+        helpers::primary_token(&env).balance(&env.current_contract_address())
     }
 
     /// Get the voucher history (list of borrowers vouched for).
@@ -1024,6 +1121,18 @@ impl QuorumCreditContract {
     /// * `Vec<Address>` - Vector of borrower addresses
     pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
         vouch::voucher_history(env, voucher)
+    }
+
+    /// Get cumulative reputation statistics for a voucher (issue #602).
+    ///
+    /// # Arguments
+    /// * `voucher` - Address of the voucher
+    ///
+    /// # Returns
+    /// * `VoucherStats` - Struct with successful_vouches, total_vouches_slashed,
+    ///   total_yield_earned, and total_slashed. Returns zeroed stats if no history.
+    pub fn get_voucher_stats(env: Env, voucher: Address) -> VoucherStats {
+        vouch::get_voucher_stats(env, voucher)
     }
 
     /// Get the reputation score for a borrower.
@@ -1087,6 +1196,93 @@ impl QuorumCreditContract {
     /// * `u32` - The total number of defaults
     pub fn default_count(env: Env, borrower: Address) -> u32 {
         loan::default_count(env, borrower)
+    }
+
+    /// Get payment history for a loan. (#598)
+    pub fn get_payment_history(
+        env: Env,
+        loan_id: u64,
+    ) -> Vec<crate::types::PaymentRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PaymentHistory(loan_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    // ── Pagination ────────────────────────────────────────────────────────────
+
+    /// Get paginated loans for a borrower.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower
+    /// * `limit` - Maximum results (default 10, max 100)
+    /// * `offset` - Pagination offset
+    ///
+    /// # Returns
+    /// * `PaginatedLoans` - Paginated loan records
+    pub fn get_loans_paginated(
+        env: Env,
+        borrower: Address,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> crate::types::PaginatedLoans {
+        let params = crate::pagination::normalize_pagination(limit, offset);
+        let loans = Vec::new(&env);
+        let total = 0u32;
+        crate::pagination::paginate_loans(&env, loans, total, params.limit, params.offset)
+    }
+
+    /// Get paginated vouches for a borrower.
+    ///
+    /// # Arguments
+    /// * `borrower` - Address of the borrower
+    /// * `limit` - Maximum results (default 10, max 100)
+    /// * `offset` - Pagination offset
+    ///
+    /// # Returns
+    /// * `PaginatedVouches` - Paginated vouch records
+    pub fn get_vouches_paginated(
+        env: Env,
+        borrower: Address,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> crate::types::PaginatedVouches {
+        let params = crate::pagination::normalize_pagination(limit, offset);
+        if let Some(vouches) = env.storage().persistent().get::<_, Vec<VouchRecord>>(&DataKey::Vouches(borrower)) {
+            let total = vouches.len();
+            crate::pagination::paginate_vouches(&env, vouches, total, params.limit, params.offset)
+        } else {
+            crate::types::PaginatedVouches {
+                vouches: Vec::new(&env),
+                total: 0,
+                limit: params.limit,
+                offset: params.offset,
+            }
+        }
+    }
+
+    // ── Signature Verification ────────────────────────────────────────────────
+
+    /// Verify that a caller has signed the transaction.
+    /// Used to ensure the caller owns the address they claim.
+    ///
+    /// # Arguments
+    /// * `caller` - Address claiming to make the request
+    ///
+    /// # Returns
+    /// * `Result<(), ContractError>` - Ok if signed, Err otherwise
+    pub fn verify_signature(env: Env, caller: Address) -> Result<(), ContractError> {
+        crate::signature::verify_caller_signature(&env, &caller)
+    }
+
+    // ── Pause with Thaw ───────────────────────────────────────────────────────
+
+    /// Check if the contract is in thaw period (gradual recovery after pause).
+    ///
+    /// # Returns
+    /// * `bool` - True if in thaw period, false otherwise
+    pub fn is_in_thaw_period(env: Env) -> bool {
+        admin::is_in_thaw_period(&env)
     }
 
     /// Get the protocol fee in basis points.
@@ -1293,8 +1489,22 @@ impl QuorumCreditContract {
     }
 
     /// Get slash audit record for a borrower (Issue #536).
-    pub fn get_slash_audit(env: Env, borrower: Address) -> Option<crate::types::SlashAuditRecord> {
-        loan::get_slash_audit(env, borrower)
+    pub fn get_slash_record(env: Env, slash_id: u64) -> Option<crate::types::SlashRecord> {
+        governance::get_slash_record(env, slash_id)
+    }
+
+    pub fn get_slash_audit(env: Env, borrower: Address) -> Option<crate::types::SlashRecord> {
+        governance::get_slash_record_for_borrower(env, borrower)
+    }
+
+    /// Admin-only: reverse a slash and restore slashed funds to the borrower.
+    pub fn reverse_slash(
+        env: Env,
+        admin_signers: Vec<Address>,
+        slash_id: u64,
+        reason: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        governance::reverse_slash(env, admin_signers, slash_id, reason)
     }
 
     /// Repay loan with partial payment support (Issue #538).

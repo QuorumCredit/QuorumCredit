@@ -41,6 +41,58 @@ pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
     }
 }
 
+/// Task 1: Check if a specific function is paused
+pub fn require_not_paused_for(env: &Env, flag: crate::types::PauseFlag) -> Result<(), ContractError> {
+    let global_paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+    if global_paused {
+        return Err(ContractError::ContractPaused);
+    }
+    if is_paused_for(env, flag) {
+        Err(ContractError::FunctionPaused)
+    } else {
+        Ok(())
+    }
+}
+
+pub fn is_paused(env: &Env) -> bool {
+    env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+}
+
+/// Per-function pause flags stored as a u32 bitmask under symbol key "pflag".
+pub fn is_paused_for(env: &Env, flag: crate::types::PauseFlag) -> bool {
+    if is_paused(env) {
+        return true;
+    }
+    let flag_bit: u32 = match flag {
+        crate::types::PauseFlag::None => return false,
+        crate::types::PauseFlag::Vouch => 1,
+        crate::types::PauseFlag::LoanRequest => 2,
+        crate::types::PauseFlag::Repay => 3,
+        crate::types::PauseFlag::Slash => 4,
+        crate::types::PauseFlag::Withdraw => 5,
+    };
+    let bitmask: u32 = env.storage().instance().get(&soroban_sdk::symbol_short!("pflag")).unwrap_or(0u32);
+    (bitmask & (1u32 << flag_bit)) != 0
+}
+
+pub fn set_paused_for(env: &Env, flag: crate::types::PauseFlag, paused: bool) {
+    let flag_bit: u32 = match flag {
+        crate::types::PauseFlag::None => return,
+        crate::types::PauseFlag::Vouch => 1,
+        crate::types::PauseFlag::LoanRequest => 2,
+        crate::types::PauseFlag::Repay => 3,
+        crate::types::PauseFlag::Slash => 4,
+        crate::types::PauseFlag::Withdraw => 5,
+    };
+    let mut bitmask: u32 = env.storage().instance().get(&soroban_sdk::symbol_short!("pflag")).unwrap_or(0u32);
+    if paused {
+        bitmask |= 1u32 << flag_bit;
+    } else {
+        bitmask &= !(1u32 << flag_bit);
+    }
+    env.storage().instance().set(&soroban_sdk::symbol_short!("pflag"), &bitmask);
+}
+
 /// Returns `Err(InsufficientFunds)` if `amount` is not strictly positive (≤ 0).
 /// Use this for all numeric inputs that must be > 0 (stakes, loan amounts, thresholds).
 pub fn require_positive_amount(_env: &Env, amount: i128) -> Result<(), ContractError> {
@@ -166,6 +218,11 @@ pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
             config.admins.iter().any(|a| a == signer),
             "signer is not a registered admin"
         );
+        // Check if admin key is expired
+        assert!(
+            !crate::admin::is_admin_key_expired(env, &signer),
+            "admin key has expired"
+        );
         signer.require_auth();
     }
 }
@@ -196,9 +253,58 @@ pub fn require_valid_token(env: &Env, addr: &Address) -> Result<(), ContractErro
     Ok(())
 }
 
+/// Check if a caller has been delegated a specific permission (#684)
+pub fn has_delegated_permission(env: &Env, caller: &Address, permission: &soroban_sdk::String) -> bool {
+    if let Some(record) = env.storage().persistent()
+        .get::<_, crate::types::AdminDelegationRecord>(&crate::types::DataKey::AdminDelegation(caller.clone())) {
+        record.permissions.iter().any(|p| p == *permission)
+    } else {
+        false
+    }
+}
+
 /// Compute `amount * bps / 10_000` — basis-point math helper.
 pub fn bps_of(amount: i128, bps: i128) -> i128 {
     amount * bps / 10_000
+}
+
+/// Compute the effective (decayed) stake for a vouch.
+///
+/// If `decay_rate_bps == 0` or `decay_period_secs == 0` decay is disabled and
+/// the original `stake` is returned unchanged.
+///
+/// Otherwise, for each full `decay_period_secs` elapsed since `vouch_timestamp`,
+/// the stake is reduced by `decay_rate_bps / 10_000`. The minimum returned value
+/// is 0 (stake never goes negative).
+///
+/// Example: stake=1_000_000, decay_rate_bps=100 (1%), decay_period_secs=30 days.
+/// After 1 period → 990_000. After 2 periods → 980_100. Etc.
+pub fn compute_decayed_stake(
+    stake: i128,
+    vouch_timestamp: u64,
+    now: u64,
+    decay_rate_bps: u32,
+    decay_period_secs: u64,
+) -> i128 {
+    if decay_rate_bps == 0 || decay_period_secs == 0 || now <= vouch_timestamp {
+        return stake;
+    }
+    let elapsed = now - vouch_timestamp;
+    let periods = elapsed / decay_period_secs;
+    if periods == 0 {
+        return stake;
+    }
+    // Apply compound decay: stake * ((10_000 - decay_rate_bps) / 10_000) ^ periods
+    // Use integer arithmetic: multiply by (10_000 - rate) and divide by 10_000 each period.
+    let keep_bps = (10_000u64 - decay_rate_bps as u64) as i128;
+    let mut result = stake;
+    for _ in 0..periods {
+        result = result * keep_bps / 10_000;
+        if result <= 0 {
+            return 0;
+        }
+    }
+    result
 }
 
 pub fn validate_admin_config(
@@ -207,14 +313,9 @@ pub fn validate_admin_config(
     admin_threshold: u32,
 ) -> Result<(), ContractError> {
     assert!(!admins.is_empty(), "at least one admin is required");
-    assert!(
-        admin_threshold > 0,
-        "admin threshold must be greater than zero"
-    );
-    assert!(
-        admin_threshold <= admins.len(),
-        "admin threshold cannot exceed admin count"
-    );
+    if admin_threshold == 0 || admin_threshold > admins.len() {
+        return Err(ContractError::InvalidAdminThreshold);
+    }
 
     let admin_count = admins.len();
     for i in 0..admin_count {
@@ -237,11 +338,7 @@ pub fn validate_admin_config(
 mod ttl_tests {
     use super::*;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{
-        testutils::Address as _,
-        token::{StellarAssetClient, TokenClient},
-        Address, Env, Vec,
-    };
+    use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
     /// Verify extend_ttl does not panic when called on an existing persistent key.
     #[test]

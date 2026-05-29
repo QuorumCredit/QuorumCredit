@@ -2,13 +2,11 @@ use soroban_sdk::contracterror;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum ContractError {
     InsufficientFunds = 1,
-    /// Borrower already has an active (non-repaid, non-defaulted) loan.
     ActiveLoanExists = 2,
-    /// Total vouched stake overflowed i128.
     StakeOverflow = 3,
-    /// admin or token address must not be the zero address.
     ZeroAddress = 4,
     DuplicateVouch = 5,
     NoActiveLoan = 6,
@@ -27,7 +25,6 @@ pub enum ContractError {
     AlreadyInitialized = 19,
     VouchTooRecent = 20,
     VouchCooldownActive = 21,
-    BorrowerHasActiveLoan = 22,
     VoucherNotWhitelisted = 23,
     Blacklisted = 24,
     TimelockNotFound = 25,
@@ -35,19 +32,50 @@ pub enum ContractError {
     TimelockExpired = 27,
     NoVouchesForBorrower = 28,
     VoucherNotFound = 29,
-    /// Token address does not implement the SEP-41 token interface.
     InvalidToken = 30,
     AlreadyVoted = 31,
     SlashVoteNotFound = 32,
     SlashAlreadyExecuted = 33,
     LoanBelowMinAmount = 34,
     QuorumNotMet = 35,
-    MaxVouchersPerBorrowerExceeded = 36,
-    /// Voucher has insufficient balance to stake the requested amount.
-    InsufficientVoucherBalance = 37,
-    /// Voucher and borrower must be different addresses.
-    SelfVouchNotAllowed = 38,
-    DuplicateToken = 39,
-    /// Admin threshold must be > 0 and <= number of admins.
-    InvalidAdminThreshold = 40,
+    DelayNotElapsed = 36,
+    MaxVouchersPerBorrowerExceeded = 37,
+    InsufficientVoucherBalance = 38,
+    SelfVouchNotAllowed = 39,
+    DuplicateToken = 40,
+    InvalidAdminThreshold = 41,
+    InsufficientYieldReserve = 42,
+    ReminderAlreadySent = 43,
+    /// Insurance pool has no funds to cover the claim.
+    InsurancePoolEmpty = 44,
+    /// Insurance claim already made for this loan.
+    InsuranceClaimAlreadyMade = 45,
+    /// Basis points value is invalid (must be 0–10000).
+    InvalidBps = 46,
+    /// Withdrawal request already queued for this voucher/borrower pair.
+    WithdrawalAlreadyQueued = 57,
+    /// No queued withdrawal found for this voucher/borrower pair.
+    WithdrawalNotQueued = 47,
+    /// Partial withdrawal amount exceeds the 50% cap.
+    PartialWithdrawalExceedsCap = 48,
+    /// Borrower was slashed too recently; slash cooldown is still active.
+    SlashCooldownActive = 49,
+    /// Caller is not an admin or protocol-token holder allowed to govern.
+    NotGovernanceParticipant = 50,
+    /// Governance action is not allowed after the voting period has ended.
+    VotingPeriodEnded = 51,
+    /// Governance proposal was not found.
+    ProposalNotFound = 52,
+    /// Governance proposal was already finalized.
+    ProposalAlreadyFinalized = 53,
+    /// Oracle caller is not the registered oracle contract (#666/#667).
+    OracleUnauthorized = 54,
+    /// Repayment retry limit has been exceeded (#669).
+    MaxRetriesExceeded = 55,
+    /// No escrow record found for this borrower (#666/#667).
+    NoEscrowFound = 56,
+    /// No slash record found for the given slash ID.
+    SlashRecordNotFound = 57,
+    /// Slash has already been reversed and cannot be reversed again.
+    SlashAlreadyReversed = 58,
 }
