@@ -1,30 +1,33 @@
 #[cfg(test)]
 mod tests {
-    use crate::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
+    use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+
+    fn setup(env: &Env) -> (Address, Address, Address) {
+        let deployer = Address::generate(env);
+        let admin = Address::generate(env);
+        let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        QuorumCreditContractClient::new(env, &contract_id).initialize(
+            &deployer,
+            &Vec::from_array(env, [admin.clone()]),
+            &1,
+            &token,
+        );
+        (contract_id, admin, token)
+    }
 
     #[test]
     fn test_admin_audit_log_records_actions() {
         let env = Env::default();
-        let admin = Address::random(&env);
-        let deployer = Address::random(&env);
-        let token = Address::random(&env);
-
         env.mock_all_auths();
+        let (contract_id, admin, _token) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
 
-        QuorumCreditContract::initialize(
-            env.clone(),
-            deployer.clone(),
-            vec![&env, admin.clone()],
-            1,
-            token.clone(),
-        )
-        .unwrap();
+        let new_admin = Address::generate(&env);
+        client.add_admin(&Vec::from_array(&env, [admin.clone()]), &new_admin);
 
-        let new_admin = Address::random(&env);
-        QuorumCreditContract::add_admin(env.clone(), vec![&env, admin.clone()], new_admin.clone());
-
-        let log = QuorumCreditContract::get_admin_audit_log(env.clone());
+        let log = client.get_admin_audit_log();
         assert!(!log.is_empty());
         assert_eq!(log.get(0).unwrap().admin, admin);
     }
@@ -32,24 +35,13 @@ mod tests {
     #[test]
     fn test_pause_logged() {
         let env = Env::default();
-        let admin = Address::random(&env);
-        let deployer = Address::random(&env);
-        let token = Address::random(&env);
-
         env.mock_all_auths();
+        let (contract_id, admin, _token) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
 
-        QuorumCreditContract::initialize(
-            env.clone(),
-            deployer.clone(),
-            vec![&env, admin.clone()],
-            1,
-            token.clone(),
-        )
-        .unwrap();
+        client.pause(&Vec::from_array(&env, [admin.clone()]));
 
-        QuorumCreditContract::pause(env.clone(), vec![&env, admin.clone()]);
-
-        let log = QuorumCreditContract::get_admin_audit_log(env.clone());
+        let log = client.get_admin_audit_log();
         assert!(!log.is_empty());
         let last_entry = log.get(log.len() - 1).unwrap();
         assert_eq!(last_entry.admin, admin);

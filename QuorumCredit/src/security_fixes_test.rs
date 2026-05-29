@@ -68,16 +68,14 @@ mod security_fixes_tests {
     fn test_borrower_cannot_repay_another_borrower_loan() {
         let s = setup();
 
-        // Create two borrowers
         let borrower_a = Address::generate(&s.env);
         let borrower_b = Address::generate(&s.env);
-        let voucher = Address::generate(&s.env);
+        let voucher_a = Address::generate(&s.env);
+        let voucher_b = Address::generate(&s.env);
 
-        // Setup vouches for both borrowers
-        do_vouch(&s, &voucher, &borrower_a, 500_000);
-        do_vouch(&s, &voucher, &borrower_b, 500_000);
+        do_vouch(&s, &voucher_a, &borrower_a, 500_000);
+        do_vouch(&s, &voucher_b, &borrower_b, 500_000);
 
-        // Request loans for both
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(&borrower_a, &1_000_000);
         token.mint(&borrower_b, &1_000_000);
@@ -88,19 +86,15 @@ mod security_fixes_tests {
         s.client
             .request_loan(&borrower_b, &100_000, &500_000, &purpose, &s.token_id);
 
-        // Verify both loans exist
         assert!(s.client.get_loan(&borrower_a).is_some());
         assert!(s.client.get_loan(&borrower_b).is_some());
 
-        // Borrower A tries to repay Borrower B's loan by calling repay with B's address
-        // This should fail because we try to get A's active loan, not B's
         let result = s.client.try_repay(&borrower_a, &50_000);
         assert!(
             result.is_ok(),
             "Borrower A should be able to repay their own loan"
         );
 
-        // Now verify the loan was actually repaid (via get_loan showing updated amount_repaid)
         let loan_a = s.client.get_loan(&borrower_a);
         assert!(loan_a.is_some());
         assert!(
@@ -117,11 +111,12 @@ mod security_fixes_tests {
 
         let borrower_a = Address::generate(&s.env);
         let borrower_b = Address::generate(&s.env);
-        let voucher = Address::generate(&s.env);
+        let voucher_a = Address::generate(&s.env);
+        let voucher_b = Address::generate(&s.env);
 
-        // Setup
-        do_vouch(&s, &voucher, &borrower_a, 500_000);
-        do_vouch(&s, &voucher, &borrower_b, 500_000);
+        // Setup — use separate vouchers to avoid cooldown conflict
+        do_vouch(&s, &voucher_a, &borrower_a, 500_000);
+        do_vouch(&s, &voucher_b, &borrower_b, 500_000);
 
         let token = StellarAssetClient::new(&s.env, &s.token_id);
         token.mint(&borrower_a, &500_000);

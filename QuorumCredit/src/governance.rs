@@ -425,7 +425,7 @@ pub fn propose_governance_change(
     let gov_token_addr: Address = env
         .storage()
         .instance()
-        .get(&DataKey::GovernanceTokenAddress)
+        .get(&DataKey::GovernanceToken)
         .ok_or(ContractError::InvalidToken)?;
 
     // Check proposer has governance tokens
@@ -485,7 +485,7 @@ pub fn vote_on_governance_change(
     let gov_token_addr: Address = env
         .storage()
         .instance()
-        .get(&DataKey::GovernanceTokenAddress)
+        .get(&DataKey::GovernanceToken)
         .ok_or(ContractError::InvalidToken)?;
 
     // Check voter has governance tokens
@@ -587,14 +587,14 @@ pub fn get_governance_proposal(
 pub fn set_governance_token(env: &Env, token_addr: Address) {
     env.storage()
         .instance()
-        .set(&DataKey::GovernanceTokenAddress, &token_addr);
+        .set(&DataKey::GovernanceToken, &token_addr);
 }
 
 /// Get the governance token address.
 pub fn get_governance_token(env: Env) -> Option<Address> {
     env.storage()
         .instance()
-        .get(&DataKey::GovernanceTokenAddress)
+        .get(&DataKey::GovernanceToken)
 }
 
 // ── Task 4: Dispute Mechanism for Defaulted Loans ───────────────────────────
@@ -657,8 +657,8 @@ pub fn dispute_slash(
         evidence_hash,
         disputed_at: now,
         resolved: false,
-        resolved_at: None,
-        resolution: None,
+        resolved_at: 0,
+        upheld: false,
         voters: Vec::new(&env),
         approve_votes: 0,
         reject_votes: 0,
@@ -774,8 +774,8 @@ pub fn resolve_dispute(env: Env, dispute_id: u64) -> Result<(), ContractError> {
     };
 
     dispute.resolved = true;
-    dispute.resolved_at = Some(env.ledger().timestamp());
-    dispute.resolution = Some(resolution.clone());
+    dispute.resolved_at = env.ledger().timestamp();
+    dispute.upheld = matches!(resolution, DisputeResolution::Upheld);
 
     env.storage()
         .persistent()
@@ -784,7 +784,7 @@ pub fn resolve_dispute(env: Env, dispute_id: u64) -> Result<(), ContractError> {
 
     // If dispute is upheld, reverse the slash by restoring the loan status
     // and returning the slashed funds (simplified - in production would need more complex logic)
-    if let DisputeResolution::Upheld = resolution {
+    if dispute.upheld {
         // Restore the loan to active status (simplified)
         // In a full implementation, this would also restore the vouchers' stakes
         if let Some(mut loan) = env.storage().persistent().get::<DataKey, crate::types::LoanRecord>(

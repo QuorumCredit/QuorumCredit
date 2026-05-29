@@ -138,6 +138,22 @@ pub struct LoanExtensionRequest {
 /// Slash escrow period before funds are permanently burned, in seconds (30 days).
 pub const SLASH_ESCROW_PERIOD: u64 = 30 * 24 * 60 * 60;
 
+// ── Escrow Status ─────────────────────────────────────────────────────────────
+
+/// Status of a repayment held in oracle-verified escrow (#666/#667).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EscrowStatus {
+    /// No escrow — repayment released immediately (default).
+    None,
+    /// Repayment held pending oracle verification.
+    Pending,
+    /// Oracle approved — funds released to vouchers.
+    Released,
+    /// Oracle rejected — funds returned to borrower.
+    Rejected,
+}
+
 // ── Loan Status ───────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -356,24 +372,14 @@ pub struct Config {
     pub voting_period_seconds: u64,
     /// Minimum seconds between slashes for the same borrower (0 = disabled).
     pub slash_cooldown_seconds: u64,
-    /// When true, critical write paths are blocked until multi-sig emergency unpause.
+        /// When true, critical write paths are blocked until multi-sig emergency unpause.
     pub emergency_pause_enabled: bool,
-    /// Percentage of slashed amount recoverable after full repayment, in basis points (0 = no recovery).
-    pub recovery_percentage: u32,
-    /// Where redistributable slash proceeds flow: Treasury or Vouchers.
-    pub redistribution_rule: RedistributionRule,
-    /// Seconds after repayment during which a borrower cannot be re-slashed (0 = disabled).
-    pub immunity_period_seconds: u64,
-    /// Premium rate vouchers pay to opt into slashing insurance, in basis points (0 = free).
-    pub insurance_premium_bps: u32,
-    /// Delay from governance approval to slash execution, in seconds (0 = immediate).
-    pub slash_delay_seconds: u64,
-    /// When true, slash penalty adjusts dynamically based on protocol health.
-    pub dynamic_slash_threshold: bool,
-    /// Discount on yield owed when borrower repays before deadline, in basis points (0 = no discount).
+    /// Issue #668: Discount applied to yield on early repayment, in basis points (0 = no discount).
     pub early_repayment_discount_bps: u32,
-    /// Optional trusted oracle address for repayment verification (None = no oracle).
-    pub oracle_address: Option<Address>,
+    /// Issue #666/#667: Optional oracle contract address for repayment verification.
+    pub oracle_address: Option<soroban_sdk::Address>,
+    /// Delay (in seconds) after a slash vote reaches quorum before it can be executed (0 = immediate).
+    pub slash_delay_seconds: u64,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -428,9 +434,9 @@ pub struct LoanRecord {
     /// For variable-rate loans: the oracle key or index name used to look up the
     /// current rate (e.g. `"SOFR"`, `"PRIME"`). `None` for fixed-rate loans.
     pub index_reference: Option<soroban_sdk::String>,
-    /// Escrow state when oracle verification is configured.
+    /// Issue #666/#667: Escrow status for oracle-verified repayments.
     pub escrow_status: EscrowStatus,
-    /// Number of times repayment has been retried after a failed attempt.
+    /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
 }
 
@@ -599,6 +605,21 @@ pub struct WithdrawalRequest {
     pub borrower: Address,
     pub token: Address,
     pub requested_at: u64,
+}
+
+/// A pending slash awaiting execution after the mandatory delay period.
+/// Created when a slash vote reaches quorum; executed via `execute_pending_slash`.
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingSlashRecord {
+    /// Borrower subject to the pending slash.
+    pub borrower: soroban_sdk::Address,
+    /// Ledger timestamp when the slash vote was approved.
+    pub approved_at: u64,
+    /// Earliest ledger timestamp at which the slash may be executed.
+    pub executable_at: u64,
+    /// True once the slash has been executed.
+    pub executed: bool,
 }
 
 /// A queued withdrawal request submitted during an active loan.

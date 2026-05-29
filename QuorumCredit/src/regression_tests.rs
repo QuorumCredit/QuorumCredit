@@ -29,7 +29,7 @@ mod regression_tests {
         let token_id = env.register_stellar_asset_contract_v2(admin.clone());
         let contract_id = env.register_contract(None, QuorumCreditContract);
 
-        StellarAssetClient::new(&env, &token_id.address()).mint(&contract_id, &1_000_000);
+        StellarAssetClient::new(&env, &token_id.address()).mint(&contract_id, &10_000_000);
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         client.initialize(&deployer, &admins, &1, &token_id.address());
@@ -55,14 +55,14 @@ mod regression_tests {
         let attacker = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
 
-        mint(&s, &voucher, 10_000);
-        mint(&s, &attacker, 10_000);
+        mint(&s, &voucher, 200_000);
+        mint(&s, &attacker, 200_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
 
-        let result = s.client.try_repay(&attacker, &5_100);
+        let result = s.client.try_repay(&attacker, &102_000);
         assert!(
             result.is_err(),
             "regression_108: attacker should not be able to repay another borrower's loan"
@@ -77,12 +77,12 @@ mod regression_tests {
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
 
-        mint(&s, &voucher, 10_000);
-        mint(&s, &borrower, 5_000);
+        mint(&s, &voucher, 200_000);
+        mint(&s, &borrower, 102_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
 
         let loan = s.client.get_loan(&borrower).unwrap();
         s.client.repay(&borrower, &(loan.amount + loan.total_yield));
@@ -102,11 +102,11 @@ mod regression_tests {
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
 
-        mint(&s, &voucher, 10_000);
+        mint(&s, &voucher, 200_000);
 
-        s.client.vouch(&voucher, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
 
         let treasury_before = s.client.get_slash_treasury_balance();
         s.client.vote_slash(&voucher, &borrower, &true);
@@ -201,14 +201,14 @@ mod regression_tests {
         let voucher1 = Address::generate(&s.env);
         let voucher2 = Address::generate(&s.env);
 
-        mint(&s, &voucher1, 10_000);
-        mint(&s, &voucher2, 10_000);
+        mint(&s, &voucher1, 200_000);
+        mint(&s, &voucher2, 200_000);
 
-        s.client.vouch(&voucher1, &borrower, &10_000, &s.token);
+        s.client.vouch(&voucher1, &borrower, &200_000, &s.token);
         s.client
-            .request_loan(&borrower, &5_000, &5_000, &purpose(&s.env), &s.token);
+            .request_loan(&borrower, &100_000, &100_000, &purpose(&s.env), &s.token);
 
-        let result = s.client.try_vouch(&voucher2, &borrower, &5_000, &s.token);
+        let result = s.client.try_vouch(&voucher2, &borrower, &100_000, &s.token);
         assert!(
             result.is_err(),
             "regression: vouch during active loan should be rejected"

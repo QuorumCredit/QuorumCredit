@@ -104,6 +104,14 @@ mod default_prediction_test;
 mod admin_delegation_test;
 #[cfg(test)]
 mod governance_veto_test;
+#[cfg(test)]
+mod loan_health_test;
+#[cfg(test)]
+mod vouch_global_cooldown_test;
+#[cfg(test)]
+mod stake_decay_test;
+#[cfg(test)]
+mod vouch_conditions_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -150,6 +158,8 @@ impl QuorumCreditContract {
                 grace_period: 0,
                 liquidity_mining_rate_bps: DEFAULT_LIQUIDITY_MINING_RATE_BPS,
                 veto_admin: None,
+                decay_rate_bps: 0,
+                decay_period_secs: 0,
             },
         );
 
@@ -182,6 +192,18 @@ impl QuorumCreditContract {
         sector: soroban_sdk::String,
     ) -> Result<(), ContractError> {
         vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
+    }
+
+    /// Vouch with conditions restricting which loans this stake backs.
+    pub fn vouch_with_conditions(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        stake: i128,
+        token: Address,
+        conditions: VouchConditions,
+    ) -> Result<(), ContractError> {
+        vouch::vouch_with_conditions(env, voucher, borrower, stake, token, conditions)
     }
 
     pub fn batch_vouch(
@@ -220,6 +242,15 @@ impl QuorumCreditContract {
         vouch::withdraw_vouch(env, voucher, borrower)
     }
 
+    /// Reset the decay clock on an existing vouch by updating its timestamp to now.
+    pub fn refresh_vouch(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        vouch::refresh_vouch(env, voucher, borrower)
+    }
+
     pub fn transfer_vouch(
         env: Env,
         from: Address,
@@ -227,6 +258,25 @@ impl QuorumCreditContract {
         borrower: Address,
     ) -> Result<(), ContractError> {
         vouch::transfer_vouch(env, from, to, borrower)
+    }
+
+    // ── Vouch Pooling (#638) ──────────────────────────────────────────────────
+
+    pub fn create_vouch_pool(env: Env, creator: Address, borrower: Address) -> u64 {
+        vouch::create_vouch_pool(env, creator, borrower)
+    }
+
+    pub fn join_vouch_pool(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        pool_id: u64,
+    ) -> Result<(), ContractError> {
+        vouch::join_vouch_pool(env, voucher, borrower, pool_id)
+    }
+
+    pub fn get_vouch_pool(env: Env, pool_id: u64) -> Option<crate::types::VouchPool> {
+        vouch::get_vouch_pool(env, pool_id)
     }
 
     // ── Loan ──────────────────────────────────────────────────────────────────
@@ -553,6 +603,26 @@ impl QuorumCreditContract {
 
     pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
         admin::set_grace_period(env, admin_signers, period)
+    }
+
+    /// Issue #639: Set the max number of active-loan borrowers a voucher may back (0 = no limit).
+    pub fn set_conflict_threshold(env: Env, admin_signers: Vec<Address>, threshold: u32) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        env.storage().instance().set(&DataKey::ConflictThreshold, &threshold);
+    }
+
+    pub fn get_conflict_threshold(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::ConflictThreshold).unwrap_or(0)
+    }
+
+    /// Issue #640: Set the minimum seconds a vouch must be held before withdrawal (0 = no minimum).
+    pub fn set_min_vouch_duration(env: Env, admin_signers: Vec<Address>, duration_secs: u64) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        env.storage().instance().set(&DataKey::MinVouchDurationSeconds, &duration_secs);
+    }
+
+    pub fn get_min_vouch_duration(env: Env) -> u64 {
+        env.storage().instance().get(&DataKey::MinVouchDurationSeconds).unwrap_or(0)
     }
 
     pub fn add_allowed_token(
@@ -908,6 +978,41 @@ impl QuorumCreditContract {
 
     pub fn health_check(env: Env) -> health::HealthStatus {
         health::health_check(&env)
+    }
+
+    /// Get the health score for a single active loan.
+    pub fn get_loan_health(env: Env, borrower: Address) -> Option<LoanHealthScore> {
+        health::get_loan_health(env, borrower)
+    }
+
+    /// Get health scores for all active loans that are at-risk or critical.
+    pub fn get_at_risk_loans(env: Env) -> Vec<LoanHealthScore> {
+        health::get_at_risk_loans(env)
+    }
+
+    /// Get the total active stake exposure for a voucher.
+    pub fn get_voucher_exposure(env: Env, voucher: Address) -> ExposureReport {
+        health::get_voucher_exposure(env, voucher)
+    }
+
+    /// Get a protocol-wide health summary.
+    pub fn get_protocol_health(env: Env) -> ProtocolHealthReport {
+        health::get_protocol_health(env)
+    }
+
+    /// Set configurable alert thresholds (admin only).
+    pub fn set_health_alert_thresholds(
+        env: Env,
+        admin_signers: Vec<Address>,
+        thresholds: HealthAlertThresholds,
+    ) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        health::set_alert_thresholds(&env, thresholds);
+    }
+
+    /// Get the current alert thresholds.
+    pub fn get_health_alert_thresholds(env: Env) -> HealthAlertThresholds {
+        health::get_alert_thresholds(&env)
     }
 
     // ── Upgrade Safety ────────────────────────────────────────────────────────
