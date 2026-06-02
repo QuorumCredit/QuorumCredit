@@ -334,6 +334,40 @@ pub fn validate_admin_config(
     Ok(())
 }
 
+/// #700: Validate that the given timestamp is within tolerance of the ledger timestamp.
+/// Returns Err if the timestamp is outside the configured tolerance window.
+pub fn validate_timestamp(env: &Env, timestamp: u64) -> Result<(), ContractError> {
+    let cfg = config(env);
+    let ledger_time = env.ledger().timestamp();
+    let tolerance = cfg.timestamp_tolerance_seconds;
+    
+    if tolerance == 0 {
+        return Ok(()); // No validation if tolerance is 0
+    }
+    
+    let time_diff = if timestamp > ledger_time {
+        timestamp - ledger_time
+    } else {
+        ledger_time - timestamp
+    };
+    
+    if time_diff > tolerance {
+        Err(ContractError::InvalidAmount) // Use existing error for timestamp validation
+    } else {
+        Ok(())
+    }
+}
+
+/// #701: Check if emergency shutdown is enabled. Returns Err if shutdown is active.
+pub fn require_not_emergency_shutdown(env: &Env) -> Result<(), ContractError> {
+    let cfg = config(env);
+    if cfg.emergency_shutdown_enabled {
+        Err(ContractError::ContractPaused) // Reuse existing pause error
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod ttl_tests {
     use super::*;

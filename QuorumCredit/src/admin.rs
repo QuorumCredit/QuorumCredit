@@ -220,6 +220,22 @@ pub fn get_config(env: Env) -> Config {
     config(&env)
 }
 
+/// #700: Set timestamp tolerance in seconds for transaction validation.
+pub fn set_timestamp_tolerance(env: Env, admin_signers: Vec<Address>, tolerance_secs: u64) {
+    require_admin_approval(&env, &admin_signers);
+    let mut cfg = config(&env);
+    cfg.timestamp_tolerance_seconds = tolerance_secs;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+}
+
+/// #701: Enable or disable emergency shutdown of the contract.
+pub fn set_emergency_shutdown(env: Env, admin_signers: Vec<Address>, enabled: bool) {
+    require_admin_approval(&env, &admin_signers);
+    let mut cfg = config(&env);
+    cfg.emergency_shutdown_enabled = enabled;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+}
+
 pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: Address) {
     require_admin_approval(&env, &admin_signers);
     env.storage().instance().set(&DataKey::ReputationNft, &nft_contract);

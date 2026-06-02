@@ -23,6 +23,8 @@ pub const TIME_WEIGHTED_YIELD_BONUS_MULTIPLIER: i128 = 12; // 1.2x = 12/10
 pub const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 // Task 4: Dispute constants
 pub const DEFAULT_DISPUTE_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+// Task 701: Emergency shutdown & timestamp validation
+pub const DEFAULT_TIMESTAMP_TOLERANCE_SECS: u64 = 5 * 60; // 5 minutes
 
 // ── Loan Size Tiers ───────────────────────────────────────────────────────────
 
@@ -381,9 +383,12 @@ pub struct Config {
     /// Period in seconds over which decay_rate_bps is applied.
     /// 0 = decay disabled. E.g. 30 * 24 * 60 * 60 = 30 days.
     pub decay_period_secs: u64,
-    /// #748: Cross-default clause enabled flag.
-    /// When true, default on any loan triggers default on all borrower's loans.
-    pub cross_default_enabled: bool,
+    /// #700: Timestamp tolerance in seconds. Transactions with timestamps outside this
+    /// window relative to ledger timestamp are rejected. Default: 5 minutes (300 secs).
+    pub timestamp_tolerance_seconds: u64,
+    /// #701: Emergency shutdown enabled flag. When true, all state-mutating operations
+    /// are blocked except for reads and admin functions.
+    pub emergency_shutdown_enabled: bool,
 }
 
 // ── Per-Token Config ──────────────────────────────────────────────────────────
