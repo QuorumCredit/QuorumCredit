@@ -1503,6 +1503,16 @@ impl QuorumCreditContract {
         vouch::execute_vouch_withdrawal(env, voucher, borrower, token)
     }
 
+    /// Get the withdrawal queue for a borrower (Issue #10).
+    pub fn get_withdrawal_queue(env: Env, borrower: Address) -> Vec<crate::types::QueuedWithdrawal> {
+        vouch::get_withdrawal_queue(env, borrower)
+    }
+
+    /// Process up to `count` withdrawals from the queue (Issue #10).
+    pub fn process_withdrawal_batch(env: Env, borrower: Address, count: u32) -> u32 {
+        vouch::process_withdrawal_batch(&env, &borrower, count)
+    }
+
     /// Get slash audit record for a borrower (Issue #536).
     pub fn get_slash_record(env: Env, slash_id: u64) -> Option<crate::types::SlashRecord> {
         governance::get_slash_record(env, slash_id)

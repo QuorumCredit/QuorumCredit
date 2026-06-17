@@ -494,6 +494,9 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         (borrower.clone(), total_slashed, slash_id, effective_slash_bps),
     );
 
+    // Process withdrawal queue after slash is executed (Issue #10)
+    crate::vouch::process_withdrawal_queue(env, borrower);
+
     Ok(())
 }
 

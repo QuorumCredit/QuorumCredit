@@ -303,6 +303,10 @@ impl QuorumCreditContract {
         vouch::get_withdrawal_queue(env, borrower)
     }
 
+    pub fn process_withdrawal_batch(env: Env, borrower: Address, count: u32) -> u32 {
+        vouch::process_withdrawal_batch(&env, &borrower, count)
+    }
+
     pub fn request_loan(
         env: Env,
         borrower: Address,

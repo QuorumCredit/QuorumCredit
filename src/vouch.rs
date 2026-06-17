@@ -724,6 +724,87 @@ pub fn get_withdrawal_queue(env: Env, borrower: Address) -> Vec<QueuedWithdrawal
         .get(&DataKey::WithdrawalQueue(borrower))
         .unwrap_or(Vec::new(&env))
 }
+
+/// Process up to `count` withdrawals from the queue for a borrower.
+/// If count is 0, this is a no-op. If count exceeds queue size, all are processed.
+/// Returns the number of withdrawals actually processed.
+pub fn process_withdrawal_batch(env: &Env, borrower: &Address, count: u32) -> u32 {
+    if count == 0 {
+        return 0;
+    }
+
+    let queue: Vec<QueuedWithdrawal> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::WithdrawalQueue(borrower.clone()))
+        .unwrap_or(Vec::new(env));
+
+    if queue.is_empty() {
+        return 0;
+    }
+
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(env));
+
+    // Sort by priority fee descending for processing order
+    let mut sorted_queue = queue.clone();
+    let n = sorted_queue.len();
+    for i in 1..n {
+        for j in (1..=i).rev() {
+            let a = sorted_queue.get(j - 1).unwrap();
+            let b = sorted_queue.get(j).unwrap();
+            if b.priority_fee > a.priority_fee {
+                sorted_queue.set(j - 1, b.clone());
+                sorted_queue.set(j, a.clone());
+            } else {
+                break;
+            }
+        }
+    }
+
+    let process_count = if count as usize > sorted_queue.len() {
+        sorted_queue.len()
+    } else {
+        count as usize
+    };
+
+    let mut processed: u32 = 0;
+    let mut remaining_queue: Vec<QueuedWithdrawal> = Vec::new(env);
+
+    for i in 0..sorted_queue.len() {
+        let queued = sorted_queue.get(i as u32).unwrap();
+        if i < process_count {
+            // Process this withdrawal
+            let idx_opt = vouches.iter().position(|v| v.voucher == queued.voucher);
+            if let Some(_idx) = idx_opt {
+                env.events().publish(
+                    (symbol_short!("wq"), symbol_short!("processed")),
+                    (queued.voucher.clone(), borrower.clone()),
+                );
+                processed += 1;
+            }
+        } else {
+            // Keep in queue for later processing
+            remaining_queue.push_back(queued.clone());
+        }
+    }
+
+    if remaining_queue.is_empty() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::WithdrawalQueue(borrower.clone()));
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::WithdrawalQueue(borrower.clone()), &remaining_queue);
+    }
+
+    processed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

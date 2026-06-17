@@ -383,6 +383,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             (symbol_short!("loan"), symbol_short!("repaid")),
             (borrower.clone(), loan.amount),
         );
+
+        // Process withdrawal queue after loan is fully repaid (Issue #10)
+        crate::vouch::process_withdrawal_queue(&env, &borrower);
     }
 
     env.storage()
