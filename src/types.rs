@@ -119,6 +119,31 @@ pub struct RateLimitConfig {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdminRole {
+    SuperAdmin,
+    Treasurer,
+    Monitor,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdminPermission {
+    Slash,
+    Pause,
+    UpdateConfig,
+    ManageFees,
+    ReadAnalytics,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PermissionMatrix {
+    pub role: AdminRole,
+    pub permissions: Vec<AdminPermission>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Role {
     Admin,
     Voucher,
@@ -339,6 +364,8 @@ pub enum DataKey {
     AdminLastClaim(Address),
     RolePermissions(Address), // address -> RolePermissions
     RateLimit(Address),        // address -> (u64 last_call_window_start, u32 call_count)
+    /// Issue #16: admin address -> AdminRole
+    AdminRole(Address),
     /// Issue #742: current semantic contract version
     ContractVersion,
     /// Issue #742: version history entries by index

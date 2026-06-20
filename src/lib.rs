@@ -8,6 +8,7 @@ pub mod helpers;
 pub mod insurance;
 pub mod loan;
 pub mod reputation;
+pub mod rbac;
 #[cfg(test)]
 mod tests;
 pub mod types;
@@ -32,9 +33,10 @@ mod referral_test;
 mod bug_condition_test;
 #[cfg(test)]
 mod coverage_test;
+#[cfg(test)]
+mod rbac_test;
 
-pub use errors::ContractError;
-pub use types::*;
+#[cfg(test)]
 mod emergency_pause_test;
 #[cfg(test)]
 mod withdrawal_queue_test;
@@ -1233,6 +1235,21 @@ impl QuorumCreditContract {
 
     pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold: u32) {
         admin::set_admin_threshold(env, admin_signers, new_threshold)
+    }
+
+    // ── RBAC (Issue #16) ──────────────────────────────────────────────────────
+
+    pub fn assign_admin_role(
+        env: Env,
+        admin_signers: Vec<Address>,
+        target_admin: Address,
+        role: AdminRole,
+    ) {
+        rbac::assign_admin_role(&env, admin_signers, target_admin, role)
+    }
+
+    pub fn get_admin_role(env: Env, admin: Address) -> Result<AdminRole, ContractError> {
+        rbac::get_admin_role(&env, &admin)
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
