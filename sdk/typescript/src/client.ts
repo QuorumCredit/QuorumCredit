@@ -1,13 +1,14 @@
 import {
   Keypair,
+  Account,
   Networks,
   TransactionBuilder,
   BASE_FEE,
-  SorobanRpc,
+  rpc,
   Contract,
   nativeToScVal,
   scValToNative,
-} from '@stellar/js-sdk';
+} from '@stellar/stellar-sdk';
 
 export interface ClientConfig {
   contractId: string;
@@ -81,12 +82,12 @@ export interface Config {
 
 export class QuorumCreditClient {
   private config: ClientConfig;
-  private sorobanRpc: SorobanRpc.Server;
+  private sorobanRpc: rpc.Server;
   private contract: Contract;
 
   constructor(config: ClientConfig) {
     this.config = config;
-    this.sorobanRpc = new SorobanRpc.Server(config.rpcUrl);
+    this.sorobanRpc = new rpc.Server(config.rpcUrl);
     this.contract = new Contract(config.contractId);
   }
 
@@ -105,7 +106,7 @@ export class QuorumCreditClient {
         this.contract.call(
           'initialize',
           nativeToScVal(deployer, { type: 'address' }),
-          nativeToScVal(admins, { type: 'vec' }),
+          nativeToScVal(admins),
           nativeToScVal(adminThreshold, { type: 'u32' }),
           nativeToScVal(token, { type: 'address' })
         )
@@ -147,8 +148,8 @@ export class QuorumCreditClient {
         this.contract.call(
           'batch_vouch',
           nativeToScVal(params.voucher, { type: 'address' }),
-          nativeToScVal(params.borrowers, { type: 'vec' }),
-          nativeToScVal(params.stakes, { type: 'vec' }),
+          nativeToScVal(params.borrowers),
+          nativeToScVal(params.stakes),
           nativeToScVal(params.token, { type: 'address' })
         )
       )
@@ -208,7 +209,7 @@ export class QuorumCreditClient {
       .addOperation(
         this.contract.call(
           'slash',
-          nativeToScVal(params.adminSigners, { type: 'vec' }),
+          nativeToScVal(params.adminSigners),
           nativeToScVal(params.borrower, { type: 'address' })
         )
       )
@@ -219,7 +220,7 @@ export class QuorumCreditClient {
   }
 
   async getLoan(borrower: string): Promise<LoanRecord | null> {
-    const result = await this.sorobanRpc.simulateTransaction(
+    const result: any = await this.sorobanRpc.simulateTransaction(
       this.buildReadTransaction('get_loan', nativeToScVal(borrower, { type: 'address' }))
     );
 
@@ -232,7 +233,7 @@ export class QuorumCreditClient {
   }
 
   async getVouches(borrower: string): Promise<VouchRecord[]> {
-    const result = await this.sorobanRpc.simulateTransaction(
+    const result: any = await this.sorobanRpc.simulateTransaction(
       this.buildReadTransaction('get_vouches', nativeToScVal(borrower, { type: 'address' }))
     );
 
@@ -245,7 +246,7 @@ export class QuorumCreditClient {
   }
 
   async isEligible(borrower: string, threshold: string, token: string): Promise<boolean> {
-    const result = await this.sorobanRpc.simulateTransaction(
+    const result: any = await this.sorobanRpc.simulateTransaction(
       this.buildReadTransaction(
         'is_eligible',
         nativeToScVal(borrower, { type: 'address' }),
@@ -263,7 +264,7 @@ export class QuorumCreditClient {
   }
 
   async getConfig(): Promise<Config> {
-    const result = await this.sorobanRpc.simulateTransaction(
+    const result: any = await this.sorobanRpc.simulateTransaction(
       this.buildReadTransaction('get_config')
     );
 
@@ -279,20 +280,20 @@ export class QuorumCreditClient {
     const signedTx = tx.sign(this.config.keypair);
     const result = await this.sorobanRpc.sendTransaction(signedTx);
 
-    if (result.errorResultXdr) {
-      throw new Error(`Transaction failed: ${result.errorResultXdr}`);
+    if (result.errorResult) {
+      throw new Error(`Transaction failed: ${result.errorResult}`);
     }
 
     return result.hash;
   }
 
   private buildReadTransaction(...args: any[]): any {
-    const account = new SorobanRpc.Account(this.config.keypair.publicKey(), '0');
+    const account = new Account(this.config.keypair.publicKey(), '0');
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.config.networkPassphrase,
     })
-      .addOperation(this.contract.call(...args))
+      .addOperation((this.contract.call as (...args: any[]) => any)(...args))
       .setTimeout(30)
       .build();
 

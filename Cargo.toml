@@ -1,5 +1,5 @@
 [workspace]
-members = ["api"]
+members = ["api", "tools/sdkgen"]
 resolver = "2"
 
 [package]

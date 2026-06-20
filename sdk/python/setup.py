@@ -1,7 +1,9 @@
-from setuptools import setup, find_packages
+from pathlib import Path
 
-with open("README.md", "r", encoding="utf-8") as fh:
-    long_description = fh.read()
+from setuptools import find_packages, setup
+
+readme = Path(__file__).resolve().parents[1] / "README.md"
+long_description = readme.read_text(encoding="utf-8") if readme.exists() else ""
 
 setup(
     name="quorum-credit",

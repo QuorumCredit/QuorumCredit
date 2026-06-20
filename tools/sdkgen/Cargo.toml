@@ -1,0 +1,17 @@
+[package]
+name = "sdkgen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+soroban-spec = "26.0.0"
+stellar-xdr = { version = "26.0.1", default-features = false, features = ["curr", "std", "serde"] }
+
+[dev-dependencies]
+tempfile = "3.23.0"
+
+[[bin]]
+name = "contract_spec_extractor"
+path = "src/bin/contract_spec_extractor.rs"
