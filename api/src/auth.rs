@@ -1,6 +1,6 @@
-use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use chrono::{Duration, Utc};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -34,11 +34,7 @@ impl JwtAuth {
         Self { secret }
     }
 
-    pub fn generate_token(
-        &self,
-        api_key: &str,
-        expires_in_hours: i64,
-    ) -> Result<String, AuthError> {
+    pub fn generate_token(&self, api_key: &str, expires_in_hours: i64) -> Result<String, AuthError> {
         let now = Utc::now();
         let exp = (now + Duration::hours(expires_in_hours)).timestamp();
         let iat = now.timestamp();
@@ -71,7 +67,7 @@ impl JwtAuth {
 
     pub fn extract_token_from_header(auth_header: &str) -> Result<String, AuthError> {
         let parts: Vec<&str> = auth_header.split_whitespace().collect();
-
+        
         if parts.len() != 2 || parts[0] != "Bearer" {
             return Err(AuthError::InvalidHeaderFormat);
         }
@@ -89,7 +85,7 @@ mod tests {
         let auth = JwtAuth::new("test_secret".to_string());
         let token = auth.generate_token("test_api_key", 24).unwrap();
         let claims = auth.verify_token(&token).unwrap();
-
+        
         assert_eq!(claims.api_key, "test_api_key");
     }
 

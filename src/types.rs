@@ -249,6 +249,36 @@ pub enum RateType {
     Variable,
 }
 
+// ── Pause State Machine ───────────────────────────────────────────────────────
+
+/// Contract pause state for the Normal → Paused → Thawing → Normal state machine.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PauseMode {
+    /// Contract is operating normally.
+    None,
+    /// Contract is fully paused — all writes are blocked.
+    Paused,
+    /// Contract is thawing — only reads and withdrawals are allowed.
+    /// Automatically transitions to `None` after `thaw_duration` seconds.
+    Thawing,
+}
+
+/// Timestamps recorded when the contract enters or exits a thaw period.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThawState {
+    /// Ledger timestamp when `pause()` was called.
+    pub pause_timestamp: u64,
+    /// Duration of the thaw window in seconds (default 24 h = 86_400).
+    pub thaw_duration: u64,
+    /// Ledger timestamp when `begin_thaw()` was called.
+    pub thaw_start_timestamp: u64,
+}
+
+/// Duration of the thaw period in seconds (24 hours).
+pub const THAW_DURATION_SECS: u64 = 24 * 60 * 60;
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -378,6 +408,16 @@ pub enum DataKey {
     DeploymentRecordCount,
     /// Issue #744: rollback snapshot of config keyed by version index
     RollbackSnapshot(u32),
+    /// Governance proposal id → GovernanceProposal
+    GovernanceProposal(u64),
+    /// Governance proposal counter (monotonically increasing)
+    GovernanceProposalCounter,
+    /// Governance queue configuration
+    GovernanceQueueConfig,
+    /// Credit score record for a borrower
+    CreditScore(Address),
+    /// Credit score configuration
+    CreditScoreConfig,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -439,6 +479,293 @@ pub struct ConfigUpdateProposal {
     pub approvals: Vec<Address>,
     pub executed: bool,
 }
+
+// ── Admin Governance Queue with Multi-Signature Confirmation ─────────────────────
+
+/// Types of governance actions that can be proposed in the admin governance queue.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceAction {
+    /// Pause the contract
+    Pause,
+    /// Unpause the contract
+    Unpause,
+    /// Upgrade the contract to a new WASM hash
+    Upgrade(BytesN<32>),
+    /// Set protocol fee in basis points
+    SetProtocolFee(u32),
+    /// Set fee treasury address
+    SetFeeTreasury(Address),
+    /// Add an allowed token
+    AddAllowedToken(Address),
+    /// Remove an allowed token
+    RemoveAllowedToken(Address),
+    /// Set minimum stake amount
+    SetMinStake(i128),
+    /// Set maximum loan amount
+    SetMaxLoanAmount(i128),
+    /// Set minimum vouchers required
+    SetMinVouchers(u32),
+    /// Set maximum vouchers per borrower
+    SetMaxVouchersPerBorrower(u32),
+    /// Set max loan to stake ratio
+    SetMaxLoanToStakeRatio(u32),
+    /// Set grace period
+    SetGracePeriod(u64),
+    /// Set yield basis points
+    SetYieldBps(i128),
+    /// Set slash basis points
+    SetSlashBps(i128),
+    /// Set admin threshold
+    SetAdminThreshold(u32),
+    /// Add an admin
+    AddAdmin(Address),
+    /// Remove an admin
+    RemoveAdmin(Address),
+    /// Rotate an admin
+    RotateAdmin(Address, Address),
+    /// Set reputation NFT contract
+    SetReputationNft(Address),
+    /// Set whitelist enabled
+    SetWhitelistEnabled(bool),
+    /// Blacklist a borrower
+    BlacklistBorrower(Address),
+    /// Set prepayment penalty basis points
+    SetPrepaymentPenaltyBps(u32),
+    /// Set dynamic slash threshold enabled
+    SetDynamicSlashThreshold(bool),
+    /// Set loan size slash enabled
+    SetLoanSizeSlashEnabled(bool),
+    /// Set loan size slash max basis points
+    SetLoanSizeSlashMaxBps(i128),
+    /// Set successor admin
+    SetSuccessorAdmin(Option<Address>),
+    /// Set confirmation required
+    SetConfirmationRequired(bool),
+    /// Set admin compensation basis points
+    SetAdminCompensationBps(u32),
+    /// Set removal vote threshold
+    SetRemovalVoteThreshold(u32),
+    /// Set rate limit config
+    SetRateLimitConfig(RateLimitConfig),
+}
+
+/// Status of a governance proposal in the queue.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GovernanceProposalStatus {
+    /// Proposal is pending approval
+    Pending,
+    /// Proposal has been approved and can be executed
+    Approved,
+    /// Proposal has been executed
+    Executed,
+    /// Proposal has been cancelled
+    Cancelled,
+    /// Proposal has expired
+    Expired,
+}
+
+/// A governance proposal in the admin governance queue with multi-signature confirmation.
+#[contracttype]
+#[derive(Clone)]
+pub struct GovernanceProposal {
+    /// Unique proposal ID
+    pub id: u64,
+    /// The governance action to be executed
+    pub action: GovernanceAction,
+    /// Address that proposed the action
+    pub proposer: Address,
+    /// Addresses that have approved this proposal
+    pub approvals: Vec<Address>,
+    /// Addresses that have rejected this proposal
+    pub rejections: Vec<Address>,
+    /// Current status of the proposal
+    pub status: GovernanceProposalStatus,
+    /// Ledger timestamp when the proposal was created
+    pub created_at: u64,
+    /// Ledger timestamp when the proposal can be executed (timelock)
+    pub executable_at: u64,
+    /// Ledger timestamp when the proposal expires (if not executed)
+    pub expires_at: u64,
+    /// Optional description or justification for the proposal
+    pub description: soroban_sdk::String,
+    /// Ledger timestamp when the proposal was executed (if applicable)
+    pub executed_at: Option<u64>,
+}
+
+/// Governance queue configuration parameters.
+#[contracttype]
+#[derive(Clone)]
+pub struct GovernanceQueueConfig {
+    /// Minimum delay before a proposal can be executed (in seconds)
+    pub timelock_delay: u64,
+    /// Time window after executable_at during which a proposal can be executed (in seconds)
+    pub execution_window: u64,
+    /// Whether proposals require multi-sig approval (true) or can be executed by proposer (false)
+    pub require_multisig: bool,
+}
+
+/// Default timelock delay for governance proposals (24 hours).
+pub const DEFAULT_GOVERNANCE_TIMELOCK_DELAY: u64 = 24 * 60 * 60;
+
+/// Default execution window for governance proposals (7 days).
+pub const DEFAULT_GOVERNANCE_EXECUTION_WINDOW: u64 = 7 * 24 * 60 * 60;
+
+// ── On-Chain Credit Score with Tiered Rewards ─────────────────────────────────────
+
+/// Credit score tier levels.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreditTier {
+    /// Tier 1: Poor (0-349)
+    Poor,
+    /// Tier 2: Fair (350-549)
+    Fair,
+    /// Tier 3: Good (550-699)
+    Good,
+    /// Tier 4: Very Good (700-849)
+    VeryGood,
+    /// Tier 5: Excellent (850-1000)
+    Excellent,
+}
+
+/// Comprehensive credit score record for a borrower.
+#[contracttype]
+#[derive(Clone)]
+pub struct CreditScore {
+    /// Overall credit score (0-1000)
+    pub score: u32,
+    /// Current credit tier
+    pub tier: CreditTier,
+    /// Ledger timestamp when the score was last updated
+    pub last_updated: u64,
+    /// Total number of loans taken
+    pub total_loans: u32,
+    /// Number of successfully repaid loans
+    pub successful_repayments: u32,
+    /// Number of defaults
+    pub defaults: u32,
+    /// Total amount borrowed (in stroops)
+    pub total_borrowed: i128,
+    /// Total amount repaid (in stroops)
+    pub total_repaid: i128,
+    /// Account age in seconds
+    pub account_age: u64,
+    /// Number of times as a voucher
+    pub voucher_count: u32,
+    /// Average repayment time (in seconds before deadline, negative if late)
+    pub avg_repayment_time: i64,
+}
+
+/// Credit score calculation factors.
+#[contracttype]
+#[derive(Clone)]
+pub struct CreditFactors {
+    /// Weight for repayment history (0-10000 basis points)
+    pub repayment_history_weight: u32,
+    /// Weight for loan count (0-10000 basis points)
+    pub loan_count_weight: u32,
+    /// Weight for account age (0-10000 basis points)
+    pub account_age_weight: u32,
+    /// Weight for vouching activity (0-10000 basis points)
+    pub vouching_weight: u32,
+    /// Weight for repayment timeliness (0-10000 basis points)
+    pub timeliness_weight: u32,
+}
+
+/// Tiered reward benefits for each credit tier.
+#[contracttype]
+#[derive(Clone)]
+pub struct TierRewards {
+    /// Yield basis points bonus (added to base yield)
+    pub yield_bonus_bps: i32,
+    /// Maximum loan amount multiplier (e.g., 150 = 1.5x)
+    pub max_loan_multiplier: u32,
+    /// Minimum stake reduction in basis points (e.g., 1000 = 10% reduction)
+    pub min_stake_reduction_bps: u32,
+    /// Loan duration extension in seconds (e.g., 7 days = 604800)
+    pub duration_extension: u64,
+    /// Fee discount in basis points (e.g., 500 = 5% discount)
+    pub fee_discount_bps: u32,
+}
+
+/// Credit score configuration parameters.
+#[contracttype]
+#[derive(Clone)]
+pub struct CreditScoreConfig {
+    /// Whether credit scoring is enabled
+    pub enabled: bool,
+    /// Credit score calculation factors
+    pub factors: CreditFactors,
+    /// Rewards for each tier
+    pub poor_rewards: TierRewards,
+    pub fair_rewards: TierRewards,
+    pub good_rewards: TierRewards,
+    pub very_good_rewards: TierRewards,
+    pub excellent_rewards: TierRewards,
+}
+
+/// Default credit score factors.
+pub const DEFAULT_CREDIT_FACTORS: CreditFactors = CreditFactors {
+    repayment_history_weight: 4000,  // 40%
+    loan_count_weight: 1500,         // 15%
+    account_age_weight: 1000,         // 10%
+    vouching_weight: 1500,            // 15%
+    timeliness_weight: 2000,          // 20%
+};
+
+/// Default tier rewards configuration.
+pub const DEFAULT_POOR_REWARDS: TierRewards = TierRewards {
+    yield_bonus_bps: 0,
+    max_loan_multiplier: 100,
+    min_stake_reduction_bps: 0,
+    duration_extension: 0,
+    fee_discount_bps: 0,
+};
+
+pub const DEFAULT_FAIR_REWARDS: TierRewards = TierRewards {
+    yield_bonus_bps: 50,
+    max_loan_multiplier: 110,
+    min_stake_reduction_bps: 500,
+    duration_extension: 86400,      // 1 day
+    fee_discount_bps: 100,
+};
+
+pub const DEFAULT_GOOD_REWARDS: TierRewards = TierRewards {
+    yield_bonus_bps: 100,
+    max_loan_multiplier: 125,
+    min_stake_reduction_bps: 1000,
+    duration_extension: 172800,     // 2 days
+    fee_discount_bps: 250,
+};
+
+pub const DEFAULT_VERY_GOOD_REWARDS: TierRewards = TierRewards {
+    yield_bonus_bps: 150,
+    max_loan_multiplier: 150,
+    min_stake_reduction_bps: 1500,
+    duration_extension: 345600,     // 4 days
+    fee_discount_bps: 500,
+};
+
+pub const DEFAULT_EXCELLENT_REWARDS: TierRewards = TierRewards {
+    yield_bonus_bps: 200,
+    max_loan_multiplier: 200,
+    min_stake_reduction_bps: 2000,
+    duration_extension: 604800,     // 7 days
+    fee_discount_bps: 1000,
+};
+
+/// Default credit score configuration.
+pub const DEFAULT_CREDIT_SCORE_CONFIG: CreditScoreConfig = CreditScoreConfig {
+    enabled: true,
+    factors: DEFAULT_CREDIT_FACTORS,
+    poor_rewards: DEFAULT_POOR_REWARDS,
+    fair_rewards: DEFAULT_FAIR_REWARDS,
+    good_rewards: DEFAULT_GOOD_REWARDS,
+    very_good_rewards: DEFAULT_VERY_GOOD_REWARDS,
+    excellent_rewards: DEFAULT_EXCELLENT_REWARDS,
+};
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

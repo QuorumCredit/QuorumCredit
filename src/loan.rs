@@ -2,7 +2,7 @@ use crate::errors::ContractError;
 use crate::helpers::{
     config, deduct_slash_balance, get_active_loan_record, get_latest_loan_record,
     has_active_loan, next_loan_id, register_borrower_if_needed, require_allowed_token,
-    require_not_paused, require_admin_approval,
+    require_not_paused, require_not_thawing, require_admin_approval,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
@@ -77,7 +77,7 @@ pub fn request_loan(
     token_addr: Address,
 ) -> Result<(), ContractError> {
     borrower.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
     crate::helpers::check_rate_limit(&env, &borrower)?;
     crate::helpers::check_permission(&env, &borrower, |p| p.can_request_loan)?;
     register_borrower_if_needed(&env, &borrower);
@@ -232,7 +232,7 @@ pub fn apply_slash_recovery(env: &Env, borrower: &Address) -> Result<(), Contrac
 /// Repay loan (active or defaulted).
 pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
     borrower.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
     crate::helpers::check_rate_limit(&env, &borrower)?;
     crate::helpers::check_permission(&env, &borrower, |p| p.can_repay)?;
 
@@ -428,7 +428,7 @@ pub fn repay_partial(
     token: Address,
 ) -> Result<(), ContractError> {
     borrower.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
     crate::helpers::check_rate_limit(&env, &borrower)?;
     crate::helpers::check_permission(&env, &borrower, |p| p.can_repay)?;
 
@@ -642,7 +642,7 @@ pub fn get_extension_request(
 
 pub fn defer_payment(env: Env, borrower: Address) -> Result<(), ContractError> {
     borrower.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
     Err(ContractError::InvalidStateTransition)
 }
 
@@ -690,7 +690,7 @@ pub fn set_loan_guarantor(
     guarantor: Address,
 ) -> Result<(), ContractError> {
     borrower.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
 
     let mut loan = get_active_loan_record(&env, &borrower)?;
 
@@ -714,7 +714,7 @@ pub fn set_loan_guarantor(
 
 pub fn remove_loan_guarantor(env: Env, borrower: Address) -> Result<(), ContractError> {
     borrower.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
 
     let mut loan = get_active_loan_record(&env, &borrower)?;
     loan.guarantor = None;
@@ -734,7 +734,7 @@ pub fn set_buyback_price(
     price: i128,
 ) -> Result<(), ContractError> {
     borrower.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
 
     let mut loan = get_active_loan_record(&env, &borrower)?;
 

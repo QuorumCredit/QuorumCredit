@@ -668,6 +668,20 @@ impl QuorumCreditContract {
         admin::pause_with_thaw(env, admin_signers, thaw_duration)
     }
 
+    /// Transition the contract from `Paused` to `Thawing`.
+    /// During the 24-hour thaw window only reads and withdrawals are allowed.
+    /// The contract auto-transitions back to `Normal` once the window elapses.
+    ///
+    /// # Arguments
+    /// * `admin_signers` - Vector of admin addresses (must meet threshold)
+    ///
+    /// # Panics
+    /// * If admin approval is insufficient
+    /// * If the contract is not currently in the `Paused` state
+    pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
+        admin::begin_thaw(env, admin_signers)
+    }
+
     /// Blacklist a borrower (prevents them from requesting loans).
     ///
     /// # Arguments
@@ -1037,6 +1051,19 @@ impl QuorumCreditContract {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
+    }
+
+    /// Get the current pause state of the contract.
+    ///
+    /// Returns the [`PauseMode`] reflecting the live state:
+    /// - `None`    — contract is operating normally
+    /// - `Paused`  — all writes are blocked
+    /// - `Thawing` — only reads and withdrawals are allowed (auto-clears after 24 h)
+    ///
+    /// This function also performs the automatic `Thawing → None` transition if
+    /// the 24-hour thaw window has elapsed.
+    pub fn get_pause_state(env: Env) -> PauseMode {
+        helpers::get_pause_mode(&env)
     }
 
     /// Get the loan status for a borrower.

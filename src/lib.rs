@@ -2,6 +2,7 @@
 
 pub mod admin;
 mod contract;
+pub mod credit_score;
 pub mod errors;
 pub mod governance;
 pub mod helpers;
@@ -50,7 +51,17 @@ mod property_stake_loan_invariants_test;
 #[cfg(test)]
 mod admin_whitelist_blacklist_test;
 #[cfg(test)]
-mod partial_repayment_test;
+mod governance_queue_test;
+#[cfg(test)]
+mod credit_score_test;
+#[cfg(test)]
+mod integration_scenarios;
+#[cfg(test)]
+mod integration_invariants;
+#[cfg(test)]
+mod integration_stress_test;
+#[cfg(test)]
+mod integration_regression_test;
 
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
@@ -117,6 +128,22 @@ impl QuorumCreditContract {
 
     // ── Vouching ──────────────────────────────────────────────────────────────
 
+                min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
+                prepayment_penalty_bps: 0,
+                liquidity_mining_rate_bps: DEFAULT_LIQUIDITY_MINING_RATE_BPS,
+                voting_period_seconds: DEFAULT_VOTING_PERIOD_SECONDS,
+                slash_cooldown_seconds: 0,
+                emergency_pause_enabled: false,
+                early_repayment_discount_bps: 0,
+                oracle_address: None,
+                slash_delay_seconds: 0,
+                successor_admin: None,
+            },
+        );
+
+        Ok(())
+    }
+
     pub fn vouch(
         env: Env,
         voucher: Address,
@@ -125,6 +152,9 @@ impl QuorumCreditContract {
         token: Address,
     ) -> Result<(), ContractError> {
         vouch::vouch(env, voucher, borrower, stake, token)
+        chain_id: Option<u32>,
+    ) -> Result<(), ContractError> {
+        vouch::vouch(env, voucher, borrower, stake, token, chain_id)
     }
 
     /// Issue #632: Vouch with cross-chain support.
@@ -176,6 +206,9 @@ impl QuorumCreditContract {
         token: Address,
     ) -> Result<(), ContractError> {
         vouch::batch_vouch(env, voucher, borrowers, stakes, token)
+        chain_id: Option<u32>,
+    ) -> Result<(), ContractError> {
+        vouch::batch_vouch(env, voucher, borrowers, stakes, token, chain_id)
     }
 
     pub fn increase_stake(
@@ -375,13 +408,6 @@ impl QuorumCreditContract {
         {
             ReputationNftExternalClient::new(&env, &nft_addr).burn(&borrower);
         }
-    }
-
-    pub fn request_loan(
-        env: Env,
-        borrower: Address,
-        amount: i128,
-        threshold: i128,
         loan_purpose: String,
         token_addr: Address,
     ) -> Result<(), ContractError> {
@@ -1084,8 +1110,6 @@ impl QuorumCreditContract {
 
     pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
         admin::add_admin(env, admin_signers, new_admin)
-    }
-
     /// #669: Retry a failed repayment. Increments retry_count and re-attempts the transfer.
     /// Returns `MaxRetriesExceeded` if retry_count >= MAX_REPAYMENT_RETRIES.
     pub fn retry_repayment(
@@ -1484,8 +1508,6 @@ impl QuorumCreditContract {
 
     pub fn get_config(env: Env) -> Config {
         admin::get_config(env)
-    }
-
     // ── Issue #682: multi-sig config updates ──────────────────────────────────
 
     pub fn propose_config_update(
@@ -1514,6 +1536,97 @@ impl QuorumCreditContract {
         proposal_id: u64,
     ) -> Option<ConfigUpdateProposal> {
         admin::get_config_update_proposal(env, proposal_id)
+    }
+
+    // ── Admin Governance Queue with Multi-Signature Confirmation ─────────────
+
+    pub fn set_governance_queue_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: GovernanceQueueConfig,
+    ) {
+        admin::set_governance_queue_config(env, admin_signers, config)
+    }
+
+    pub fn propose_governance_action(
+        env: Env,
+        proposer: Address,
+        action: GovernanceAction,
+        description: soroban_sdk::String,
+    ) -> Result<u64, ContractError> {
+        admin::propose_governance_action(env, proposer, action, description)
+    }
+
+    pub fn approve_governance_action(
+        env: Env,
+        admin: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::approve_governance_action(env, admin, proposal_id)
+    }
+
+    pub fn reject_governance_action(
+        env: Env,
+        admin: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::reject_governance_action(env, admin, proposal_id)
+    }
+
+    pub fn execute_governance_action(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::execute_governance_action(env, proposal_id)
+    }
+
+    pub fn cancel_governance_action(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::cancel_governance_action(env, caller, proposal_id)
+    }
+
+    pub fn get_governance_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<GovernanceProposal> {
+        admin::get_governance_proposal(env, proposal_id)
+    }
+
+    pub fn get_governance_queue_config_view(env: Env) -> GovernanceQueueConfig {
+        admin::get_governance_queue_config_view(env)
+    }
+
+    pub fn get_governance_proposal_count(env: Env) -> u64 {
+        admin::get_governance_proposal_count(env)
+    }
+
+    // ── On-Chain Credit Score with Tiered Rewards ───────────────────────────────
+
+    pub fn update_credit_score(env: Env, borrower: Address) -> Result<(), ContractError> {
+        credit_score::update_credit_score(env, borrower)
+    }
+
+    pub fn get_credit_score(env: Env, borrower: Address) -> Option<CreditScore> {
+        credit_score::get_credit_score(env, borrower)
+    }
+
+    pub fn set_credit_score_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: CreditScoreConfig,
+    ) -> Result<(), ContractError> {
+        credit_score::set_credit_score_config(env, admin_signers, config)
+    }
+
+    pub fn get_credit_score_config_view(env: Env) -> CreditScoreConfig {
+        credit_score::get_credit_score_config_view(env)
+    }
+
+    pub fn get_tier_rewards(env: Env, tier: CreditTier) -> TierRewards {
+        credit_score::get_tier_rewards(env, tier)
     }
 
     // ── Issue #683: emergency pause ───────────────────────────────────────────

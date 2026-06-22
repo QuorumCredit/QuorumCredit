@@ -433,3 +433,94 @@ fn test_all_fund_moving_functions_respect_pause() {
         Err(Ok(ContractError::ContractPaused))
     );
 }
+
+// ── Thaw-State Tests ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_pause_state_is_paused_after_pause() {
+    let (env, client, admin, _voucher, _borrower, _token_addr, _token_client) = setup_test_env();
+
+    let admin_signers = Vec::from_array(&env, [admin.clone()]);
+    client.pause(&admin_signers);
+
+    assert_eq!(client.get_pause_state(), crate::types::PauseMode::Paused);
+}
+
+#[test]
+fn test_begin_thaw_transitions_to_thawing() {
+    let (env, client, admin, _voucher, _borrower, _token_addr, _token_client) = setup_test_env();
+
+    let admin_signers = Vec::from_array(&env, [admin.clone()]);
+    client.pause(&admin_signers);
+    client.begin_thaw(&admin_signers);
+
+    assert_eq!(client.get_pause_state(), crate::types::PauseMode::Thawing);
+    // get_paused should still return true during thaw
+    assert_eq!(client.get_paused(), true);
+}
+
+#[test]
+fn test_vouch_blocked_during_thaw() {
+    let (env, client, admin, voucher, borrower, token_addr, _token_client) = setup_test_env();
+
+    let admin_signers = Vec::from_array(&env, [admin.clone()]);
+    client.pause(&admin_signers);
+    client.begin_thaw(&admin_signers);
+
+    // Writes (vouch) must be blocked during thaw
+    let result = client.try_vouch(&voucher, &borrower, &1_000_000, &token_addr, &None);
+    assert_eq!(result, Err(Ok(ContractError::ContractThawing)));
+}
+
+#[test]
+fn test_withdrawal_allowed_during_thaw() {
+    let (env, client, admin, voucher, borrower, token_addr, _token_client) = setup_test_env();
+
+    // Create a vouch while normal
+    client.vouch(&voucher, &borrower, &1_000_000, &token_addr, &None);
+
+    let admin_signers = Vec::from_array(&env, [admin.clone()]);
+    client.pause(&admin_signers);
+    client.begin_thaw(&admin_signers);
+
+    // Withdraw vouch should succeed during thaw (reads + withdrawals allowed)
+    client.withdraw_vouch(&voucher, &borrower);
+    assert!(!client.vouch_exists(&voucher, &borrower));
+}
+
+#[test]
+fn test_auto_thaw_after_24h() {
+    let (env, client, admin, voucher, borrower, token_addr, _token_client) = setup_test_env();
+
+    let admin_signers = Vec::from_array(&env, [admin.clone()]);
+    client.pause(&admin_signers);
+    client.begin_thaw(&admin_signers);
+
+    // Advance time past 24-hour thaw window
+    env.ledger().with_mut(|li| li.timestamp = 86_401);
+
+    // State should auto-transition to Normal
+    assert_eq!(client.get_pause_state(), crate::types::PauseMode::None);
+
+    // Writes are now allowed again
+    client.vouch(&voucher, &borrower, &1_000_000, &token_addr, &None);
+    assert!(client.vouch_exists(&voucher, &borrower));
+}
+
+#[test]
+fn test_unpause_directly_from_paused() {
+    let (env, client, admin, _voucher, _borrower, _token_addr, _token_client) = setup_test_env();
+
+    let admin_signers = Vec::from_array(&env, [admin.clone()]);
+    client.pause(&admin_signers);
+    client.unpause(&admin_signers);
+
+    assert_eq!(client.get_pause_state(), crate::types::PauseMode::None);
+    assert_eq!(client.get_paused(), false);
+}
+
+#[test]
+fn test_normal_state_at_startup() {
+    let (_, client, _, _, _, _, _) = setup_test_env();
+    assert_eq!(client.get_pause_state(), crate::types::PauseMode::None);
+}

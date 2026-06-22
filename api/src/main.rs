@@ -2,19 +2,15 @@ mod analytics;
 mod auth;
 mod logging;
 mod rate_limiter;
-mod voucher_history;
-mod partial_repayment_analytics;
-#[cfg(test)]
-mod voucher_history_integration_test;
 mod webhook;
 mod ws;
 
 use axum::{
-    extract::{Json, State, WebSocketUpgrade},
-    http::{HeaderMap, Request, StatusCode},
+    extract::{State, Json, WebSocketUpgrade},
+    http::{StatusCode, Request, HeaderMap},
     middleware::{self, Next},
     response::Response,
-    routing::{delete, get, post},
+    routing::{get, post, delete},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -23,22 +19,18 @@ use std::time::Instant;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber;
 
-use analytics::{
-    aggregate_metrics, check_alerts, metrics_to_csv, AlertThresholds, LoanSnapshot, MetricsFilter,
-    VouchSnapshot,
-};
 use auth::JwtAuth;
-use axum::extract::Query;
 use logging::RequestLogger;
 use rate_limiter::{
-    rate_limit_middleware, InMemoryStore, RateLimitConfig, RateLimiter, RateLimiterState, Tier,
+    InMemoryStore, RateLimitConfig, RateLimiter, RateLimiterState, Tier,
+    rate_limit_middleware,
 };
-use voucher_history::{
-    compute_activity_summary, query_voucher_history, records_to_csv, VoucherEventType,
-    VoucherHistoryFilter, VoucherHistoryRecord,
+use webhook::{WebhookManager, WebhookEvent};
+use analytics::{
+    aggregate_metrics, check_alerts, metrics_to_csv,
+    AlertThresholds, LoanSnapshot, MetricsFilter, VouchSnapshot,
 };
-use webhook::{WebhookEvent, WebhookManager};
-use ws::{ws_handler, MetricsBroadcaster};
+use ws::{MetricsBroadcaster, ws_handler};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -171,7 +163,9 @@ async fn deliver_webhook_event(
     }
 }
 
-async fn get_logs(State(state): State<AppState>) -> Json<Vec<logging::RequestLog>> {
+async fn get_logs(
+    State(state): State<AppState>,
+) -> Json<Vec<logging::RequestLog>> {
     let logs = state.logger.get_logs().await;
     Json(logs)
 }
@@ -205,12 +199,7 @@ async fn admin_metrics(
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Missing Authorization header".to_string(),
-            )
-        })?;
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Missing Authorization header".to_string()))?;
     let token = JwtAuth::extract_token_from_header(auth_header)
         .map_err(|e| (StatusCode::UNAUTHORIZED, e.to_string()))?;
     state
@@ -233,9 +222,7 @@ async fn admin_metrics(
     let alerts = check_alerts(&metrics, payload.peak_tvl.unwrap_or(0), &thresholds);
 
     // Broadcast to WebSocket subscribers
-    state
-        .broadcaster
-        .publish(serde_json::to_value(&metrics).unwrap_or_default());
+    state.broadcaster.publish(serde_json::to_value(&metrics).unwrap_or_default());
 
     match payload.export_format.as_deref() {
         Some("csv") => {
@@ -243,10 +230,7 @@ async fn admin_metrics(
             Ok(axum::response::Response::builder()
                 .status(200)
                 .header("Content-Type", "text/csv")
-                .header(
-                    "Content-Disposition",
-                    "attachment; filename=\"metrics.csv\"",
-                )
+                .header("Content-Disposition", "attachment; filename=\"metrics.csv\"")
                 .body(axum::body::Body::from(csv))
                 .unwrap())
         }
@@ -262,133 +246,19 @@ async fn admin_metrics(
 }
 
 /// WebSocket upgrade handler for real-time metrics streaming.
-async fn metrics_ws(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+async fn metrics_ws(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+) -> Response {
     let broadcaster = state.broadcaster.clone();
     ws.on_upgrade(move |socket| ws_handler(socket, broadcaster))
-}
-
-/// Export voucher history with filtering and pagination.
-/// Endpoint: GET /api/voucher/:address/history/export
-/// Query params:
-///   - format: "csv" or "json" (default: "json")
-///   - start_date: Unix timestamp (optional)
-///   - end_date: Unix timestamp (optional)
-///   - borrower: Borrower address filter (optional)
-///   - transaction_types: comma-separated types (optional)
-///   - offset: pagination offset (default: 0)
-///   - limit: pagination limit (default: 100)
-#[derive(Serialize, Deserialize)]
-pub struct VoucherExportQuery {
-    pub format: Option<String>,
-    pub start_date: Option<i64>,
-    pub end_date: Option<i64>,
-    pub borrower: Option<String>,
-    pub transaction_types: Option<String>,
-    pub offset: Option<u32>,
-    pub limit: Option<u32>,
-}
-
-async fn export_voucher_history(
-    headers: HeaderMap,
-    axum::extract::Path(address): axum::extract::Path<String>,
-    Query(params): Query<VoucherExportQuery>,
-) -> Result<Response, (StatusCode, String)> {
-    // Security: verify that the requesting address matches the voucher address
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Missing Authorization header".to_string(),
-            )
-        })?;
-
-    // Extract address from JWT or auth header (simplified - in production, verify JWT)
-    let requesting_address = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "Invalid auth format".to_string()))?;
-
-    // Security: only voucher can export their own history
-    if requesting_address != address {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!("Cannot export history for address: {}", address),
-        ));
-    }
-
-    // Mock data retrieval - in production, query from database or event index
-    let records = vec![
-        VoucherHistoryRecord {
-            timestamp: 1687286400,
-            event_type: VoucherEventType::Vouch,
-            borrower: "borrower_alpha".to_string(),
-            amount_stroops: 100_000_000,
-            tx_hash: "tx_001".to_string(),
-        },
-        VoucherHistoryRecord {
-            timestamp: 1687372800,
-            event_type: VoucherEventType::IncreaseStake,
-            borrower: "borrower_alpha".to_string(),
-            amount_stroops: 50_000_000,
-            tx_hash: "tx_002".to_string(),
-        },
-        VoucherHistoryRecord {
-            timestamp: 1687459200,
-            event_type: VoucherEventType::YieldEarned,
-            borrower: "borrower_alpha".to_string(),
-            amount_stroops: 3_000_000,
-            tx_hash: "tx_003".to_string(),
-        },
-    ];
-
-    let filter = VoucherHistoryFilter {
-        start_date: params.start_date,
-        end_date: params.end_date,
-        borrower: params.borrower,
-        transaction_types: params.transaction_types,
-    };
-
-    let offset = params.offset.unwrap_or(0);
-    let limit = params.limit.unwrap_or(100);
-
-    let page = query_voucher_history(&records, &filter, offset, limit);
-    let summary = compute_activity_summary(&page.records);
-
-    match params.format.as_deref() {
-        Some("csv") => {
-            let csv = records_to_csv(&page.records);
-            Ok(axum::response::Response::builder()
-                .status(200)
-                .header("Content-Type", "text/csv; charset=utf-8")
-                .header(
-                    "Content-Disposition",
-                    format!("attachment; filename=\"voucher_history_{}.csv\"", address),
-                )
-                .body(axum::body::Body::from(csv))
-                .unwrap())
-        }
-        _ => {
-            let body = serde_json::json!({
-                "page": page,
-                "summary": summary,
-            });
-            Ok(axum::response::Response::builder()
-                .status(200)
-                .header("Content-Type", "application/json")
-                .body(axum::body::Body::from(body.to_string()))
-                .unwrap())
-        }
-    }
 }
 
 async fn health_check() -> &'static str {
     "OK"
 }
 
-async fn ready_check(
-    State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+async fn ready_check(State(state): State<AppState>) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // JWT check: generate and verify a token
     let jwt_check = match state.jwt_auth.generate_token("health_check", 1) {
         Ok(token) => match state.jwt_auth.verify_token(&token) {
@@ -438,18 +308,9 @@ pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let tier = match std::env::var("RATE_LIMIT_TIER").as_deref() {
         Ok("pro") => Tier::Pro,
         Ok("enterprise") => {
-            let rpm = std::env::var("RATE_LIMIT_RPM")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5000);
-            let burst = std::env::var("RATE_LIMIT_BURST")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(200);
-            Tier::Enterprise {
-                requests_per_minute: rpm,
-                burst,
-            }
+            let rpm = std::env::var("RATE_LIMIT_RPM").ok().and_then(|v| v.parse().ok()).unwrap_or(5000);
+            let burst = std::env::var("RATE_LIMIT_BURST").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+            Tier::Enterprise { requests_per_minute: rpm, burst }
         }
         _ => Tier::Free,
     };
@@ -471,10 +332,7 @@ pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(InMemoryStore::new())
         };
 
-    let rl = RateLimiterState(Arc::new(RateLimiter::new(
-        RateLimitConfig::new(tier),
-        rl_store,
-    )));
+    let rl = RateLimiterState(Arc::new(RateLimiter::new(RateLimitConfig::new(tier), rl_store)));
 
     let state = AppState {
         jwt_auth: Arc::new(JwtAuth::new(jwt_secret)),
@@ -495,10 +353,6 @@ pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         .route("/logs", get(get_logs))
         .route("/api/admin/metrics", post(admin_metrics))
         .route("/api/admin/metrics/ws", get(metrics_ws))
-        .route(
-            "/api/voucher/:address/history/export",
-            get(export_voucher_history),
-        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             logging_middleware,

@@ -294,25 +294,18 @@ mod tests {
 
     fn sample_vouches() -> Vec<VouchSnapshot> {
         vec![
-            VouchSnapshot {
-                voucher: "v1".into(),
-                stake: 1_000_000_000,
-            },
-            VouchSnapshot {
-                voucher: "v2".into(),
-                stake: 500_000_000,
-            },
-            VouchSnapshot {
-                voucher: "v1".into(),
-                stake: 200_000_000,
-            },
+            VouchSnapshot { voucher: "v1".into(), stake: 1_000_000_000 },
+            VouchSnapshot { voucher: "v2".into(), stake: 500_000_000 },
+            VouchSnapshot { voucher: "v1".into(), stake: 200_000_000 },
         ]
     }
 
     // Test 1: TVL = sum of active loan amounts only
     #[test]
     fn test_tvl_equals_sum_of_active_loans() {
-        let metrics = aggregate_metrics(&sample_loans(), &[], 0, 0, &MetricsFilter::default(), 0);
+        let metrics = aggregate_metrics(
+            &sample_loans(), &[], 0, 0, &MetricsFilter::default(), 0,
+        );
         // active: addr_a (5B) + addr_b (3B) = 8B stroops
         assert_eq!(metrics.tvl, 8_000_000_000);
     }
@@ -350,7 +343,9 @@ mod tests {
     // Test 4: active_loans count is correct
     #[test]
     fn test_active_loans_count() {
-        let m = aggregate_metrics(&sample_loans(), &[], 0, 0, &MetricsFilter::default(), 0);
+        let m = aggregate_metrics(
+            &sample_loans(), &[], 0, 0, &MetricsFilter::default(), 0,
+        );
         assert_eq!(m.active_loans, 2);
     }
 
@@ -359,18 +354,12 @@ mod tests {
     fn test_yield_distribution_sum() {
         let loans = vec![
             LoanSnapshot {
-                borrower: "a".into(),
-                amount: 100,
-                status: LoanStatusInput::Repaid,
-                yield_distributed: 20_000_000,
-                created_at: 0,
+                borrower: "a".into(), amount: 100, status: LoanStatusInput::Repaid,
+                yield_distributed: 20_000_000, created_at: 0,
             },
             LoanSnapshot {
-                borrower: "b".into(),
-                amount: 100,
-                status: LoanStatusInput::Repaid,
-                yield_distributed: 10_000_000,
-                created_at: 0,
+                borrower: "b".into(), amount: 100, status: LoanStatusInput::Repaid,
+                yield_distributed: 10_000_000, created_at: 0,
             },
         ];
         let m = aggregate_metrics(&loans, &[], 0, 0, &MetricsFilter::default(), 0);
@@ -380,12 +369,10 @@ mod tests {
     // Test 6: Date range filter excludes out-of-range loans
     #[test]
     fn test_date_range_filter() {
-        let filter = MetricsFilter {
-            from: Some(1500),
-            to: Some(3500),
-            loan_size: None,
-        };
-        let m = aggregate_metrics(&sample_loans(), &[], 0, 0, &filter, 0);
+        let filter = MetricsFilter { from: Some(1500), to: Some(3500), loan_size: None };
+        let m = aggregate_metrics(
+            &sample_loans(), &[], 0, 0, &filter, 0,
+        );
         // Only loans with created_at in [1500, 3500]: addr_b (2000), addr_c (3000)
         assert_eq!(m.total_loans, 2);
     }
@@ -395,24 +382,15 @@ mod tests {
     fn test_loan_size_filter_small() {
         let loans = vec![
             LoanSnapshot {
-                borrower: "a".into(),
-                amount: 500_000,
-                status: LoanStatusInput::Active,
-                yield_distributed: 0,
-                created_at: 0,
+                borrower: "a".into(), amount: 500_000,
+                status: LoanStatusInput::Active, yield_distributed: 0, created_at: 0,
             },
             LoanSnapshot {
-                borrower: "b".into(),
-                amount: 2_000_000,
-                status: LoanStatusInput::Active,
-                yield_distributed: 0,
-                created_at: 0,
+                borrower: "b".into(), amount: 2_000_000,
+                status: LoanStatusInput::Active, yield_distributed: 0, created_at: 0,
             },
         ];
-        let filter = MetricsFilter {
-            loan_size: Some("small".into()),
-            ..Default::default()
-        };
+        let filter = MetricsFilter { loan_size: Some("small".into()), ..Default::default() };
         let m = aggregate_metrics(&loans, &[], 0, 0, &filter, 0);
         assert_eq!(m.total_loans, 1);
         assert_eq!(m.tvl, 500_000);
@@ -421,7 +399,9 @@ mod tests {
     // Test 8: Top borrowers sorted by descending total amount
     #[test]
     fn test_top_borrowers_sorted() {
-        let m = aggregate_metrics(&sample_loans(), &[], 0, 0, &MetricsFilter::default(), 0);
+        let m = aggregate_metrics(
+            &sample_loans(), &[], 0, 0, &MetricsFilter::default(), 0,
+        );
         // addr_a=5B, addr_b=3B, addr_d=2B, addr_c=1B
         assert_eq!(m.top_borrowers[0].0, "addr_a");
         assert_eq!(m.top_borrowers[0].1, 5_000_000_000);
@@ -430,7 +410,9 @@ mod tests {
     // Test 9: Top vouchers aggregates by voucher address
     #[test]
     fn test_top_vouchers_aggregated() {
-        let m = aggregate_metrics(&[], &sample_vouches(), 0, 0, &MetricsFilter::default(), 0);
+        let m = aggregate_metrics(
+            &[], &sample_vouches(), 0, 0, &MetricsFilter::default(), 0,
+        );
         // v1 = 1.2B, v2 = 0.5B
         assert_eq!(m.top_vouchers[0].0, "v1");
         assert_eq!(m.top_vouchers[0].1, 1_200_000_000);
@@ -557,13 +539,12 @@ mod tests {
     // Test 19: Defaulted loans are excluded from TVL
     #[test]
     fn test_defaulted_loans_excluded_from_tvl() {
-        let loans = vec![LoanSnapshot {
-            borrower: "a".into(),
-            amount: 1_000_000_000,
-            status: LoanStatusInput::Defaulted,
-            yield_distributed: 0,
-            created_at: 0,
-        }];
+        let loans = vec![
+            LoanSnapshot {
+                borrower: "a".into(), amount: 1_000_000_000,
+                status: LoanStatusInput::Defaulted, yield_distributed: 0, created_at: 0,
+            },
+        ];
         let m = aggregate_metrics(&loans, &[], 0, 0, &MetricsFilter::default(), 0);
         assert_eq!(m.tvl, 0);
         assert_eq!(m.defaulted_loans, 1);
@@ -572,13 +553,12 @@ mod tests {
     // Test 20: Repaid loans are excluded from TVL and active count
     #[test]
     fn test_repaid_loans_excluded_from_tvl_and_active_count() {
-        let loans = vec![LoanSnapshot {
-            borrower: "a".into(),
-            amount: 1_000_000_000,
-            status: LoanStatusInput::Repaid,
-            yield_distributed: 20_000_000,
-            created_at: 0,
-        }];
+        let loans = vec![
+            LoanSnapshot {
+                borrower: "a".into(), amount: 1_000_000_000,
+                status: LoanStatusInput::Repaid, yield_distributed: 20_000_000, created_at: 0,
+            },
+        ];
         let m = aggregate_metrics(&loans, &[], 0, 0, &MetricsFilter::default(), 0);
         assert_eq!(m.tvl, 0);
         assert_eq!(m.active_loans, 0);

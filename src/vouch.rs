@@ -2,7 +2,8 @@ extern crate alloc;
 
 use crate::errors::ContractError;
 use crate::helpers::{
-    has_active_loan, require_admin_approval, require_allowed_token, require_not_paused, require_positive_amount,
+    has_active_loan, require_admin_approval, require_allowed_token, require_not_paused,
+    require_not_thawing, require_reads_allowed, require_positive_amount,
 };
 use crate::types::{
     BridgeRecord, DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord,
@@ -90,7 +91,7 @@ fn vouch_with_chain(
     chain_id: u32,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
 
     // Bridge validation: non-native chain vouches require prior bridge validation
     if chain_id != 0 {
@@ -303,7 +304,7 @@ pub fn batch_vouch(
     chain_id: Option<u32>,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
 
     if borrowers.is_empty() || borrowers.len() != stakes.len() {
         return Err(ContractError::InsufficientFunds);
@@ -341,7 +342,7 @@ pub fn increase_stake(
     additional: i128,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
     require_positive_amount(&env, additional)?;
 
     let mut vouches: Vec<VouchRecord> = env
@@ -402,7 +403,7 @@ pub fn decrease_stake(
     amount: i128,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
     require_positive_amount(&env, amount)?;
 
     let vouches: Vec<VouchRecord> = env
@@ -462,7 +463,7 @@ pub fn withdraw_vouch(
     borrower: Address,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
-    require_not_paused(&env)?;
+    require_reads_allowed(&env)?;
 
     let vouches: Vec<VouchRecord> = env
         .storage()
@@ -512,7 +513,7 @@ pub fn request_withdrawal(
     priority_fee: i128,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
 
     if priority_fee < 0 {
         return Err(ContractError::InvalidAmount);
@@ -565,7 +566,7 @@ pub fn partial_withdraw(
     borrower: Address,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
-    require_not_paused(&env)?;
+    require_not_thawing(&env)?;
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()

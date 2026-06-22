@@ -3,7 +3,11 @@ use crate::helpers::{
     config, is_admin, require_admin_approval, require_not_paused, require_valid_token,
     validate_admin_config,
 };
-use crate::types::{AdminActionProposal, Config, ConfigUpdateKey, ConfigUpdateProposal, DataKey};
+use crate::types::{
+    AdminActionProposal, Config, ConfigUpdateKey, ConfigUpdateProposal, DataKey,
+    GovernanceAction, GovernanceProposal, GovernanceProposalStatus, GovernanceQueueConfig,
+    DEFAULT_GOVERNANCE_EXECUTION_WINDOW, DEFAULT_GOVERNANCE_TIMELOCK_DELAY,
+};
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
 fn validate_admin_member(env: &Env, admin: &Address, config: &Config) {
@@ -264,11 +268,55 @@ pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>)
 
 pub fn pause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
+    let now = env.ledger().timestamp();
     env.storage().instance().set(&DataKey::Paused, &true);
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::Paused);
+    // Record the pause timestamp so begin_thaw() can reference it.
+    // ThawState is written with thaw_start_timestamp = 0 (thaw not yet started).
+    env.storage().instance().set(
+        &DataKey::ThawState,
+        &crate::types::ThawState {
+            pause_timestamp: now,
+            thaw_duration: crate::types::THAW_DURATION_SECS,
+            thaw_start_timestamp: 0,
+        },
+    );
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("pause")),
-        (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
+        (admin_signers.get(0).unwrap(), now),
+    );
+}
+
+/// Transition from `Paused` → `Thawing`.
+/// Only reads and withdrawals are allowed during the thaw window (24 h).
+/// After the window elapses the contract auto-transitions back to `Normal`.
+pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
+    require_admin_approval(&env, &admin_signers);
+    let mode: crate::types::PauseMode = env
+        .storage()
+        .instance()
+        .get(&DataKey::PauseMode)
+        .unwrap_or(crate::types::PauseMode::None);
+    assert!(
+        mode == crate::types::PauseMode::Paused,
+        "begin_thaw requires contract to be in Paused state"
+    );
+
+    let now = env.ledger().timestamp();
+    // Update existing ThawState with the actual thaw start timestamp.
+    let mut thaw: crate::types::ThawState = env
+        .storage()
+        .instance()
+        .get(&DataKey::ThawState)
+        .expect("pause state not found");
+    thaw.thaw_start_timestamp = now;
+
+    env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::Thawing);
+    env.storage().instance().set(&DataKey::ThawState, &thaw);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("beg_thaw")),
+        (admin_signers.get(0).unwrap(), now, thaw.thaw_duration),
     );
 }
 
@@ -283,11 +331,12 @@ pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     );
 }
 
-/// Pause the contract with a gradual thaw period allowing emergency withdrawals
+/// Pause the contract and immediately enter Thawing (combined one-step operation).
+/// Writes are blocked immediately; reads and withdrawals allowed for `thaw_duration` seconds.
 pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64) {
     require_admin_approval(&env, &admin_signers);
     let now = env.ledger().timestamp();
-    
+
     env.storage().instance().set(&DataKey::Paused, &true);
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::Thawing);
     env.storage().instance().set(
@@ -298,7 +347,7 @@ pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64
             thaw_start_timestamp: now,
         },
     );
-    
+
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("pse_thaw")),
         (admin_signers.get(0).unwrap(), now, thaw_duration),
@@ -310,7 +359,7 @@ pub fn is_in_thaw_period(env: &Env) -> bool {
     if let Some(thaw_state) = env.storage().instance().get::<_, crate::types::ThawState>(&DataKey::ThawState) {
         let now = env.ledger().timestamp();
         let thaw_end = thaw_state.thaw_start_timestamp + thaw_state.thaw_duration;
-        now <= thaw_end
+        thaw_state.thaw_start_timestamp > 0 && now <= thaw_end
     } else {
         false
     }
@@ -1312,4 +1361,626 @@ pub fn set_role_permissions(
     env.storage()
         .persistent()
         .set(&DataKey::RolePermissions(account), &permissions);
+}
+
+// ── Admin Governance Queue with Multi-Signature Confirmation ─────────────────────
+
+/// Get the governance queue configuration, or default if not set.
+fn get_governance_queue_config(env: &Env) -> GovernanceQueueConfig {
+    env.storage()
+        .instance()
+        .get(&DataKey::GovernanceQueueConfig)
+        .unwrap_or(GovernanceQueueConfig {
+            timelock_delay: DEFAULT_GOVERNANCE_TIMELOCK_DELAY,
+            execution_window: DEFAULT_GOVERNANCE_EXECUTION_WINDOW,
+            require_multisig: true,
+        })
+}
+
+/// Set the governance queue configuration.
+/// Requires admin approval.
+pub fn set_governance_queue_config(
+    env: Env,
+    admin_signers: Vec<Address>,
+    config: GovernanceQueueConfig,
+) {
+    require_admin_approval(&env, &admin_signers);
+
+    if config.timelock_delay == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if config.execution_window == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceQueueConfig, &config);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("queue_cfg")),
+        (admin_signers.get(0).unwrap(), config.timelock_delay, config.execution_window),
+    );
+}
+
+/// Propose a governance action to the admin governance queue.
+/// The proposal will require multi-signature approval before execution.
+/// A timelock delay is applied before the proposal can be executed.
+pub fn propose_governance_action(
+    env: Env,
+    proposer: Address,
+    action: GovernanceAction,
+    description: soroban_sdk::String,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+
+    // Check if proposer is an admin
+    if !is_admin(&env, &proposer) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    let queue_config = get_governance_queue_config(&env);
+    let now = env.ledger().timestamp();
+
+    // Generate proposal ID
+    let proposal_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposalCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("proposal ID overflow");
+
+    // Calculate timelock and expiry
+    let executable_at = now + queue_config.timelock_delay;
+    let expires_at = executable_at + queue_config.execution_window;
+
+    // Create proposal
+    let proposal = GovernanceProposal {
+        id: proposal_id,
+        action: action.clone(),
+        proposer: proposer.clone(),
+        approvals: Vec::new(&env),
+        rejections: Vec::new(&env),
+        status: GovernanceProposalStatus::Pending,
+        created_at: now,
+        executable_at,
+        expires_at,
+        description: description.clone(),
+        executed_at: None,
+    };
+
+    // Store proposal
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposalCounter, &proposal_id);
+
+    // Publish event
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("propose")),
+        (proposal_id, proposer, action, executable_at),
+    );
+
+    Ok(proposal_id)
+}
+
+/// Approve a governance proposal.
+/// Only admins can approve proposals.
+/// Once the approval threshold is met, the proposal status changes to Approved.
+pub fn approve_governance_action(
+    env: Env,
+    admin: Address,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    admin.require_auth();
+
+    // Check if caller is an admin
+    if !is_admin(&env, &admin) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    let mut proposal: GovernanceProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    // Check proposal status
+    if proposal.status == GovernanceProposalStatus::Executed {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Cancelled {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Expired {
+        return Err(ContractError::ProposalExpired);
+    }
+
+    // Check if already approved
+    if proposal.approvals.iter().any(|a| a == admin) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    // Check if already rejected
+    if proposal.rejections.iter().any(|a| a == admin) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    // Add approval
+    proposal.approvals.push_back(admin.clone());
+
+    // Check if threshold is met
+    let cfg = config(&env);
+    let queue_config = get_governance_queue_config(&env);
+
+    if queue_config.require_multisig {
+        if proposal.approvals.len() >= cfg.admin_threshold {
+            proposal.status = GovernanceProposalStatus::Approved;
+        }
+    } else {
+        // If multisig not required, single approval is enough
+        proposal.status = GovernanceProposalStatus::Approved;
+    }
+
+    // Store updated proposal
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+
+    // Publish event
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("approve")),
+        (proposal_id, admin, proposal.approvals.len()),
+    );
+
+    Ok(())
+}
+
+/// Reject a governance proposal.
+/// Only admins can reject proposals.
+/// If rejection threshold is met, the proposal is cancelled.
+pub fn reject_governance_action(
+    env: Env,
+    admin: Address,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    admin.require_auth();
+
+    // Check if caller is an admin
+    if !is_admin(&env, &admin) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    let mut proposal: GovernanceProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    // Check proposal status
+    if proposal.status == GovernanceProposalStatus::Executed {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Cancelled {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Expired {
+        return Err(ContractError::ProposalExpired);
+    }
+
+    // Check if already approved
+    if proposal.approvals.iter().any(|a| a == admin) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    // Check if already rejected
+    if proposal.rejections.iter().any(|a| a == admin) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    // Add rejection
+    proposal.rejections.push_back(admin.clone());
+
+    // If rejections reach threshold, cancel the proposal
+    let cfg = config(&env);
+    if proposal.rejections.len() >= cfg.admin_threshold {
+        proposal.status = GovernanceProposalStatus::Cancelled;
+    }
+
+    // Store updated proposal
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+
+    // Publish event
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("reject")),
+        (proposal_id, admin, proposal.rejections.len()),
+    );
+
+    Ok(())
+}
+
+/// Execute a governance proposal.
+/// The proposal must be in Approved status and the timelock delay must have elapsed.
+/// Anyone can call this function once the conditions are met.
+pub fn execute_governance_action(
+    env: Env,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    let mut proposal: GovernanceProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    // Check proposal status
+    if proposal.status == GovernanceProposalStatus::Executed {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Cancelled {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Expired {
+        return Err(ContractError::ProposalExpired);
+    }
+    if proposal.status != GovernanceProposalStatus::Approved {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    let now = env.ledger().timestamp();
+
+    // Check timelock delay
+    if now < proposal.executable_at {
+        return Err(ContractError::TimelockDelayNotElapsed);
+    }
+
+    // Check execution window
+    if now > proposal.expires_at {
+        proposal.status = GovernanceProposalStatus::Expired;
+        env.storage()
+            .instance()
+            .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+        return Err(ContractError::ExecutionWindowPassed);
+    }
+
+    // Execute the action
+    execute_governance_action_internal(&env, &proposal.action)?;
+
+    // Mark as executed
+    proposal.status = GovernanceProposalStatus::Executed;
+    proposal.executed_at = Some(now);
+
+    // Store updated proposal
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+
+    // Publish event
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("execute")),
+        (proposal_id, proposal.action, now),
+    );
+
+    Ok(())
+}
+
+/// Internal function to execute a governance action.
+fn execute_governance_action_internal(
+    env: &Env,
+    action: &GovernanceAction,
+) -> Result<(), ContractError> {
+    match action {
+        GovernanceAction::Pause => {
+            env.storage().instance().set(&DataKey::Paused, &true);
+            env.storage()
+                .instance()
+                .set(&DataKey::PauseMode, &crate::types::PauseMode::Paused);
+        }
+        GovernanceAction::Unpause => {
+            env.storage().instance().set(&DataKey::Paused, &false);
+            env.storage()
+                .instance()
+                .set(&DataKey::PauseMode, &crate::types::PauseMode::None);
+            env.storage().instance().remove(&DataKey::ThawState);
+        }
+        GovernanceAction::Upgrade(new_wasm_hash) => {
+            env.deployer()
+                .update_current_contract_wasm(new_wasm_hash.clone());
+        }
+        GovernanceAction::SetProtocolFee(fee_bps) => {
+            if *fee_bps > 10_000 {
+                return Err(ContractError::InvalidAmount);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::ProtocolFeeBps, fee_bps);
+        }
+        GovernanceAction::SetFeeTreasury(treasury) => {
+            env.storage()
+                .instance()
+                .set(&DataKey::FeeTreasury, treasury);
+        }
+        GovernanceAction::AddAllowedToken(token) => {
+            let mut cfg = config(env);
+            if cfg.allowed_tokens.iter().any(|t| t == *token) || *token == cfg.token {
+                return Err(ContractError::DuplicateToken);
+            }
+            cfg.allowed_tokens.push_back(token.clone());
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::RemoveAllowedToken(token) => {
+            let mut cfg = config(env);
+            let idx = cfg
+                .allowed_tokens
+                .iter()
+                .position(|t| t == *token)
+                .expect("token not in allowed list") as u32;
+            cfg.allowed_tokens.remove(idx);
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetMinStake(amount) => {
+            if *amount < 0 {
+                return Err(ContractError::InvalidAmount);
+            }
+            env.storage().instance().set(&DataKey::MinStake, amount);
+        }
+        GovernanceAction::SetMaxLoanAmount(amount) => {
+            if *amount < 0 {
+                return Err(ContractError::InvalidAmount);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxLoanAmount, amount);
+        }
+        GovernanceAction::SetMinVouchers(count) => {
+            env.storage().instance().set(&DataKey::MinVouchers, count);
+        }
+        GovernanceAction::SetMaxVouchersPerBorrower(count) => {
+            if *count == 0 {
+                return Err(ContractError::InvalidAmount);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxVouchersPerBorrower, count);
+        }
+        GovernanceAction::SetMaxLoanToStakeRatio(ratio) => {
+            if *ratio == 0 {
+                return Err(ContractError::InvalidAmount);
+            }
+            let mut cfg = config(env);
+            cfg.max_loan_to_stake_ratio = *ratio;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetGracePeriod(period) => {
+            let cfg = config(env);
+            if *period > cfg.loan_duration {
+                return Err(ContractError::InvalidAmount);
+            }
+            let mut cfg = cfg;
+            cfg.grace_period = *period;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetYieldBps(yield_bps) => {
+            if *yield_bps < 0 || *yield_bps > 10_000 {
+                return Err(ContractError::InvalidBps);
+            }
+            let mut cfg = config(env);
+            cfg.yield_bps = *yield_bps;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetSlashBps(slash_bps) => {
+            if *slash_bps <= 0 || *slash_bps > 10_000 {
+                return Err(ContractError::InvalidAmount);
+            }
+            let mut cfg = config(env);
+            cfg.slash_bps = *slash_bps;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetAdminThreshold(threshold) => {
+            let cfg = config(env);
+            if *threshold == 0 || *threshold > cfg.admins.len() {
+                return Err(ContractError::InvalidAdminThreshold);
+            }
+            let mut cfg = cfg;
+            cfg.admin_threshold = *threshold;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::AddAdmin(new_admin) => {
+            let mut cfg = config(env);
+            validate_admin_member(env, new_admin, &cfg);
+            if cfg.admins.iter().any(|a| a == *new_admin) {
+                return Err(ContractError::AlreadyInitialized);
+            }
+            cfg.admins.push_back(new_admin.clone());
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::RemoveAdmin(admin_to_remove) => {
+            let mut cfg = config(env);
+            let idx = cfg
+                .admins
+                .iter()
+                .position(|a| a == *admin_to_remove)
+                .expect("address is not an admin") as u32;
+            cfg.admins.remove(idx);
+            if cfg.admins.is_empty() {
+                return Err(ContractError::UnauthorizedCaller);
+            }
+            if cfg.admin_threshold > cfg.admins.len() {
+                return Err(ContractError::InvalidAdminThreshold);
+            }
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::RotateAdmin(old_admin, new_admin) => {
+            let mut cfg = config(env);
+            if old_admin == new_admin {
+                return Err(ContractError::InvalidAmount);
+            }
+            validate_admin_member(env, new_admin, &cfg);
+            if cfg.admins.iter().any(|a| a == *new_admin) {
+                return Err(ContractError::AlreadyInitialized);
+            }
+            let idx = cfg
+                .admins
+                .iter()
+                .position(|a| a == *old_admin)
+                .expect("old admin not found") as u32;
+            cfg.admins.set(idx, new_admin.clone());
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetReputationNft(nft_contract) => {
+            env.storage()
+                .instance()
+                .set(&DataKey::ReputationNft, nft_contract);
+        }
+        GovernanceAction::SetWhitelistEnabled(enabled) => {
+            env.storage()
+                .instance()
+                .set(&DataKey::WhitelistEnabled, enabled);
+        }
+        GovernanceAction::BlacklistBorrower(borrower) => {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Blacklisted(borrower.clone()), &true);
+        }
+        GovernanceAction::SetPrepaymentPenaltyBps(penalty_bps) => {
+            if *penalty_bps > 10_000 {
+                return Err(ContractError::InvalidAmount);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::PrepaymentPenaltyBps, penalty_bps);
+        }
+        GovernanceAction::SetDynamicSlashThreshold(enabled) => {
+            let mut cfg = config(env);
+            cfg.dynamic_slash_threshold = *enabled;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetLoanSizeSlashEnabled(enabled) => {
+            let mut cfg = config(env);
+            cfg.loan_size_slash_enabled = *enabled;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetLoanSizeSlashMaxBps(max_bps) => {
+            let cfg = config(env);
+            assert!(
+                *max_bps >= cfg.slash_bps,
+                "loan_size_slash_max_bps must be >= slash_bps"
+            );
+            assert!(
+                *max_bps <= 10_000,
+                "loan_size_slash_max_bps cannot exceed 100%"
+            );
+            let mut updated = cfg;
+            updated.loan_size_slash_max_bps = *max_bps;
+            env.storage().instance().set(&DataKey::Config, &updated);
+        }
+        GovernanceAction::SetSuccessorAdmin(successor) => {
+            let mut cfg = config(env);
+            if let Some(ref addr) = successor {
+                if is_admin(env, addr) {
+                    return Err(ContractError::AlreadyInitialized);
+                }
+            }
+            cfg.successor_admin = successor.clone();
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetConfirmationRequired(enabled) => {
+            let mut cfg = config(env);
+            cfg.confirmation_required = *enabled;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetAdminCompensationBps(compensation_bps) => {
+            if *compensation_bps > 10_000 {
+                return Err(ContractError::InvalidBps);
+            }
+            let mut cfg = config(env);
+            cfg.admin_compensation_bps = *compensation_bps;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetRemovalVoteThreshold(threshold) => {
+            let mut cfg = config(env);
+            cfg.removal_vote_threshold = *threshold;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+        GovernanceAction::SetRateLimitConfig(rate_limit_config) => {
+            let mut cfg = config(env);
+            cfg.rate_limit_config = rate_limit_config.clone();
+            env.storage().instance().set(&DataKey::Config, &cfg);
+        }
+    }
+
+    Ok(())
+}
+
+/// Cancel a governance proposal.
+/// Only the proposer or an admin can cancel a pending proposal.
+pub fn cancel_governance_action(
+    env: Env,
+    caller: Address,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    let mut proposal: GovernanceProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    // Check if caller is proposer or admin
+    let is_admin_caller = is_admin(&env, &caller);
+    if caller != proposal.proposer && !is_admin_caller {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    // Check proposal status
+    if proposal.status == GovernanceProposalStatus::Executed {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Cancelled {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+    if proposal.status == GovernanceProposalStatus::Expired {
+        return Err(ContractError::ProposalExpired);
+    }
+
+    // Cancel the proposal
+    proposal.status = GovernanceProposalStatus::Cancelled;
+
+    // Store updated proposal
+    env.storage()
+        .instance()
+        .set(&DataKey::GovernanceProposal(proposal_id), &proposal);
+
+    // Publish event
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("cancel")),
+        (proposal_id, caller),
+    );
+
+    Ok(())
+}
+
+/// Get a governance proposal by ID.
+pub fn get_governance_proposal(env: Env, proposal_id: u64) -> Option<GovernanceProposal> {
+    env.storage()
+        .instance()
+        .get(&DataKey::GovernanceProposal(proposal_id))
+}
+
+/// Get the governance queue configuration.
+pub fn get_governance_queue_config_view(env: Env) -> GovernanceQueueConfig {
+    get_governance_queue_config(&env)
+}
+
+/// Get the total number of governance proposals created.
+pub fn get_governance_proposal_count(env: Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::GovernanceProposalCounter)
+        .unwrap_or(0u64)
 }

@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::types::{
-    Config, DataKey, LoanRecord, LoanStatus,
+    Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
     MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS, BPS_DENOMINATOR,
 };
 use soroban_sdk::{token, Address, Env, String, Vec};
@@ -29,20 +29,75 @@ pub fn release_lock(env: &Env) {
 
 // ── Pause Check ───────────────────────────────────────────────────────────────
 
-pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
-    let paused: bool = env
+/// Returns the current [`PauseMode`], automatically transitioning from `Thawing`
+/// to `None` if the thaw window has expired.
+pub fn get_pause_mode(env: &Env) -> PauseMode {
+    let mode: PauseMode = env
         .storage()
         .instance()
-        .get(&DataKey::Paused)
-        .unwrap_or(false);
-    if paused {
-        return Err(ContractError::ContractPaused);
+        .get(&DataKey::PauseMode)
+        .unwrap_or(PauseMode::None);
+
+    if mode == PauseMode::Thawing {
+        // Auto-transition: if thaw window has elapsed, clear thaw state.
+        if let Some(thaw) = env
+            .storage()
+            .instance()
+            .get::<_, ThawState>(&DataKey::ThawState)
+        {
+            let now = env.ledger().timestamp();
+            if now >= thaw.thaw_start_timestamp + thaw.thaw_duration {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::PauseMode, &PauseMode::None);
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Paused, &false);
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::ThawState);
+                return PauseMode::None;
+            }
+        }
     }
+
+    mode
+}
+
+/// Blocks all write operations when `Paused`, `Thawing`, or emergency-paused.
+/// This is the standard guard — call it in every state-mutating function.
+pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
     let cfg = config(env);
     if cfg.emergency_pause_enabled {
         return Err(ContractError::ContractPaused);
     }
-    Ok(())
+
+    match get_pause_mode(env) {
+        PauseMode::Paused => Err(ContractError::ContractPaused),
+        PauseMode::Thawing => Err(ContractError::ContractThawing),
+        PauseMode::None => Ok(()),
+    }
+}
+
+/// Lenient guard for read-friendly operations (e.g., `withdraw_vouch`).
+/// Blocks when `Paused` or emergency-paused, but passes through during `Thawing`.
+pub fn require_reads_allowed(env: &Env) -> Result<(), ContractError> {
+    let cfg = config(env);
+    if cfg.emergency_pause_enabled {
+        return Err(ContractError::ContractPaused);
+    }
+
+    match get_pause_mode(env) {
+        PauseMode::Paused => Err(ContractError::ContractPaused),
+        PauseMode::Thawing | PauseMode::None => Ok(()),
+    }
+}
+
+/// Alias kept for call-sites already updated to use the explicit thaw-blocking name.
+/// Identical to `require_not_paused`.
+#[inline]
+pub fn require_not_thawing(env: &Env) -> Result<(), ContractError> {
+    require_not_paused(env)
 }
 
 pub fn require_positive_amount(_env: &Env, amount: i128) -> Result<(), ContractError> {
@@ -308,9 +363,8 @@ pub fn calculate_protocol_health_score(env: &Env) -> i128 {
     }
 
     // 30%: not paused
-    let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
     let cfg = config(env);
-    if !paused && !cfg.emergency_pause_enabled {
+    if get_pause_mode(env) == PauseMode::None && !cfg.emergency_pause_enabled {
         score += 3_000;
     }
 
