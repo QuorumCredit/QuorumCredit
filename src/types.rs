@@ -886,8 +886,12 @@ pub struct LoanRecord {
     /// For variable-rate loans: the oracle key or index name used to look up the
     /// current rate (e.g. `"SOFR"`, `"PRIME"`). `None` for fixed-rate loans.
     pub index_reference: Option<soroban_sdk::String>,
-    /// Issue #666/#667: Escrow status for oracle-verified repayments.
-    pub escrow_status: EscrowStatus,
+    /// Issue #838: Timestamp of last compound interest calculation (for daily compounding).
+    pub last_interest_calc: u64,
+    /// Issue #838: Accrued compound interest from partial repayments (in stroops).
+    pub accrued_interest: i128,
+    /// Issue #838: Milestone bonus applied (50% repaid threshold).
+    pub milestone_bonus_applied: bool,
     /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
 }

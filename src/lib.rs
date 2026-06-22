@@ -8,6 +8,7 @@ pub mod governance;
 pub mod helpers;
 pub mod insurance;
 pub mod loan;
+pub mod partial_repayment;
 pub mod reputation;
 pub mod rbac;
 #[cfg(test)]
