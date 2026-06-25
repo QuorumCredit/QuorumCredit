@@ -112,21 +112,6 @@ impl QuorumCreditContract {
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
-                min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
-                prepayment_penalty_bps: 0,
-                liquidity_mining_rate_bps: DEFAULT_LIQUIDITY_MINING_RATE_BPS,
-                voting_period_seconds: DEFAULT_VOTING_PERIOD_SECONDS,
-                slash_cooldown_seconds: 0,
-                emergency_pause_enabled: false,
-                early_repayment_discount_bps: 0,
-                oracle_address: None,
-                slash_delay_seconds: 0,
-                successor_admin: None,
-                rate_limit_config: crate::types::RateLimitConfig {
-                    window_secs: crate::types::DEFAULT_RATE_LIMIT_WINDOW_SECS,
-                    max_calls: crate::types::DEFAULT_RATE_LIMIT_COUNT,
-                    enabled: false,
-                },
             },
         );
 
@@ -209,10 +194,7 @@ impl QuorumCreditContract {
         borrower: Address,
         additional: i128,
     ) -> Result<(), ContractError> {
-        acquire_lock(&env)?;
-        let result = vouch::increase_stake(env.clone(), voucher, borrower, additional);
-        release_lock(&env);
-        result
+        vouch::increase_stake(env, voucher, borrower, additional)
     }
 
     pub fn decrease_stake(
@@ -311,29 +293,6 @@ impl QuorumCreditContract {
             .unwrap_or(DEFAULT_REFERRAL_BONUS_BPS)
     }
 
-    pub fn request_withdrawal(
-        env: Env,
-        voucher: Address,
-        borrower: Address,
-        priority_fee: i128,
-    ) -> Result<(), ContractError> {
-        acquire_lock(&env)?;
-        let result = vouch::request_withdrawal(env.clone(), voucher, borrower, priority_fee);
-        release_lock(&env);
-        result
-    }
-
-    pub fn partial_withdraw(
-        env: Env,
-        voucher: Address,
-        borrower: Address,
-    ) -> Result<(), ContractError> {
-        acquire_lock(&env)?;
-        let result = vouch::partial_withdraw(env.clone(), voucher, borrower);
-        release_lock(&env);
-        result
-    }
-
     pub fn get_withdrawal_queue(env: Env, borrower: Address) -> Vec<QueuedWithdrawal> {
         vouch::get_withdrawal_queue(env, borrower)
     }
@@ -392,9 +351,16 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .remove(&DataKey::ActiveLoan(borrower.clone()));
-        env.storage()
+
+        // Process withdrawal queue before deleting vouches (Issue #865)
+        vouch::process_withdrawal_queue(&env, &borrower);
+
+        // Re-read vouches after queue processing removed queued withdrawals
+        let vouches: Vec<VouchRecord> = env
+            .storage()
             .persistent()
-            .remove(&DataKey::Vouches(borrower.clone()));
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
 
         let token_client = token::Client::new(&env, &loan.token_address);
         let mut total_slashed: i128 = 0;
@@ -428,6 +394,14 @@ impl QuorumCreditContract {
         {
             ReputationNftExternalClient::new(&env, &nft_addr).burn(&borrower);
         }
+
+        // Update credit score after slash
+        let _ = credit_score::update_credit_score(env.clone(), borrower.clone());
+
+        // Clean up vouches storage last
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
     }
 
     /// Confirm intent to repay the active loan.
@@ -553,7 +527,21 @@ impl QuorumCreditContract {
                 );
             }
 
+            // Process withdrawal queue before deleting vouches (Issue #865)
             vouch::process_withdrawal_queue(&env, &borrower);
+
+            // Increment borrower repayment count
+            let prev_count: u32 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::RepaymentCount(borrower.clone()))
+                .unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&DataKey::RepaymentCount(borrower.clone()), &(prev_count + 1));
+
+            // Update credit score after successful repayment
+            let _ = credit_score::update_credit_score(env.clone(), borrower.clone());
 
             env.storage()
                 .persistent()
@@ -623,9 +611,16 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .remove(&DataKey::ActiveLoan(borrower.clone()));
-        env.storage()
+
+        // Process withdrawal queue before deleting vouches (Issue #865)
+        vouch::process_withdrawal_queue(&env, &borrower);
+
+        // Re-read vouches after queue processing
+        let vouches: Vec<VouchRecord> = env
+            .storage()
             .persistent()
-            .remove(&DataKey::Vouches(borrower.clone()));
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
 
         let token_client = token::Client::new(&env, &loan.token_address);
         let mut total_slash: i128 = 0;
@@ -656,6 +651,14 @@ impl QuorumCreditContract {
         {
             ReputationNftExternalClient::new(&env, &nft_addr).burn(&borrower);
         }
+
+        // Update credit score after auto slash
+        let _ = credit_score::update_credit_score(env.clone(), borrower.clone());
+
+        // Clean up vouches storage last
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
     }
 
     /// Allows vouchers to claim back their stake if loan has expired without repayment or slash.
@@ -671,6 +674,9 @@ impl QuorumCreditContract {
 
         let now = env.ledger().timestamp();
         assert!(now >= loan.deadline, "loan has not expired yet");
+
+        // Process withdrawal queue first (Issue #865)
+        vouch::process_withdrawal_queue(&env, &borrower);
 
         let vouches: Vec<VouchRecord> = env
             .storage()
@@ -1167,84 +1173,6 @@ impl QuorumCreditContract {
             .unwrap_or(0)
     }
 
-    pub fn get_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-    }
-
-    pub fn loan_status(env: Env, borrower: Address) -> LoanStatus {
-        loan::loan_status(env, borrower)
-    }
-
-    pub fn vouch_exists(env: Env, voucher: Address, borrower: Address) -> bool {
-        vouch::vouch_exists(env, voucher, borrower)
-    }
-
-    pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
-        admin::is_whitelisted(env, voucher)
-    }
-
-    pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
-        loan::get_loan(env, borrower)
-    }
-
-    pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
-        loan::get_loan_by_id(env, loan_id)
-    }
-
-    pub fn get_vouches(env: Env, borrower: Address) -> Option<Vec<VouchRecord>> {
-        env.storage().persistent().get(&DataKey::Vouches(borrower))
-    }
-
-    pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
-        loan::is_eligible(env, borrower, threshold)
-    }
-
-    pub fn get_contract_balance(env: Env) -> i128 {
-        helpers::token(&env).balance(&env.current_contract_address())
-    }
-
-    pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
-        vouch::voucher_history(env, voucher)
-    }
-
-    pub fn get_reputation(env: Env, borrower: Address) -> u32 {
-        let nft_addr: Address = match env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::ReputationNft)
-        {
-            Some(a) => a,
-            None => return 0,
-        };
-        ReputationNftExternalClient::new(&env, &nft_addr).balance(&borrower)
-    }
-
-    pub fn has_excellent_badge(env: Env, borrower: Address) -> bool {
-        reputation::has_excellent_badge(&env, &borrower)
-    }
-
-    pub fn get_excellent_badge(env: Env, borrower: Address) -> Option<crate::types::ReputationNFTRecord> {
-        reputation::get_excellent_badge(&env, &borrower)
-    }
-
-    pub fn total_vouched(env: Env, borrower: Address) -> Result<i128, ContractError> {
-        vouch::total_vouched(env, borrower)
-    }
-
-    pub fn repayment_count(env: Env, borrower: Address) -> u32 {
-        loan::repayment_count(env, borrower)
-    }
-
-    pub fn loan_count(env: Env, borrower: Address) -> u32 {
-        loan::loan_count(env, borrower)
-    }
-
-    pub fn default_count(env: Env, borrower: Address) -> u32 {
-        loan::default_count(env, borrower)
-    }
 
     pub fn get_protocol_fee(env: Env) -> u32 {
         admin::get_protocol_fee(env)
@@ -1276,6 +1204,10 @@ impl QuorumCreditContract {
 
     pub fn get_max_vouchers_per_loan(env: Env) -> u32 {
         config(&env).max_vouchers
+    }
+
+    pub fn get_config(env: Env) -> Config {
+        admin::get_config(env)
     }
 
     // ── Issue #682: multi-sig config updates ──────────────────────────────────
