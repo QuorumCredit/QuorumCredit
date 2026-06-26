@@ -480,6 +480,19 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
+    // ── Issue #891: Milestone-Based Disbursement Tranches ─────────────────────
+    /// loan_id → MilestoneDisbursementConfig (configuration for milestone-based loan)
+    MilestoneConfig(u64),
+    /// (loan_id, tranche_id) → TrancheRecord (tranche details)
+    TrancheRecord(u64, u32),
+    /// (loan_id, milestone_id) → MilestoneRecord (milestone details)
+    MilestoneRecord(u64, u32),
+    /// loan_id → MilestoneLoanState (aggregated state of all milestones)
+    MilestoneLoanState(u64),
+    /// loan_id → Vec<u32> (ordered list of tranche IDs for this loan)
+    TrancheIds(u64),
+    /// loan_id → Vec<u32> (ordered list of milestone IDs for this loan)
+    MilestoneIds(u64),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1601,3 +1614,111 @@ pub enum LoanPrivacyLevel {
     /// Only the borrower can view loan details.
     Private,
 }
+
+// ── Issue #891: Milestone-Based Disbursement Tranches ──────────────────────
+
+/// Issue #891: Status of a milestone tied to tranche release
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MilestoneStatus {
+    /// Tranche not yet released; milestone work in progress
+    Pending,
+    /// Borrower submitted completion evidence
+    Submitted,
+    /// Milestone completed and verified; tranche released
+    Approved,
+    /// Milestone not met or evidence insufficient
+    Rejected,
+    /// Deadline passed without submission
+    Expired,
+}
+
+/// Issue #891: Single milestone tied to a disbursement tranche
+#[contracttype]
+#[derive(Clone)]
+pub struct MilestoneRecord {
+    /// Unique milestone ID (1-indexed)
+    pub milestone_id: u32,
+    /// Associated loan ID
+    pub loan_id: u64,
+    /// Associated tranche ID
+    pub tranche_id: u32,
+    /// Current status of this milestone
+    pub status: MilestoneStatus,
+    /// Deadline for borrower to complete (ledger timestamp)
+    pub deadline: u64,
+    /// Description of milestone objective
+    pub description: soroban_sdk::String,
+    /// Timestamp when borrower submitted evidence
+    pub submitted_at: Option<u64>,
+    /// Hash of evidence provided by borrower
+    pub evidence_hash: Option<soroban_sdk::BytesN<32>>,
+    /// Timestamp when milestone was approved
+    pub approved_at: Option<u64>,
+    /// Addresses that approved this milestone
+    pub approvers: Vec<Address>,
+    /// Reason for rejection if status is Rejected
+    pub rejection_reason: Option<soroban_sdk::String>,
+}
+
+/// Issue #891: Disbursement tranche for milestone-based loan
+#[contracttype]
+#[derive(Clone)]
+pub struct TrancheRecord {
+    /// Unique tranche ID (1-indexed)
+    pub tranche_id: u32,
+    /// Associated loan ID
+    pub loan_id: u64,
+    /// Amount of this tranche in stroops
+    pub amount: i128,
+    /// Percentage of total loan (in basis points, e.g., 2500 = 25%)
+    pub percentage_bps: u32,
+    /// Timestamp when tranche was released (if any)
+    pub released_at: Option<u64>,
+    /// Timestamp when tranche was created
+    pub created_at: u64,
+}
+
+/// Issue #891: Configuration for milestone-based loan disbursement
+#[contracttype]
+#[derive(Clone)]
+pub struct MilestoneDisbursementConfig {
+    /// Total loan amount in stroops
+    pub total_amount: i128,
+    /// Number of tranches (2-20)
+    pub num_tranches: u32,
+    /// Whether first tranche auto-releases at disbursement
+    pub first_tranche_auto_release: bool,
+    /// Grace period after deadline to submit evidence (seconds)
+    pub evidence_grace_period_secs: u64,
+    /// Project manager who can approve milestones (optional)
+    pub project_manager: Option<Address>,
+    /// Voucher approvals required to release tranche if no project manager
+    pub required_approvals: u32,
+    /// Timestamp when milestone-based loan was created
+    pub created_at: u64,
+}
+
+/// Issue #891: Aggregated state of all milestones and tranches for a loan
+#[contracttype]
+#[derive(Clone)]
+pub struct MilestoneLoanState {
+    /// The main LoanRecord ID
+    pub loan_id: u64,
+    /// Configuration for this milestone-based loan
+    pub config: MilestoneDisbursementConfig,
+    /// Total milestones completed so far
+    pub completed_milestones: u32,
+    /// Total milestones failed or expired
+    pub failed_milestones: u32,
+    /// Total amount released so far
+    pub total_released: i128,
+    /// Whether all tranches have been released
+    pub fully_disbursed: bool,
+}
+
+/// Issue #891: Constants for milestone-based tranches
+pub const MIN_MILESTONE_TRANCHES: u32 = 2;
+pub const MAX_MILESTONE_TRANCHES: u32 = 20;
+pub const DEFAULT_FIRST_TRANCHE_AUTO_RELEASE: bool = true;
+pub const DEFAULT_EVIDENCE_GRACE_PERIOD_SECS: u64 = 3 * 24 * 60 * 60; // 3 days
