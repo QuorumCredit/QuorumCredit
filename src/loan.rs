@@ -232,6 +232,12 @@ pub fn request_loan(
 
     token.transfer(&env.current_contract_address(), &borrower, &amount);
 
+    // Issue #882: Collect insurance fee at loan disbursement
+    crate::insurance::collect_loan_fee(&env, amount);
+    env.storage()
+        .persistent()
+        .set(&DataKey::InsuranceLinked(loan_id), &true);
+
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("created")),
         (borrower, amount),
@@ -434,6 +440,19 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         env.storage()
             .persistent()
             .set(&DataKey::RepaymentCount(borrower.clone()), &(prev_count + 1));
+
+        // Issue #884: Apply prepayment bonus for early repayment
+        let bonus = apply_prepayment_bonus(&env, &borrower, &loan);
+        if bonus > 0 {
+            let contract_balance = token.balance(&env.current_contract_address());
+            if contract_balance >= bonus {
+                token.transfer(&env.current_contract_address(), &borrower, &bonus);
+                env.events().publish(
+                    (symbol_short!("loan"), symbol_short!("bonus")),
+                    (borrower.clone(), bonus),
+                );
+            }
+        }
 
         // Try to mint excellent credit tier badge if eligible
         let _ = crate::reputation::mint_excellent_badge(&env, &borrower);
@@ -897,27 +916,149 @@ pub fn send_repayment_reminder(_env: Env, _loan_id: u64) -> Result<(), ContractE
     Ok(())
 }
 
+/// Issue #883: Borrower requests a one-time loan term extension.
+/// Charges an extension fee and creates a pending request that vouchers must approve.
 pub fn request_extension(
-    _env: Env,
-    _borrower: Address,
-    _extension_secs: u64,
+    env: Env,
+    borrower: Address,
+    extension_secs: u64,
 ) -> Result<(), ContractError> {
-    Err(ContractError::InvalidStateTransition)
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    let loan = get_active_loan_record(&env, &borrower)?;
+
+    if loan.status != LoanStatus::Active {
+        return Err(ContractError::NoActiveLoan);
+    }
+
+    if env
+        .storage()
+        .persistent()
+        .has(&DataKey::LoanExtension(borrower.clone()))
+    {
+        return Err(ContractError::ExtensionAlreadyRequested);
+    }
+
+    let current_count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ExtensionConsents(borrower.clone()))
+        .unwrap_or(0);
+
+    if current_count >= crate::types::MAX_EXTENSIONS_PER_LOAN {
+        return Err(ContractError::MaxExtensionsReached);
+    }
+
+    if extension_secs == 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let fee = loan.amount * crate::types::EXTENSION_FEE_BPS / crate::types::BPS_DENOMINATOR;
+    if fee > 0 {
+        let token_client = require_allowed_token(&env, &loan.token_address)?;
+        token_client.transfer(&borrower, &env.current_contract_address(), &fee);
+    }
+
+    let now = env.ledger().timestamp();
+    let request = crate::types::LoanExtensionRequest {
+        borrower: borrower.clone(),
+        loan_id: loan.id,
+        extension_secs,
+        requested_at: now,
+        approvals: Vec::new(&env),
+        fee_paid: fee,
+        extension_count: current_count,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::LoanExtension(borrower.clone()), &request);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("ext_req")),
+        (borrower, extension_secs, fee),
+    );
+
+    Ok(())
 }
 
+/// Issue #883: Voucher approves a pending loan extension request.
+/// When a majority of vouchers (by count) approve, the deadline is extended.
 pub fn approve_extension(
-    _env: Env,
-    _voucher: Address,
-    _borrower: Address,
+    env: Env,
+    voucher: Address,
+    borrower: Address,
 ) -> Result<(), ContractError> {
-    Err(ContractError::InvalidStateTransition)
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    let mut request: crate::types::LoanExtensionRequest = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LoanExtension(borrower.clone()))
+        .ok_or(ContractError::InvalidStateTransition)?;
+
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    if !vouches.iter().any(|v| v.voucher == voucher) {
+        return Err(ContractError::VoucherNotFound);
+    }
+
+    if request.approvals.iter().any(|a| a == voucher) {
+        return Err(ContractError::AlreadyVoted);
+    }
+
+    request.approvals.push_back(voucher.clone());
+    let total_vouchers = vouches.len();
+    let required = (total_vouchers / 2) + 1;
+
+    if request.approvals.len() >= required {
+        let mut loan = get_active_loan_record(&env, &borrower)?;
+        loan.deadline += request.extension_secs;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Loan(loan.id), &loan);
+
+        let new_count = request.extension_count + 1;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::LoanExtension(borrower.clone()));
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::ExtensionConsents(borrower.clone()), &new_count);
+
+        env.events().publish(
+            (symbol_short!("loan"), symbol_short!("extended")),
+            (borrower, request.extension_secs, loan.deadline),
+        );
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanExtension(borrower.clone()), &request);
+
+        env.events().publish(
+            (symbol_short!("loan"), symbol_short!("ext_appr")),
+            (voucher, borrower),
+        );
+    }
+
+    Ok(())
 }
 
+/// Issue #883: Query the pending extension request for a borrower.
 pub fn get_extension_request(
-    _env: Env,
-    _borrower: Address,
+    env: Env,
+    borrower: Address,
 ) -> Option<crate::types::LoanExtensionRequest> {
-    None
+    env.storage()
+        .persistent()
+        .get(&DataKey::LoanExtension(borrower))
 }
 
 pub fn defer_payment(env: Env, borrower: Address) -> Result<(), ContractError> {
@@ -1107,6 +1248,148 @@ pub fn enable_auto_repay(env: Env, borrower: Address) -> Result<(), ContractErro
     );
 
     Ok(())
+}
+
+// ── Issue #884: Prepayment Bonus ─────────────────────────────────────────────
+
+/// Set the prepayment bonus rate in basis points (admin-only).
+pub fn set_prepayment_bonus_bps(
+    env: Env,
+    admin_signers: Vec<Address>,
+    bonus_bps: u32,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if bonus_bps > 10_000 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::PrepaymentBonusBps, &bonus_bps);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("bonus_set")),
+        bonus_bps,
+    );
+
+    Ok(())
+}
+
+/// Get the current prepayment bonus rate in basis points.
+pub fn get_prepayment_bonus_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::PrepaymentBonusBps)
+        .unwrap_or(crate::types::DEFAULT_PREPAYMENT_BONUS_BPS)
+}
+
+/// Calculate and apply the prepayment bonus for early repayment.
+/// Returns the bonus amount awarded (0 if not eligible).
+pub fn apply_prepayment_bonus(env: &Env, borrower: &Address, loan: &LoanRecord) -> i128 {
+    let now = env.ledger().timestamp();
+    if now >= loan.deadline {
+        return 0;
+    }
+
+    let bonus_bps = get_prepayment_bonus_bps(env);
+    if bonus_bps == 0 {
+        return 0;
+    }
+
+    let total_duration = loan.deadline.saturating_sub(loan.disbursement_timestamp);
+    if total_duration == 0 {
+        return 0;
+    }
+
+    let time_remaining = loan.deadline.saturating_sub(now);
+    let early_ratio_bps = (time_remaining as i128 * 10_000) / total_duration as i128;
+
+    // Bonus scales with how early the repayment is
+    let bonus = loan.amount * bonus_bps as i128 * early_ratio_bps / (10_000 * 10_000);
+    bonus.max(0)
+}
+
+// ── Issue #885: Loan Status Privacy ─────────────────────────────────────────
+
+/// Set the privacy level for a borrower's loan details.
+pub fn set_loan_privacy(
+    env: Env,
+    borrower: Address,
+    privacy: crate::types::LoanPrivacyLevel,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::LoanPrivacy(borrower.clone()), &privacy);
+
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("privacy")),
+        (borrower, privacy),
+    );
+
+    Ok(())
+}
+
+/// Get the privacy level for a borrower's loan details.
+pub fn get_loan_privacy(env: &Env, borrower: &Address) -> crate::types::LoanPrivacyLevel {
+    env.storage()
+        .persistent()
+        .get(&DataKey::LoanPrivacy(borrower.clone()))
+        .unwrap_or(crate::types::LoanPrivacyLevel::Public)
+}
+
+/// Check if a caller has permission to view a borrower's loan details.
+pub fn check_loan_visibility(
+    env: &Env,
+    borrower: &Address,
+    caller: &Address,
+) -> Result<(), ContractError> {
+    let privacy = get_loan_privacy(env, borrower);
+
+    match privacy {
+        crate::types::LoanPrivacyLevel::Public => Ok(()),
+        crate::types::LoanPrivacyLevel::Private => {
+            if caller == borrower {
+                Ok(())
+            } else {
+                Err(ContractError::LoanPrivacyRestricted)
+            }
+        }
+        crate::types::LoanPrivacyLevel::VouchersOnly => {
+            if caller == borrower {
+                return Ok(());
+            }
+            let vouches: Vec<VouchRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Vouches(borrower.clone()))
+                .unwrap_or(Vec::new(env));
+            if vouches.iter().any(|v| v.voucher == *caller) {
+                Ok(())
+            } else {
+                // Also allow admins
+                let cfg = config(env);
+                if cfg.admins.iter().any(|a| a == *caller) {
+                    Ok(())
+                } else {
+                    Err(ContractError::LoanPrivacyRestricted)
+                }
+            }
+        }
+    }
+}
+
+/// Privacy-aware loan query — returns loan details only if caller has permission.
+pub fn get_loan_with_privacy(
+    env: Env,
+    borrower: Address,
+    caller: Address,
+) -> Result<Option<LoanRecord>, ContractError> {
+    check_loan_visibility(&env, &borrower, &caller)?;
+    Ok(get_loan(env, borrower))
 }
 
 pub fn disable_auto_repay(env: Env, borrower: Address) -> Result<(), ContractError> {

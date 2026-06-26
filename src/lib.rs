@@ -93,6 +93,8 @@ mod emergency_pause_auto_unpause_test;
 mod governance_snapshot_test;
 #[cfg(test)]
 mod vote_escrow_lock_test;
+#[cfg(test)]
+mod loan_features_test;
 
 #[cfg(test)]
 mod co_borrower_test;
@@ -416,6 +418,8 @@ impl QuorumCreditContract {
             total_slashed += slash_amount;
         }
 
+        // Issue #882: Route portion of slashed funds to insurance pool
+        insurance::allocate_slash_to_pool(&env, total_slashed);
         helpers::add_slash_balance(&env, total_slashed);
 
         let count: u32 = env
@@ -676,6 +680,8 @@ impl QuorumCreditContract {
             }
         }
 
+        // Issue #882: Route portion of slashed funds to insurance pool
+        insurance::allocate_slash_to_pool(&env, total_slash);
         helpers::add_slash_balance(&env, total_slash);
 
         let count: u32 = env
@@ -1761,5 +1767,121 @@ impl QuorumCreditContract {
 
     pub fn get_periodic_payment_status(env: Env, loan_id: u64) -> Option<PeriodicPaymentStatus> {
         periodic_payments::get_periodic_payment_status(env, loan_id)
+    }
+
+    // ── Issue #883: Loan Term Extension ─────────────────────────────────────
+
+    pub fn request_extension(
+        env: Env,
+        borrower: Address,
+        extension_secs: u64,
+    ) -> Result<(), ContractError> {
+        loan::request_extension(env, borrower, extension_secs)
+    }
+
+    pub fn approve_extension(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        loan::approve_extension(env, voucher, borrower)
+    }
+
+    pub fn get_extension_request(env: Env, borrower: Address) -> Option<LoanExtensionRequest> {
+        loan::get_extension_request(env, borrower)
+    }
+
+    // ── Issue #882: Loan Insurance Integration ──────────────────────────────
+
+    pub fn contribute_to_insurance(
+        env: Env,
+        contributor: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        insurance::contribute_to_insurance(env, contributor, amount)
+    }
+
+    pub fn claim_insurance(
+        env: Env,
+        voucher: Address,
+        loan_id: u64,
+    ) -> Result<(), ContractError> {
+        insurance::claim_insurance(env, voucher, loan_id)
+    }
+
+    pub fn purchase_slash_insurance(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<i128, ContractError> {
+        insurance::purchase_slash_insurance(env, voucher, borrower)
+    }
+
+    pub fn is_voucher_insured(env: Env, voucher: Address, borrower: Address) -> bool {
+        insurance::is_voucher_insured(env, voucher, borrower)
+    }
+
+    pub fn get_insurance_pool_balance(env: Env) -> i128 {
+        insurance::get_insurance_pool_balance(env)
+    }
+
+    pub fn set_insurance_fee_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        fee_bps: u32,
+    ) -> Result<(), ContractError> {
+        insurance::set_insurance_fee_bps(env, admin_signers, fee_bps)
+    }
+
+    pub fn set_insurance_coverage_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        coverage_bps: u32,
+    ) -> Result<(), ContractError> {
+        insurance::set_insurance_coverage_bps(env, admin_signers, coverage_bps)
+    }
+
+    pub fn get_insurance_fee_bps(env: Env) -> u32 {
+        insurance::get_insurance_fee_bps_pub(env)
+    }
+
+    pub fn get_insurance_coverage_bps(env: Env) -> u32 {
+        insurance::get_insurance_coverage_bps_pub(env)
+    }
+
+    // ── Issue #884: Prepayment Bonus ────────────────────────────────────────
+
+    pub fn set_prepayment_bonus_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        bonus_bps: u32,
+    ) -> Result<(), ContractError> {
+        loan::set_prepayment_bonus_bps(env, admin_signers, bonus_bps)
+    }
+
+    pub fn get_prepayment_bonus_bps(env: Env) -> u32 {
+        loan::get_prepayment_bonus_bps(&env)
+    }
+
+    // ── Issue #885: Loan Status Privacy ─────────────────────────────────────
+
+    pub fn set_loan_privacy(
+        env: Env,
+        borrower: Address,
+        privacy: LoanPrivacyLevel,
+    ) -> Result<(), ContractError> {
+        loan::set_loan_privacy(env, borrower, privacy)
+    }
+
+    pub fn get_loan_privacy(env: Env, borrower: Address) -> LoanPrivacyLevel {
+        loan::get_loan_privacy(&env, &borrower)
+    }
+
+    pub fn get_loan_with_privacy(
+        env: Env,
+        borrower: Address,
+        caller: Address,
+    ) -> Result<Option<LoanRecord>, ContractError> {
+        loan::get_loan_with_privacy(env, borrower, caller)
     }
 }

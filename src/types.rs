@@ -471,15 +471,15 @@ pub enum DataKey {
     BorrowerPool(Address, u64),
     // ── Issue #868: Gradual Unstaking ─────────────────────────────────────────
     GradualUnstake(Address, Address),
-    // ── Issue #881: Dynamic Interest Rate ────────────────────────────────────
-    DynamicRateConfig,
-    BorrowerDynamicRate(Address),
-    // ── Issue #880: Co-Borrower Support ──────────────────────────────────────
-    CoBorrowerConsent(u64, Address),
-    // ── Issue #878: Loan Forbearance ─────────────────────────────────────────
-    Forbearance(u64),
-    // ── Issue #879: Loan Refinancing ─────────────────────────────────────────
-    RefinanceRecord(u64),
+    // ── Issue #882: Loan Insurance Integration ───────────────────────────────
+    /// loan_id → bool: whether insurance was collected at disbursement
+    InsuranceLinked(u64),
+    // ── Issue #884: Prepayment Bonus ─────────────────────────────────────────
+    /// Configurable prepayment bonus rate in basis points
+    PrepaymentBonusBps,
+    // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
+    /// borrower → LoanPrivacyLevel
+    LoanPrivacy(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1583,109 +1583,21 @@ pub struct GradualUnstakeSchedule {
     pub next_release_at: u64,
 }
 
-// ── Issue #881: Dynamic Interest Rate based on Risk Score ───────────────────
+// ── Issue #884: Prepayment Bonus ────────────────────────────────────────────
 
-/// Default base interest rate in basis points (200 = 2%).
-pub const DEFAULT_DYNAMIC_BASE_RATE_BPS: u32 = 200;
-/// Maximum rate adjustment per risk point in basis points (50 = 0.5% per risk point).
-pub const DEFAULT_RISK_RATE_ADJUSTMENT_BPS: u32 = 50;
-/// Maximum dynamic rate cap in basis points (5000 = 50%).
-pub const DEFAULT_DYNAMIC_RATE_CAP_BPS: u32 = 5000;
-/// Minimum dynamic rate floor in basis points (50 = 0.5%).
-pub const DEFAULT_DYNAMIC_RATE_FLOOR_BPS: u32 = 50;
+/// Default prepayment bonus rate in basis points (50 = 0.5% of loan amount).
+pub const DEFAULT_PREPAYMENT_BONUS_BPS: u32 = 50;
 
-/// Configuration for dynamic interest rate calculation.
-#[contracttype]
-#[derive(Clone)]
-pub struct DynamicRateConfig {
-    pub enabled: bool,
-    /// Base rate in basis points before risk adjustment.
-    pub base_rate_bps: u32,
-    /// Rate increase per risk score point (0-100 scale), in basis points.
-    pub risk_adjustment_bps: u32,
-    /// Maximum allowed rate in basis points.
-    pub rate_cap_bps: u32,
-    /// Minimum allowed rate in basis points.
-    pub rate_floor_bps: u32,
-}
+// ── Issue #885: Loan Status Privacy ─────────────────────────────────────────
 
-/// Default dynamic rate configuration.
-pub const DEFAULT_DYNAMIC_RATE_CONFIG: DynamicRateConfig = DynamicRateConfig {
-    enabled: false,
-    base_rate_bps: DEFAULT_DYNAMIC_BASE_RATE_BPS,
-    risk_adjustment_bps: DEFAULT_RISK_RATE_ADJUSTMENT_BPS,
-    rate_cap_bps: DEFAULT_DYNAMIC_RATE_CAP_BPS,
-    rate_floor_bps: DEFAULT_DYNAMIC_RATE_FLOOR_BPS,
-};
-
-/// Snapshot of the dynamic rate applied to a specific borrower's loan.
-#[contracttype]
-#[derive(Clone)]
-pub struct BorrowerDynamicRate {
-    pub borrower: Address,
-    pub loan_id: u64,
-    /// Computed rate in basis points at time of disbursement or recalculation.
-    pub effective_rate_bps: u32,
-    /// Risk score used for computation (0-100).
-    pub risk_score: u32,
-    /// Credit tier at time of computation.
-    pub credit_tier: CreditTier,
-    /// Ledger timestamp when rate was last computed.
-    pub computed_at: u64,
-}
-
-// ── Issue #878: Loan Forbearance ────────────────────────────────────────────
-
-/// Maximum number of forbearance periods allowed per loan.
-pub const MAX_FORBEARANCE_PERIODS: u32 = 2;
-/// Default forbearance duration in seconds (30 days).
-pub const DEFAULT_FORBEARANCE_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
-
-/// Forbearance status.
+/// Privacy level for loan status visibility.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ForbearanceStatus {
-    Active,
-    Ended,
-    Expired,
-}
-
-/// Record of a forbearance period on a loan.
-#[contracttype]
-#[derive(Clone)]
-pub struct ForbearanceRecord {
-    pub loan_id: u64,
-    pub borrower: Address,
-    /// Timestamp when forbearance was granted.
-    pub started_at: u64,
-    /// Duration of the forbearance in seconds.
-    pub duration_secs: u64,
-    /// Timestamp when forbearance ends.
-    pub ends_at: u64,
-    /// Original deadline before forbearance extension.
-    pub original_deadline: u64,
-    /// How many forbearance periods have been used on this loan (including this one).
-    pub period_number: u32,
-    pub status: ForbearanceStatus,
-}
-
-// ── Issue #879: Loan Refinancing ────────────────────────────────────────────
-
-/// Record of a refinanced loan, linking old and new loan IDs.
-#[contracttype]
-#[derive(Clone)]
-pub struct RefinanceRecord {
-    pub old_loan_id: u64,
-    pub new_loan_id: u64,
-    pub borrower: Address,
-    /// Old loan amount in stroops.
-    pub old_amount: i128,
-    /// New loan amount in stroops.
-    pub new_amount: i128,
-    /// Old interest rate in basis points.
-    pub old_rate_bps: i128,
-    /// New interest rate in basis points.
-    pub new_rate_bps: i128,
-    /// Timestamp of refinance.
-    pub refinanced_at: u64,
+pub enum LoanPrivacyLevel {
+    /// Anyone can view loan details (default).
+    Public,
+    /// Only the borrower and their vouchers can view loan details.
+    VouchersOnly,
+    /// Only the borrower can view loan details.
+    Private,
 }
