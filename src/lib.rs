@@ -16,6 +16,7 @@ pub mod syndication;
 mod tests;
 pub mod types;
 pub mod vouch;
+pub mod vouch_groups;
 pub mod yield_stream;
 pub mod cache;
 pub mod error_response;
@@ -1556,5 +1557,27 @@ impl QuorumCreditContract {
 
     pub fn get_voucher_yield_claim(env: Env, loan_id: u64, voucher: Address) -> Option<VoucherYieldClaim> {
         yield_stream::get_voucher_yield_claim(env, loan_id, voucher)
+    }
+
+    // ── Vouch Groups ─────────────────────────────────────────────────────────
+
+    pub fn create_vouch_group(env: Env, caller: Address, name: soroban_sdk::String) -> Result<u64, ContractError> {
+        vouch_groups::create_vouch_group(env, caller, name)
+    }
+
+    pub fn add_voucher_to_group(env: Env, caller: Address, group_id: u64, voucher: Address) -> Result<(), ContractError> {
+        vouch_groups::add_voucher_to_group(env, caller, group_id, voucher)
+    }
+
+    pub fn remove_voucher_from_group(env: Env, caller: Address, group_id: u64, voucher: Address) -> Result<(), ContractError> {
+        vouch_groups::remove_voucher_from_group(env, caller, group_id, voucher)
+    }
+
+    pub fn get_vouch_group(env: Env, group_id: u64) -> Option<VouchGroup> {
+        vouch_groups::get_vouch_group(env, group_id)
+    }
+
+    pub fn get_voucher_group_ids(env: Env, voucher: Address) -> Vec<u64> {
+        vouch_groups::get_voucher_group_ids(env, voucher)
     }
 }

@@ -448,6 +448,9 @@ pub enum DataKey {
     CustomAttributes(Address), // address -> Vec<AttributeEntry>
     YieldStreamState(u64), // loan_id -> YieldStreamState
     VoucherYieldClaim(u64, Address), // loan_id, voucher -> VoucherYieldClaim
+    VouchGroup(u64), // group_id -> VouchGroup
+    VouchGroupCounter, // u64 monotonically increasing group ID counter
+    VoucherGroupIds(Address), // voucher -> Vec<u64>
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -1472,4 +1475,15 @@ pub struct VoucherYieldClaim {
     pub loan_id: u64,
     pub last_claim_timestamp: u64,
     pub yield_claimed: i128,
+}
+
+// ── Vouch Groups ───────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchGroup {
+    pub group_id: u64,
+    pub name: soroban_sdk::String,
+    pub vouchers: Vec<Address>,
+    pub created_at: u64,
 }
