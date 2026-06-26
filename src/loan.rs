@@ -7,7 +7,7 @@ use crate::helpers::{
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
     DataKey, EscrowStatus, LoanRecord, LoanStatus, SlashRecord, VouchRecord, VoucherStats,
-    BPS_DENOMINATOR, SLASH_ESCROW_PERIOD,
+    BPS_DENOMINATOR, REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -61,7 +61,30 @@ pub fn vouch_yield_bps(env: &Env, vouch: &VouchRecord, borrower: &Address, now: 
         .map(|s| (s.successful_vouches as i128 * 10).min(REPUTATION_BONUS_MAX_BPS))
         .unwrap_or(0);
 
-    (base_bps + age_bonus + rep_bonus + voucher_rep_bonus).max(0)
+    // ── Voucher reliability bonus ─────────────────────────────────────────────
+    // Vouchers with a clean track record (no slashed vouches) get a yield bonus.
+    // - perfect record (successful > 0, slashed == 0): +150 bps
+    // - high reliability: scaled by (successful / (successful + slashed + 1))
+    const RELIABILITY_MAX_BPS: i128 = 150;
+    let reliability_bonus = voucher_stats
+        .map(|s| {
+            if s.total_vouches_slashed == 0 && s.successful_vouches > 0 {
+                RELIABILITY_MAX_BPS
+            } else if s.total_vouches_slashed > 0 || s.successful_vouches > 0 {
+                let total = s.successful_vouches as i128 + s.total_vouches_slashed as i128;
+                if total > 0 {
+                    let ratio_bps = s.successful_vouches as i128 * BPS_DENOMINATOR / total;
+                    RELIABILITY_MAX_BPS * ratio_bps / BPS_DENOMINATOR
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0);
+
+    (base_bps + age_bonus + rep_bonus + voucher_rep_bonus + reliability_bonus).max(0)
 }
 
 /// Calculate dynamic yield (legacy — used for backward-compat; prefer vouch_yield_bps per vouch).
