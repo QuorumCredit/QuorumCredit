@@ -59,6 +59,14 @@ mod integration_invariants;
 mod integration_stress_test;
 #[cfg(test)]
 mod integration_regression_test;
+#[cfg(test)]
+mod governance_history_test;
+#[cfg(test)]
+mod slash_vote_cancel_test;
+#[cfg(test)]
+mod dynamic_quorum_adjustment_test;
+#[cfg(test)]
+mod conditional_vote_delegation_test;
 
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
