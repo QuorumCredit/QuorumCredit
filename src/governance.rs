@@ -1461,3 +1461,392 @@ fn finalize_appeal_internal(
 
     Ok(())
 }
+
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Issue #903: Risk Assessment Voting
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Propose a new risk threshold configuration.
+pub fn propose_risk_threshold(
+    env: Env,
+    proposer: Address,
+    min_risk_threshold: u32,
+    max_risk_threshold: u32,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+    require_not_paused(&env)?;
+
+    // Validate thresholds
+    if min_risk_threshold >= max_risk_threshold {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let proposal_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::RiskThresholdCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("proposal ID overflow");
+
+    let proposal = crate::types::RiskThresholdProposal {
+        id: proposal_id,
+        proposer: proposer.clone(),
+        min_risk_threshold,
+        max_risk_threshold,
+        votes_for: 0,
+        votes_against: 0,
+        status: crate::types::GovernanceProposalStatus::Pending,
+        created_at: env.ledger().timestamp(),
+        eta: env.ledger().timestamp() + 86400,  // 24 hours
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::RiskThresholdProposal(proposal_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::RiskThresholdCounter, &proposal_id);
+
+    env.events().publish(
+        (symbol_short!("risk"), symbol_short!("proposed")),
+        (proposal_id, proposer, min_risk_threshold, max_risk_threshold),
+    );
+
+    Ok(proposal_id)
+}
+
+/// Vote on a risk threshold proposal.
+pub fn vote_risk_threshold(
+    env: Env,
+    voter: Address,
+    proposal_id: u64,
+    approve: bool,
+) -> Result<(), ContractError> {
+    voter.require_auth();
+    require_not_paused(&env)?;
+
+    let mut proposal: crate::types::RiskThresholdProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::RiskThresholdProposal(proposal_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let vote_weight = 1_000_i128;  // Default vote weight
+
+    if approve {
+        proposal.votes_for = proposal.votes_for.checked_add(vote_weight).expect("vote overflow");
+    } else {
+        proposal.votes_against = proposal
+            .votes_against
+            .checked_add(vote_weight)
+            .expect("vote overflow");
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::RiskThresholdVote(proposal_id, voter.clone()), &approve);
+    env.storage()
+        .instance()
+        .set(&DataKey::RiskThresholdProposal(proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("risk"), symbol_short!("voted")),
+        (proposal_id, voter, approve),
+    );
+
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Issue #904: Fee Structure Voting
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Propose a new fee structure.
+pub fn propose_fee_structure(
+    env: Env,
+    proposer: Address,
+    origination_fee_bps: u32,
+    repayment_fee_bps: u32,
+    late_fee_bps: u32,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+    require_not_paused(&env)?;
+
+    // Validate fee caps
+    if origination_fee_bps > 500 || repayment_fee_bps > 250 || late_fee_bps > 1000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let proposal_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::FeeStructureCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("proposal ID overflow");
+
+    let proposal = crate::types::FeeStructureProposal {
+        id: proposal_id,
+        proposer: proposer.clone(),
+        origination_fee_bps,
+        repayment_fee_bps,
+        late_fee_bps,
+        votes_for: 0,
+        votes_against: 0,
+        status: crate::types::GovernanceProposalStatus::Pending,
+        created_at: env.ledger().timestamp(),
+        eta: env.ledger().timestamp() + 86400,  // 24 hours
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::FeeStructureProposal(proposal_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::FeeStructureCounter, &proposal_id);
+
+    env.events().publish(
+        (symbol_short!("fee"), symbol_short!("proposed")),
+        (
+            proposal_id,
+            proposer,
+            origination_fee_bps,
+            repayment_fee_bps,
+        ),
+    );
+
+    Ok(proposal_id)
+}
+
+/// Vote on a fee structure proposal.
+pub fn vote_fee_structure(
+    env: Env,
+    voter: Address,
+    proposal_id: u64,
+    approve: bool,
+) -> Result<(), ContractError> {
+    voter.require_auth();
+    require_not_paused(&env)?;
+
+    let mut proposal: crate::types::FeeStructureProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::FeeStructureProposal(proposal_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let vote_weight = 1_000_i128;
+
+    if approve {
+        proposal.votes_for = proposal.votes_for.checked_add(vote_weight).expect("vote overflow");
+    } else {
+        proposal.votes_against = proposal
+            .votes_against
+            .checked_add(vote_weight)
+            .expect("vote overflow");
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::FeeStructureVote(proposal_id, voter.clone()), &approve);
+    env.storage()
+        .instance()
+        .set(&DataKey::FeeStructureProposal(proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("fee"), symbol_short!("voted")),
+        (proposal_id, voter, approve),
+    );
+
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Issue #905: Withdrawal Timelock
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Queue a withdrawal with a timelock delay.
+pub fn queue_withdrawal(
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    amount: i128,
+    token: Address,
+    delay_secs: u64,
+) -> Result<u64, ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
+
+    let lock_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::WithdrawalTimelockCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("lock ID overflow");
+
+    let timelock = crate::types::WithdrawalTimelock {
+        id: lock_id,
+        voucher: voucher.clone(),
+        borrower: borrower.clone(),
+        amount,
+        token: token.clone(),
+        eta: env.ledger().timestamp() + delay_secs,
+        executed: false,
+        cancelled: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::WithdrawalTimelock(lock_id), &timelock);
+    env.storage()
+        .instance()
+        .set(&DataKey::WithdrawalTimelockCounter, &lock_id);
+
+    env.events().publish(
+        (symbol_short!("wit"), symbol_short!("queued")),
+        (lock_id, voucher, borrower, amount),
+    );
+
+    Ok(lock_id)
+}
+
+/// Execute a queued withdrawal after the timelock expires.
+pub fn execute_withdrawal(env: Env, lock_id: u64) -> Result<(), ContractError> {
+    let mut timelock: crate::types::WithdrawalTimelock = env
+        .storage()
+        .instance()
+        .get(&DataKey::WithdrawalTimelock(lock_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    if timelock.executed {
+        panic_with_error!(&env, ContractError::AlreadyRepaid);
+    }
+
+    if timelock.cancelled {
+        panic_with_error!(&env, ContractError::InvalidStateTransition);
+    }
+
+    if env.ledger().timestamp() < timelock.eta {
+        panic_with_error!(&env, ContractError::TimelockNotReady);
+    }
+
+    timelock.executed = true;
+
+    env.storage()
+        .instance()
+        .set(&DataKey::WithdrawalTimelock(lock_id), &timelock);
+
+    env.events().publish(
+        (symbol_short!("wit"), symbol_short!("executed")),
+        (lock_id, timelock.voucher, timelock.amount),
+    );
+
+    Ok(())
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Issue #906: Cross-Chain Proposal Sync
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Initiate a cross-chain proposal sync.
+pub fn initiate_cross_chain_sync(
+    env: Env,
+    proposer: Address,
+    source_chain: String,
+    target_chains: Vec<String>,
+    proposal_type: String,
+    proposal_data: Vec<u8>,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+    require_not_paused(&env)?;
+
+    if target_chains.is_empty() {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+
+    let sync_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::CrossChainSyncCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("sync ID overflow");
+
+    let votes_required = target_chains.len() as u32;
+
+    let sync = crate::types::CrossChainProposalSync {
+        id: sync_id,
+        source_chain: source_chain.clone(),
+        target_chains: target_chains.clone(),
+        proposal_type: proposal_type.clone(),
+        proposal_data: proposal_data.clone(),
+        votes_required,
+        votes_received: 0,
+        status: crate::types::GovernanceProposalStatus::Pending,
+        created_at: env.ledger().timestamp(),
+        eta: env.ledger().timestamp() + 259200,  // 3 days
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::CrossChainProposalSync(sync_id), &sync);
+    env.storage()
+        .instance()
+        .set(&DataKey::CrossChainSyncCounter, &sync_id);
+
+    env.events().publish(
+        (symbol_short!("xchain"), symbol_short!("initiated")),
+        (sync_id, proposer, source_chain, target_chains.len()),
+    );
+
+    Ok(sync_id)
+}
+
+/// Vote on a cross-chain proposal sync from another chain.
+pub fn vote_cross_chain_sync(
+    env: Env,
+    sync_id: u64,
+    chain_id: String,
+    approve: bool,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let mut sync: crate::types::CrossChainProposalSync = env
+        .storage()
+        .instance()
+        .get(&DataKey::CrossChainProposalSync(sync_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    if sync.status != crate::types::GovernanceProposalStatus::Pending {
+        panic_with_error!(&env, ContractError::InvalidStateTransition);
+    }
+
+    if approve {
+        sync.votes_received = sync
+            .votes_received
+            .checked_add(1)
+            .expect("vote overflow");
+
+        // Execute if quorum reached
+        if sync.votes_received >= sync.votes_required {
+            sync.status = crate::types::GovernanceProposalStatus::Approved;
+        }
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::CrossChainProposalSync(sync_id), &sync);
+
+    env.events().publish(
+        (symbol_short!("xchain"), symbol_short!("voted")),
+        (sync_id, chain_id, approve),
+    );
+
+    Ok(())
+}
