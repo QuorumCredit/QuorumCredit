@@ -442,6 +442,29 @@ pub enum DataKey {
     SyndicationRepaymentCounter(u64), // syndication_id → counter
     /// Reputation NFT badge for excellent credit tier: borrower → ReputationNFTRecord
     ReputationNFTBadge(Address),
+    // ── Issue #863: Vouch Cooldown Bypass ────────────────────────────────────
+    /// Per-voucher emergency bypass flag: voucher → bool
+    EmergencyCooldownBypass(Address),
+    // ── Issue #867: Cross-Collateral Vouch Pools ─────────────────────────────
+    CollateralPool(u64),
+    CollateralPoolCounter,
+    BorrowerPool(Address, u64),
+    // ── Issue #868: Gradual Unstaking ─────────────────────────────────────────
+    GradualUnstake(Address, Address),
+}
+
+/// Issue #867: Shared collateral pool backed by multiple vouchers.
+#[contracttype]
+#[derive(Clone)]
+pub struct CollateralPool {
+    pub pool_id: u64,
+    pub members: Vec<Address>,
+    /// Stake per member (parallel to `members`), in stroops.
+    pub stakes: Vec<i128>,
+    pub token: Address,
+    pub borrower: Option<Address>,
+    pub active: bool,
+    pub created_at: u64,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -1438,4 +1461,30 @@ pub struct ErrorResponse {
     pub details: Option<soroban_sdk::String>,
     /// Timestamp when the error occurred.
     pub timestamp: u64,
+}
+
+// ── Issue #868: Gradual Unstaking ────────────────────────────────────────────
+
+/// Default number of equal instalments for gradual unstaking (4 tranches).
+pub const DEFAULT_GRADUAL_UNSTAKE_INSTALMENTS: u32 = 4;
+/// Default interval between instalments, in seconds (7 days).
+pub const DEFAULT_GRADUAL_UNSTAKE_INTERVAL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Progressive vouch-revocation schedule: stake released in equal instalments.
+#[contracttype]
+#[derive(Clone)]
+pub struct GradualUnstakeSchedule {
+    pub voucher: Address,
+    pub borrower: Address,
+    pub token: Address,
+    /// Total stake to release across all instalments, in stroops.
+    pub total_amount: i128,
+    /// Amount per instalment, in stroops.
+    pub instalment_amount: i128,
+    pub instalments_paid: u32,
+    pub total_instalments: u32,
+    pub interval_secs: u64,
+    pub created_at: u64,
+    /// Ledger timestamp when the next instalment becomes claimable.
+    pub next_release_at: u64,
 }

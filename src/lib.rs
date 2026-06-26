@@ -19,6 +19,10 @@ pub mod cache;
 pub mod error_response;
 pub mod versioning;
 pub mod cross_chain;
+/// Issue #867: Cross-Collateral Vouch Pools
+pub mod collateral_pool;
+/// Issue #868: Gradual Unstaking
+pub mod gradual_unstake;
 
 pub use errors::ContractError;
 pub use types::*;
