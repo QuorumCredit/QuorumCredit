@@ -102,6 +102,520 @@ pub struct Alert {
     pub message: String,
 }
 
+/// Loan outcome tracking for impact measurement (Issue #886)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanOutcome {
+    pub loan_id: u64,
+    pub borrower: String,
+    pub outcome_status: OutcomeStatus,
+    pub loan_purpose: String,
+    pub loan_amount: i128,
+    pub amount_repaid: i128,
+    pub repayment_percentage: f64,
+    pub time_to_repayment_days: Option<i64>,
+    pub created_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum OutcomeStatus {
+    Active,
+    Successful,
+    Defaulted,
+    PartiallyRepaid,
+}
+
+/// Impact metrics aggregated by borrower
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BorrowerImpactMetrics {
+    pub borrower: String,
+    pub total_loans: u32,
+    pub successful_loans: u32,
+    pub defaulted_loans: u32,
+    pub success_rate: f64,
+    pub total_borrowed: i128,
+    pub total_repaid: i128,
+    pub average_repayment_days: f64,
+    pub repeat_borrower: bool,
+    pub repeat_count: u32,
+}
+
+/// Impact metrics aggregated by loan purpose
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanPurposeMetrics {
+    pub purpose: String,
+    pub total_loans: u32,
+    pub successful_loans: u32,
+    pub defaulted_loans: u32,
+    pub success_rate: f64,
+    pub total_value: i128,
+    pub average_loan_amount: i128,
+    pub average_repayment_days: f64,
+}
+
+/// Comprehensive loan impact report
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanImpactReport {
+    pub report_timestamp: i64,
+    pub from_timestamp: i64,
+    pub to_timestamp: i64,
+    pub total_outcomes_tracked: u32,
+    pub successful_outcomes: u32,
+    pub defaulted_outcomes: u32,
+    pub success_rate: f64,
+    pub average_time_to_repayment: f64,
+    pub borrower_metrics: Vec<BorrowerImpactMetrics>,
+    pub purpose_metrics: Vec<LoanPurposeMetrics>,
+    pub top_purposes: Vec<(String, u32)>,
+    pub repeat_borrower_rate: f64,
+}
+
+impl LoanImpactReport {
+    pub fn new(
+        report_timestamp: i64,
+        from_timestamp: i64,
+        to_timestamp: i64,
+    ) -> Self {
+        Self {
+            report_timestamp,
+            from_timestamp,
+            to_timestamp,
+            total_outcomes_tracked: 0,
+            successful_outcomes: 0,
+            defaulted_outcomes: 0,
+            success_rate: 0.0,
+            average_time_to_repayment: 0.0,
+            borrower_metrics: Vec::new(),
+            purpose_metrics: Vec::new(),
+            top_purposes: Vec::new(),
+            repeat_borrower_rate: 0.0,
+        }
+    }
+
+    /// Generate report from loan outcomes
+    pub fn from_outcomes(
+        outcomes: &[LoanOutcome],
+        report_timestamp: i64,
+        from_timestamp: i64,
+        to_timestamp: i64,
+    ) -> Self {
+        let mut report = Self::new(report_timestamp, from_timestamp, to_timestamp);
+
+        if outcomes.is_empty() {
+            return report;
+        }
+
+        report.total_outcomes_tracked = outcomes.len() as u32;
+
+        let mut borrower_map: HashMap<String, Vec<LoanOutcome>> = HashMap::new();
+        let mut purpose_map: HashMap<String, Vec<LoanOutcome>> = HashMap::new();
+        let mut total_repayment_days: f64 = 0.0;
+        let mut repayment_count: u32 = 0;
+
+        for outcome in outcomes {
+            // Track by borrower
+            borrower_map
+                .entry(outcome.borrower.clone())
+                .or_insert_with(Vec::new)
+                .push(outcome.clone());
+
+            // Track by purpose
+            let purpose = outcome.loan_purpose.clone();
+            if !purpose.is_empty() {
+                purpose_map
+                    .entry(purpose)
+                    .or_insert_with(Vec::new)
+                    .push(outcome.clone());
+            }
+
+            // Count outcomes
+            match outcome.outcome_status {
+                OutcomeStatus::Successful => report.successful_outcomes += 1,
+                OutcomeStatus::Defaulted => report.defaulted_outcomes += 1,
+                _ => {}
+            }
+
+            // Calculate repayment time average
+            if let Some(days) = outcome.time_to_repayment_days {
+                if days >= 0 {
+                    total_repayment_days += days as f64;
+                    repayment_count += 1;
+                }
+            }
+        }
+
+        // Calculate success rate
+        if report.total_outcomes_tracked > 0 {
+            report.success_rate = report.successful_outcomes as f64 / report.total_outcomes_tracked as f64;
+        }
+
+        // Calculate average repayment time
+        if repayment_count > 0 {
+            report.average_time_to_repayment = total_repayment_days / repayment_count as f64;
+        }
+
+        // Build borrower metrics
+        for (borrower, borrower_outcomes) in borrower_map.iter() {
+            let mut successful = 0;
+            let mut defaulted = 0;
+            let mut total_borrowed = 0i128;
+            let mut total_repaid = 0i128;
+            let mut repayment_days: f64 = 0.0;
+            let mut repayment_count = 0u32;
+
+            for outcome in borrower_outcomes {
+                total_borrowed = total_borrowed.saturating_add(outcome.loan_amount);
+                total_repaid = total_repaid.saturating_add(outcome.amount_repaid);
+
+                match outcome.outcome_status {
+                    OutcomeStatus::Successful => successful += 1,
+                    OutcomeStatus::Defaulted => defaulted += 1,
+                    _ => {}
+                }
+
+                if let Some(days) = outcome.time_to_repayment_days {
+                    if days >= 0 {
+                        repayment_days += days as f64;
+                        repayment_count += 1;
+                    }
+                }
+            }
+
+            let total = borrower_outcomes.len() as u32;
+            let success_rate = if total > 0 {
+                successful as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            let avg_repayment_days = if repayment_count > 0 {
+                repayment_days / repayment_count as f64
+            } else {
+                0.0
+            };
+
+            report.borrower_metrics.push(BorrowerImpactMetrics {
+                borrower: borrower.clone(),
+                total_loans: total,
+                successful_loans: successful,
+                defaulted_loans: defaulted,
+                success_rate,
+                total_borrowed,
+                total_repaid,
+                average_repayment_days: avg_repayment_days,
+                repeat_borrower: total > 1,
+                repeat_count: total.saturating_sub(1),
+            });
+        }
+
+        // Build purpose metrics
+        for (purpose, purpose_outcomes) in purpose_map.iter() {
+            let mut successful = 0;
+            let mut defaulted = 0;
+            let mut total_value = 0i128;
+            let mut repayment_days: f64 = 0.0;
+            let mut repayment_count = 0u32;
+
+            for outcome in purpose_outcomes {
+                total_value = total_value.saturating_add(outcome.loan_amount);
+
+                match outcome.outcome_status {
+                    OutcomeStatus::Successful => successful += 1,
+                    OutcomeStatus::Defaulted => defaulted += 1,
+                    _ => {}
+                }
+
+                if let Some(days) = outcome.time_to_repayment_days {
+                    if days >= 0 {
+                        repayment_days += days as f64;
+                        repayment_count += 1;
+                    }
+                }
+            }
+
+            let total = purpose_outcomes.len() as u32;
+            let success_rate = if total > 0 {
+                successful as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            let avg_repayment_days = if repayment_count > 0 {
+                repayment_days / repayment_count as f64
+            } else {
+                0.0
+            };
+
+            let avg_loan_amount = if total > 0 {
+                total_value / total as i128
+            } else {
+                0
+            };
+
+            report.purpose_metrics.push(LoanPurposeMetrics {
+                purpose: purpose.clone(),
+                total_loans: total,
+                successful_loans: successful,
+                defaulted_loans: defaulted,
+                success_rate,
+                total_value,
+                average_loan_amount,
+                average_repayment_days: avg_repayment_days,
+            });
+        }
+
+        // Sort purposes by frequency
+        let mut purpose_freq: HashMap<String, u32> = HashMap::new();
+        for outcome in outcomes {
+            if !outcome.loan_purpose.is_empty() {
+                *purpose_freq
+                    .entry(outcome.loan_purpose.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+        let mut top_purposes: Vec<_> = purpose_freq.into_iter().collect();
+        top_purposes.sort_by(|a, b| b.1.cmp(&a.1));
+        report.top_purposes = top_purposes.into_iter().take(10).collect();
+
+        // Calculate repeat borrower rate
+        let repeat_borrowers = report
+            .borrower_metrics
+            .iter()
+            .filter(|m| m.repeat_borrower)
+            .count() as u32;
+        if !report.borrower_metrics.is_empty() {
+            report.repeat_borrower_rate =
+                repeat_borrowers as f64 / report.borrower_metrics.len() as f64;
+        }
+
+        report
+    }
+}
+
+/// Portfolio health metrics for performance dashboard (Issue #888)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanSizeDistribution {
+    pub small_count: u32,     // < 1M stroops
+    pub medium_count: u32,    // 1M - 100M stroops
+    pub large_count: u32,     // > 100M stroops
+    pub small_value: i128,
+    pub medium_value: i128,
+    pub large_value: i128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PortfolioHealthMetrics {
+    /// Portfolio timestamp
+    pub timestamp: i64,
+    /// Total active loans
+    pub total_active_loans: u32,
+    /// Total portfolio value (TVL)
+    pub portfolio_value: i128,
+    /// Concentration: ratio of top 5 borrowers
+    pub concentration_top_5: f64,
+    /// Concentration: ratio of top 10 borrowers
+    pub concentration_top_10: f64,
+    /// Loan size distribution
+    pub size_distribution: LoanSizeDistribution,
+    /// Average loan size in stroops
+    pub average_loan_size: i128,
+    /// Portfolio weighted average days to maturity
+    pub weighted_avg_maturity_days: f64,
+    /// Success rate across all active portfolio
+    pub portfolio_success_rate: f64,
+    /// Expected yield rate (total_yield / portfolio_value)
+    pub expected_yield_rate: f64,
+    /// Current arrears ratio (loans >= 7 days overdue / active loans)
+    pub arrears_ratio: f64,
+    /// Portfolio health score (0-100)
+    pub health_score: f64,
+    /// Top borrowers with their portfolio percentage
+    pub top_borrowers: Vec<(String, f64)>,
+    /// Loan purpose distribution with percentages
+    pub purpose_distribution: Vec<(String, f64)>,
+}
+
+impl PortfolioHealthMetrics {
+    pub fn new(timestamp: i64) -> Self {
+        Self {
+            timestamp,
+            total_active_loans: 0,
+            portfolio_value: 0,
+            concentration_top_5: 0.0,
+            concentration_top_10: 0.0,
+            size_distribution: LoanSizeDistribution {
+                small_count: 0,
+                medium_count: 0,
+                large_count: 0,
+                small_value: 0,
+                medium_value: 0,
+                large_value: 0,
+            },
+            average_loan_size: 0,
+            weighted_avg_maturity_days: 0.0,
+            portfolio_success_rate: 0.0,
+            expected_yield_rate: 0.0,
+            arrears_ratio: 0.0,
+            health_score: 0.0,
+            top_borrowers: Vec::new(),
+            purpose_distribution: Vec::new(),
+        }
+    }
+
+    /// Calculate portfolio health metrics from active loans and impact data
+    pub fn from_loans_and_outcomes(
+        loans: &[LoanSnapshot],
+        outcomes: &[LoanOutcome],
+        timestamp: i64,
+    ) -> Self {
+        let mut metrics = Self::new(timestamp);
+
+        // Filter active loans only
+        let active_loans: Vec<&LoanSnapshot> = loans
+            .iter()
+            .filter(|l| l.status == LoanStatusInput::Active)
+            .collect();
+
+        if active_loans.is_empty() {
+            return metrics;
+        }
+
+        metrics.total_active_loans = active_loans.len() as u32;
+
+        // Calculate TVL and size distribution
+        let mut borrower_totals: HashMap<String, i128> = HashMap::new();
+        let mut purpose_totals: HashMap<String, (i128, u32)> = HashMap::new();
+
+        for loan in &active_loans {
+            metrics.portfolio_value = metrics.portfolio_value.saturating_add(loan.amount);
+
+            // Track by borrower
+            *borrower_totals.entry(loan.borrower.clone()).or_insert(0) += loan.amount;
+
+            // Categorize by size
+            match loan.amount {
+                a if a < 1_000_000 => {
+                    metrics.size_distribution.small_count += 1;
+                    metrics.size_distribution.small_value =
+                        metrics.size_distribution.small_value.saturating_add(loan.amount);
+                }
+                a if a <= 100_000_000 => {
+                    metrics.size_distribution.medium_count += 1;
+                    metrics.size_distribution.medium_value =
+                        metrics.size_distribution.medium_value.saturating_add(loan.amount);
+                }
+                _ => {
+                    metrics.size_distribution.large_count += 1;
+                    metrics.size_distribution.large_value =
+                        metrics.size_distribution.large_value.saturating_add(loan.amount);
+                }
+            }
+        }
+
+        // Calculate average loan size
+        if metrics.total_active_loans > 0 {
+            metrics.average_loan_size = metrics.portfolio_value / metrics.total_active_loans as i128;
+        }
+
+        // Calculate concentration ratios
+        let mut borrower_amounts: Vec<_> = borrower_totals.into_iter().collect();
+        borrower_amounts.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let top_5_value: i128 = borrower_amounts
+            .iter()
+            .take(5)
+            .map(|(_, amount)| amount)
+            .sum();
+        let top_10_value: i128 = borrower_amounts
+            .iter()
+            .take(10)
+            .map(|(_, amount)| amount)
+            .sum();
+
+        if metrics.portfolio_value > 0 {
+            metrics.concentration_top_5 = top_5_value as f64 / metrics.portfolio_value as f64;
+            metrics.concentration_top_10 = top_10_value as f64 / metrics.portfolio_value as f64;
+
+            // Top borrowers with percentages
+            metrics.top_borrowers = borrower_amounts
+                .iter()
+                .take(5)
+                .map(|(borrower, amount)| {
+                    (borrower.clone(), *amount as f64 / metrics.portfolio_value as f64)
+                })
+                .collect();
+        }
+
+        // Calculate portfolio metrics from outcomes
+        let mut total_yield_expected = 0i128;
+        let mut success_count = 0u32;
+        let mut maturity_weighted_sum = 0.0;
+
+        for outcome in outcomes {
+            if outcome.outcome_status == OutcomeStatus::Successful
+                || outcome.outcome_status == OutcomeStatus::PartiallyRepaid
+            {
+                success_count += 1;
+            }
+
+            // Estimate yield (simplified: use repaid amount minus principal)
+            if outcome.amount_repaid >= outcome.loan_amount {
+                let estimated_yield = outcome.amount_repaid - outcome.loan_amount;
+                total_yield_expected = total_yield_expected.saturating_add(estimated_yield);
+            }
+
+            // Weight maturity by loan amount
+            if let Some(days) = outcome.time_to_repayment_days {
+                if days >= 0 {
+                    maturity_weighted_sum +=
+                        (days as f64) * (outcome.loan_amount as f64 / metrics.portfolio_value as f64);
+                }
+            }
+        }
+
+        // Calculate success rate from outcomes
+        if !outcomes.is_empty() {
+            metrics.portfolio_success_rate = success_count as f64 / outcomes.len() as f64;
+        }
+
+        // Calculate expected yield rate
+        if metrics.portfolio_value > 0 {
+            metrics.expected_yield_rate = total_yield_expected as f64 / metrics.portfolio_value as f64;
+            metrics.weighted_avg_maturity_days = maturity_weighted_sum;
+        }
+
+        // Calculate health score (0-100)
+        // Components: success rate (40%), concentration (20%), diversification (20%), yield (20%)
+        let concentration_penalty = (metrics.concentration_top_5 - 0.3).max(0.0) * 20.0; // Penalize if > 30%
+        let yield_score = (metrics.expected_yield_rate * 1000.0).min(20.0); // Cap at 20 points
+        let success_score = metrics.portfolio_success_rate * 40.0;
+        let diversification_score = (1.0 - metrics.concentration_top_10).min(1.0) * 20.0;
+
+        metrics.health_score =
+            (success_score + diversification_score + yield_score - concentration_penalty).max(0.0);
+
+        // Purpose distribution from outcomes
+        let mut purpose_dist: HashMap<String, (i128, u32)> = HashMap::new();
+        for outcome in outcomes {
+            let entry = purpose_dist
+                .entry(outcome.loan_purpose.clone())
+                .or_insert((0, 0));
+            entry.0 = entry.0.saturating_add(outcome.loan_amount);
+            entry.1 += 1;
+        }
+
+        for (purpose, (value, count)) in purpose_dist.iter() {
+            let percentage = *value as f64 / metrics.portfolio_value as f64;
+            metrics.purpose_distribution.push((purpose.clone(), percentage));
+        }
+
+        metrics.purpose_distribution.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        metrics
+    }
+}
+
 /// Compute `ProtocolMetrics` from raw loan + vouch snapshots, applying optional filters.
 pub fn aggregate_metrics(
     loans: &[LoanSnapshot],
@@ -563,5 +1077,358 @@ mod tests {
         assert_eq!(m.tvl, 0);
         assert_eq!(m.active_loans, 0);
         assert_eq!(m.total_yield_distributed, 20_000_000);
+    }
+
+    // Test 21: LoanImpactReport generates correctly from outcomes
+    #[test]
+    fn test_loan_impact_report_from_outcomes() {
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "b1".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 1_000_000_000,
+                amount_repaid: 1_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(30),
+                created_at: 1000,
+                completed_at: Some(2000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "b2".to_string(),
+                outcome_status: OutcomeStatus::Defaulted,
+                loan_purpose: "education".to_string(),
+                loan_amount: 500_000_000,
+                amount_repaid: 200_000_000,
+                repayment_percentage: 40.0,
+                time_to_repayment_days: None,
+                created_at: 1500,
+                completed_at: None,
+            },
+        ];
+
+        let report = LoanImpactReport::from_outcomes(&outcomes, 5000, 0, 5000);
+
+        assert_eq!(report.total_outcomes_tracked, 2);
+        assert_eq!(report.successful_outcomes, 1);
+        assert_eq!(report.defaulted_outcomes, 1);
+        assert!(report.success_rate > 0.49 && report.success_rate < 0.51); // ~50%
+        assert_eq!(report.average_time_to_repayment, 30.0);
+        assert_eq!(report.borrower_metrics.len(), 2);
+        assert_eq!(report.purpose_metrics.len(), 2);
+        assert!(report.repeat_borrower_rate >= 0.0);
+    }
+
+    // Test 22: Borrower impact metrics track repeat borrowers
+    #[test]
+    fn test_borrower_repeat_tracking() {
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "repeat_b".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 1_000_000_000,
+                amount_repaid: 1_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(25),
+                created_at: 1000,
+                completed_at: Some(2000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "repeat_b".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 500_000_000,
+                amount_repaid: 500_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(35),
+                created_at: 3000,
+                completed_at: Some(4000),
+            },
+        ];
+
+        let report = LoanImpactReport::from_outcomes(&outcomes, 5000, 0, 5000);
+
+        assert_eq!(report.borrower_metrics.len(), 1);
+        assert_eq!(report.borrower_metrics[0].repeat_borrower, true);
+        assert_eq!(report.borrower_metrics[0].repeat_count, 1);
+        assert_eq!(report.borrower_metrics[0].total_loans, 2);
+        assert_eq!(report.repeat_borrower_rate, 1.0);
+    }
+
+    // Test 23: Purpose metrics aggregate correctly
+    #[test]
+    fn test_purpose_metrics_aggregation() {
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "b1".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 2_000_000_000,
+                amount_repaid: 2_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(20),
+                created_at: 1000,
+                completed_at: Some(2000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "b2".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 1_000_000_000,
+                amount_repaid: 1_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(40),
+                created_at: 1500,
+                completed_at: Some(3000),
+            },
+        ];
+
+        let report = LoanImpactReport::from_outcomes(&outcomes, 5000, 0, 5000);
+
+        assert_eq!(report.purpose_metrics.len(), 1);
+        let business_metrics = &report.purpose_metrics[0];
+        assert_eq!(business_metrics.purpose, "business");
+        assert_eq!(business_metrics.total_loans, 2);
+        assert_eq!(business_metrics.successful_loans, 2);
+        assert_eq!(business_metrics.total_value, 3_000_000_000);
+        assert_eq!(business_metrics.average_loan_amount, 1_500_000_000);
+        assert_eq!(business_metrics.average_repayment_days, 30.0);
+    }
+
+    // Test 24: Empty outcomes generate empty report
+    #[test]
+    fn test_empty_outcomes_report() {
+        let report = LoanImpactReport::from_outcomes(&[], 5000, 0, 5000);
+
+        assert_eq!(report.total_outcomes_tracked, 0);
+        assert_eq!(report.successful_outcomes, 0);
+        assert_eq!(report.defaulted_outcomes, 0);
+        assert_eq!(report.success_rate, 0.0);
+        assert!(report.borrower_metrics.is_empty());
+        assert!(report.purpose_metrics.is_empty());
+    }
+
+    // Test 25: Portfolio health metrics from loans and outcomes
+    #[test]
+    fn test_portfolio_health_metrics_calculation() {
+        let loans = vec![
+            LoanSnapshot {
+                borrower: "b1".into(),
+                amount: 5_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 100_000_000,
+                created_at: 1000,
+            },
+            LoanSnapshot {
+                borrower: "b2".into(),
+                amount: 3_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 60_000_000,
+                created_at: 2000,
+            },
+            LoanSnapshot {
+                borrower: "b3".into(),
+                amount: 500_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 10_000_000,
+                created_at: 3000,
+            },
+        ];
+
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "b1".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 5_000_000_000,
+                amount_repaid: 5_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(25),
+                created_at: 1000,
+                completed_at: Some(2000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "b2".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 3_000_000_000,
+                amount_repaid: 3_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(30),
+                created_at: 2000,
+                completed_at: Some(3000),
+            },
+            LoanOutcome {
+                loan_id: 3,
+                borrower: "b3".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "education".to_string(),
+                loan_amount: 500_000_000,
+                amount_repaid: 500_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(20),
+                created_at: 3000,
+                completed_at: Some(4000),
+            },
+        ];
+
+        let health = PortfolioHealthMetrics::from_loans_and_outcomes(&loans, &outcomes, 5000);
+
+        assert_eq!(health.total_active_loans, 3);
+        assert_eq!(health.portfolio_value, 8_500_000_000);
+        assert_eq!(health.average_loan_size, 2_833_333_333);
+        assert!(health.concentration_top_5 > 0.0);
+        assert_eq!(health.size_distribution.large_count, 2);
+        assert_eq!(health.size_distribution.medium_count, 1);
+        assert_eq!(health.portfolio_success_rate, 1.0); // 100% successful
+        assert!(health.health_score > 50.0);
+    }
+
+    // Test 26: Loan size distribution categories correctly
+    #[test]
+    fn test_loan_size_distribution() {
+        let loans = vec![
+            LoanSnapshot {
+                borrower: "b1".into(),
+                amount: 500_000,      // small
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+            LoanSnapshot {
+                borrower: "b2".into(),
+                amount: 50_000_000,    // medium
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+            LoanSnapshot {
+                borrower: "b3".into(),
+                amount: 200_000_000,   // large
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+        ];
+
+        let outcomes = vec![];
+        let health = PortfolioHealthMetrics::from_loans_and_outcomes(&loans, &outcomes, 0);
+
+        assert_eq!(health.size_distribution.small_count, 1);
+        assert_eq!(health.size_distribution.medium_count, 1);
+        assert_eq!(health.size_distribution.large_count, 1);
+    }
+
+    // Test 27: Concentration metrics calculated correctly
+    #[test]
+    fn test_concentration_metrics() {
+        let loans = vec![
+            LoanSnapshot {
+                borrower: "b1".into(),
+                amount: 5_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+            LoanSnapshot {
+                borrower: "b2".into(),
+                amount: 2_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+            LoanSnapshot {
+                borrower: "b3".into(),
+                amount: 1_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+            LoanSnapshot {
+                borrower: "b4".into(),
+                amount: 1_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+            LoanSnapshot {
+                borrower: "b5".into(),
+                amount: 500_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+        ];
+
+        let outcomes = vec![];
+        let health = PortfolioHealthMetrics::from_loans_and_outcomes(&loans, &outcomes, 0);
+
+        // Top 5: 5B + 2B + 1B + 1B + 0.5B = 9.5B / 10B = 0.95
+        assert!(health.concentration_top_5 > 0.94 && health.concentration_top_5 < 0.96);
+        assert_eq!(health.top_borrowers.len(), 5);
+        assert_eq!(health.top_borrowers[0].0, "b1");
+    }
+
+    // Test 28: Portfolio health score calculation
+    #[test]
+    fn test_portfolio_health_score() {
+        let loans = vec![
+            LoanSnapshot {
+                borrower: "b1".into(),
+                amount: 2_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+            LoanSnapshot {
+                borrower: "b2".into(),
+                amount: 2_000_000_000,
+                status: LoanStatusInput::Active,
+                yield_distributed: 0,
+                created_at: 0,
+            },
+        ];
+
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "b1".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 2_000_000_000,
+                amount_repaid: 2_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(20),
+                created_at: 0,
+                completed_at: Some(1000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "b2".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 2_000_000_000,
+                amount_repaid: 2_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(20),
+                created_at: 0,
+                completed_at: Some(1000),
+            },
+        ];
+
+        let health = PortfolioHealthMetrics::from_loans_and_outcomes(&loans, &outcomes, 0);
+
+        assert!(health.health_score > 0.0);
+        assert!(health.health_score <= 100.0);
+        assert_eq!(health.portfolio_success_rate, 1.0);
     }
 }
