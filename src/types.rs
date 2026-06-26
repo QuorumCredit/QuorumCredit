@@ -480,6 +480,13 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
+    // ── Issue #892: Governance Proposal Queuing and Timelock ─────────────────
+    /// proposal_id → QueuedProposal (governance proposal in queue)
+    QueuedProposal(u64),
+    /// Monotonically increasing proposal ID counter
+    QueuedProposalCounter,
+    /// ProposalQueueConfig (global configuration for proposal queue system)
+    ProposalQueueConfig,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1601,3 +1608,69 @@ pub enum LoanPrivacyLevel {
     /// Only the borrower can view loan details.
     Private,
 }
+
+// ── Issue #892: Governance Proposal Queuing and Timelock ──────────────────
+
+/// Issue #892: Status of a queued governance proposal
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProposalQueueStatus {
+    /// Proposal queued, awaiting approval votes
+    Pending,
+    /// Proposal approved, waiting for timelock to expire
+    Approved,
+    /// Proposal executed successfully
+    Executed,
+    /// Proposal was cancelled by admins
+    Cancelled,
+    /// Proposal timelock window expired without execution
+    Expired,
+}
+
+/// Issue #892: A governance proposal in the execution queue
+#[contracttype]
+#[derive(Clone)]
+pub struct QueuedProposal {
+    /// Unique proposal ID (monotonically increasing)
+    pub id: u64,
+    /// The governance action to be executed
+    pub action: GovernanceAction,
+    /// Address that created this proposal
+    pub proposer: Address,
+    /// Addresses that have approved this proposal (multisig)
+    pub approvals: Vec<Address>,
+    /// Current status of the proposal
+    pub status: ProposalQueueStatus,
+    /// Ledger timestamp when proposal was queued
+    pub created_at: u64,
+    /// Ledger timestamp when proposal can be executed (after timelock)
+    pub executable_at: u64,
+    /// Ledger timestamp when proposal expires (after execution window)
+    pub expires_at: u64,
+    /// Optional description or justification
+    pub description: soroban_sdk::String,
+    /// Ledger timestamp when proposal was executed (if any)
+    pub executed_at: Option<u64>,
+}
+
+/// Issue #892: Configuration for proposal queuing system
+#[contracttype]
+#[derive(Clone)]
+pub struct ProposalQueueConfig {
+    /// Delay after approval before execution is allowed (seconds)
+    pub timelock_delay_secs: u64,
+    /// Window after timelock during which execution is allowed (seconds)
+    pub execution_window_secs: u64,
+    /// Number of admin approvals required to move from Pending to Approved
+    pub approvals_required: u32,
+    /// Whether to allow non-admin proposers
+    pub allow_public_proposals: bool,
+}
+
+/// Issue #892: Constants for proposal queue system
+pub const DEFAULT_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 24 * 60 * 60; // 24 hours
+pub const DEFAULT_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+pub const MIN_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 60 * 60; // 1 hour
+pub const MAX_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 365 * 24 * 60 * 60; // 365 days
+pub const MIN_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 24 * 60 * 60; // 1 day
+pub const MAX_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
