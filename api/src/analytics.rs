@@ -102,6 +102,297 @@ pub struct Alert {
     pub message: String,
 }
 
+/// Loan outcome tracking for impact measurement (Issue #886)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanOutcome {
+    pub loan_id: u64,
+    pub borrower: String,
+    pub outcome_status: OutcomeStatus,
+    pub loan_purpose: String,
+    pub loan_amount: i128,
+    pub amount_repaid: i128,
+    pub repayment_percentage: f64,
+    pub time_to_repayment_days: Option<i64>,
+    pub created_at: i64,
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum OutcomeStatus {
+    Active,
+    Successful,
+    Defaulted,
+    PartiallyRepaid,
+}
+
+/// Impact metrics aggregated by borrower
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BorrowerImpactMetrics {
+    pub borrower: String,
+    pub total_loans: u32,
+    pub successful_loans: u32,
+    pub defaulted_loans: u32,
+    pub success_rate: f64,
+    pub total_borrowed: i128,
+    pub total_repaid: i128,
+    pub average_repayment_days: f64,
+    pub repeat_borrower: bool,
+    pub repeat_count: u32,
+}
+
+/// Impact metrics aggregated by loan purpose
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanPurposeMetrics {
+    pub purpose: String,
+    pub total_loans: u32,
+    pub successful_loans: u32,
+    pub defaulted_loans: u32,
+    pub success_rate: f64,
+    pub total_value: i128,
+    pub average_loan_amount: i128,
+    pub average_repayment_days: f64,
+}
+
+/// Comprehensive loan impact report
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LoanImpactReport {
+    pub report_timestamp: i64,
+    pub from_timestamp: i64,
+    pub to_timestamp: i64,
+    pub total_outcomes_tracked: u32,
+    pub successful_outcomes: u32,
+    pub defaulted_outcomes: u32,
+    pub success_rate: f64,
+    pub average_time_to_repayment: f64,
+    pub borrower_metrics: Vec<BorrowerImpactMetrics>,
+    pub purpose_metrics: Vec<LoanPurposeMetrics>,
+    pub top_purposes: Vec<(String, u32)>,
+    pub repeat_borrower_rate: f64,
+}
+
+impl LoanImpactReport {
+    pub fn new(
+        report_timestamp: i64,
+        from_timestamp: i64,
+        to_timestamp: i64,
+    ) -> Self {
+        Self {
+            report_timestamp,
+            from_timestamp,
+            to_timestamp,
+            total_outcomes_tracked: 0,
+            successful_outcomes: 0,
+            defaulted_outcomes: 0,
+            success_rate: 0.0,
+            average_time_to_repayment: 0.0,
+            borrower_metrics: Vec::new(),
+            purpose_metrics: Vec::new(),
+            top_purposes: Vec::new(),
+            repeat_borrower_rate: 0.0,
+        }
+    }
+
+    /// Generate report from loan outcomes
+    pub fn from_outcomes(
+        outcomes: &[LoanOutcome],
+        report_timestamp: i64,
+        from_timestamp: i64,
+        to_timestamp: i64,
+    ) -> Self {
+        let mut report = Self::new(report_timestamp, from_timestamp, to_timestamp);
+
+        if outcomes.is_empty() {
+            return report;
+        }
+
+        report.total_outcomes_tracked = outcomes.len() as u32;
+
+        let mut borrower_map: HashMap<String, Vec<LoanOutcome>> = HashMap::new();
+        let mut purpose_map: HashMap<String, Vec<LoanOutcome>> = HashMap::new();
+        let mut total_repayment_days: f64 = 0.0;
+        let mut repayment_count: u32 = 0;
+
+        for outcome in outcomes {
+            // Track by borrower
+            borrower_map
+                .entry(outcome.borrower.clone())
+                .or_insert_with(Vec::new)
+                .push(outcome.clone());
+
+            // Track by purpose
+            let purpose = outcome.loan_purpose.clone();
+            if !purpose.is_empty() {
+                purpose_map
+                    .entry(purpose)
+                    .or_insert_with(Vec::new)
+                    .push(outcome.clone());
+            }
+
+            // Count outcomes
+            match outcome.outcome_status {
+                OutcomeStatus::Successful => report.successful_outcomes += 1,
+                OutcomeStatus::Defaulted => report.defaulted_outcomes += 1,
+                _ => {}
+            }
+
+            // Calculate repayment time average
+            if let Some(days) = outcome.time_to_repayment_days {
+                if days >= 0 {
+                    total_repayment_days += days as f64;
+                    repayment_count += 1;
+                }
+            }
+        }
+
+        // Calculate success rate
+        if report.total_outcomes_tracked > 0 {
+            report.success_rate = report.successful_outcomes as f64 / report.total_outcomes_tracked as f64;
+        }
+
+        // Calculate average repayment time
+        if repayment_count > 0 {
+            report.average_time_to_repayment = total_repayment_days / repayment_count as f64;
+        }
+
+        // Build borrower metrics
+        for (borrower, borrower_outcomes) in borrower_map.iter() {
+            let mut successful = 0;
+            let mut defaulted = 0;
+            let mut total_borrowed = 0i128;
+            let mut total_repaid = 0i128;
+            let mut repayment_days: f64 = 0.0;
+            let mut repayment_count = 0u32;
+
+            for outcome in borrower_outcomes {
+                total_borrowed = total_borrowed.saturating_add(outcome.loan_amount);
+                total_repaid = total_repaid.saturating_add(outcome.amount_repaid);
+
+                match outcome.outcome_status {
+                    OutcomeStatus::Successful => successful += 1,
+                    OutcomeStatus::Defaulted => defaulted += 1,
+                    _ => {}
+                }
+
+                if let Some(days) = outcome.time_to_repayment_days {
+                    if days >= 0 {
+                        repayment_days += days as f64;
+                        repayment_count += 1;
+                    }
+                }
+            }
+
+            let total = borrower_outcomes.len() as u32;
+            let success_rate = if total > 0 {
+                successful as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            let avg_repayment_days = if repayment_count > 0 {
+                repayment_days / repayment_count as f64
+            } else {
+                0.0
+            };
+
+            report.borrower_metrics.push(BorrowerImpactMetrics {
+                borrower: borrower.clone(),
+                total_loans: total,
+                successful_loans: successful,
+                defaulted_loans: defaulted,
+                success_rate,
+                total_borrowed,
+                total_repaid,
+                average_repayment_days: avg_repayment_days,
+                repeat_borrower: total > 1,
+                repeat_count: total.saturating_sub(1),
+            });
+        }
+
+        // Build purpose metrics
+        for (purpose, purpose_outcomes) in purpose_map.iter() {
+            let mut successful = 0;
+            let mut defaulted = 0;
+            let mut total_value = 0i128;
+            let mut repayment_days: f64 = 0.0;
+            let mut repayment_count = 0u32;
+
+            for outcome in purpose_outcomes {
+                total_value = total_value.saturating_add(outcome.loan_amount);
+
+                match outcome.outcome_status {
+                    OutcomeStatus::Successful => successful += 1,
+                    OutcomeStatus::Defaulted => defaulted += 1,
+                    _ => {}
+                }
+
+                if let Some(days) = outcome.time_to_repayment_days {
+                    if days >= 0 {
+                        repayment_days += days as f64;
+                        repayment_count += 1;
+                    }
+                }
+            }
+
+            let total = purpose_outcomes.len() as u32;
+            let success_rate = if total > 0 {
+                successful as f64 / total as f64
+            } else {
+                0.0
+            };
+
+            let avg_repayment_days = if repayment_count > 0 {
+                repayment_days / repayment_count as f64
+            } else {
+                0.0
+            };
+
+            let avg_loan_amount = if total > 0 {
+                total_value / total as i128
+            } else {
+                0
+            };
+
+            report.purpose_metrics.push(LoanPurposeMetrics {
+                purpose: purpose.clone(),
+                total_loans: total,
+                successful_loans: successful,
+                defaulted_loans: defaulted,
+                success_rate,
+                total_value,
+                average_loan_amount,
+                average_repayment_days: avg_repayment_days,
+            });
+        }
+
+        // Sort purposes by frequency
+        let mut purpose_freq: HashMap<String, u32> = HashMap::new();
+        for outcome in outcomes {
+            if !outcome.loan_purpose.is_empty() {
+                *purpose_freq
+                    .entry(outcome.loan_purpose.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+        let mut top_purposes: Vec<_> = purpose_freq.into_iter().collect();
+        top_purposes.sort_by(|a, b| b.1.cmp(&a.1));
+        report.top_purposes = top_purposes.into_iter().take(10).collect();
+
+        // Calculate repeat borrower rate
+        let repeat_borrowers = report
+            .borrower_metrics
+            .iter()
+            .filter(|m| m.repeat_borrower)
+            .count() as u32;
+        if !report.borrower_metrics.is_empty() {
+            report.repeat_borrower_rate =
+                repeat_borrowers as f64 / report.borrower_metrics.len() as f64;
+        }
+
+        report
+    }
+}
+
 /// Compute `ProtocolMetrics` from raw loan + vouch snapshots, applying optional filters.
 pub fn aggregate_metrics(
     loans: &[LoanSnapshot],
@@ -563,5 +854,141 @@ mod tests {
         assert_eq!(m.tvl, 0);
         assert_eq!(m.active_loans, 0);
         assert_eq!(m.total_yield_distributed, 20_000_000);
+    }
+
+    // Test 21: LoanImpactReport generates correctly from outcomes
+    #[test]
+    fn test_loan_impact_report_from_outcomes() {
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "b1".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 1_000_000_000,
+                amount_repaid: 1_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(30),
+                created_at: 1000,
+                completed_at: Some(2000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "b2".to_string(),
+                outcome_status: OutcomeStatus::Defaulted,
+                loan_purpose: "education".to_string(),
+                loan_amount: 500_000_000,
+                amount_repaid: 200_000_000,
+                repayment_percentage: 40.0,
+                time_to_repayment_days: None,
+                created_at: 1500,
+                completed_at: None,
+            },
+        ];
+
+        let report = LoanImpactReport::from_outcomes(&outcomes, 5000, 0, 5000);
+
+        assert_eq!(report.total_outcomes_tracked, 2);
+        assert_eq!(report.successful_outcomes, 1);
+        assert_eq!(report.defaulted_outcomes, 1);
+        assert!(report.success_rate > 0.49 && report.success_rate < 0.51); // ~50%
+        assert_eq!(report.average_time_to_repayment, 30.0);
+        assert_eq!(report.borrower_metrics.len(), 2);
+        assert_eq!(report.purpose_metrics.len(), 2);
+        assert!(report.repeat_borrower_rate >= 0.0);
+    }
+
+    // Test 22: Borrower impact metrics track repeat borrowers
+    #[test]
+    fn test_borrower_repeat_tracking() {
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "repeat_b".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 1_000_000_000,
+                amount_repaid: 1_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(25),
+                created_at: 1000,
+                completed_at: Some(2000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "repeat_b".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 500_000_000,
+                amount_repaid: 500_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(35),
+                created_at: 3000,
+                completed_at: Some(4000),
+            },
+        ];
+
+        let report = LoanImpactReport::from_outcomes(&outcomes, 5000, 0, 5000);
+
+        assert_eq!(report.borrower_metrics.len(), 1);
+        assert_eq!(report.borrower_metrics[0].repeat_borrower, true);
+        assert_eq!(report.borrower_metrics[0].repeat_count, 1);
+        assert_eq!(report.borrower_metrics[0].total_loans, 2);
+        assert_eq!(report.repeat_borrower_rate, 1.0);
+    }
+
+    // Test 23: Purpose metrics aggregate correctly
+    #[test]
+    fn test_purpose_metrics_aggregation() {
+        let outcomes = vec![
+            LoanOutcome {
+                loan_id: 1,
+                borrower: "b1".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 2_000_000_000,
+                amount_repaid: 2_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(20),
+                created_at: 1000,
+                completed_at: Some(2000),
+            },
+            LoanOutcome {
+                loan_id: 2,
+                borrower: "b2".to_string(),
+                outcome_status: OutcomeStatus::Successful,
+                loan_purpose: "business".to_string(),
+                loan_amount: 1_000_000_000,
+                amount_repaid: 1_000_000_000,
+                repayment_percentage: 100.0,
+                time_to_repayment_days: Some(40),
+                created_at: 1500,
+                completed_at: Some(3000),
+            },
+        ];
+
+        let report = LoanImpactReport::from_outcomes(&outcomes, 5000, 0, 5000);
+
+        assert_eq!(report.purpose_metrics.len(), 1);
+        let business_metrics = &report.purpose_metrics[0];
+        assert_eq!(business_metrics.purpose, "business");
+        assert_eq!(business_metrics.total_loans, 2);
+        assert_eq!(business_metrics.successful_loans, 2);
+        assert_eq!(business_metrics.total_value, 3_000_000_000);
+        assert_eq!(business_metrics.average_loan_amount, 1_500_000_000);
+        assert_eq!(business_metrics.average_repayment_days, 30.0);
+    }
+
+    // Test 24: Empty outcomes generate empty report
+    #[test]
+    fn test_empty_outcomes_report() {
+        let report = LoanImpactReport::from_outcomes(&[], 5000, 0, 5000);
+
+        assert_eq!(report.total_outcomes_tracked, 0);
+        assert_eq!(report.successful_outcomes, 0);
+        assert_eq!(report.defaulted_outcomes, 0);
+        assert_eq!(report.success_rate, 0.0);
+        assert!(report.borrower_metrics.is_empty());
+        assert!(report.purpose_metrics.is_empty());
     }
 }
