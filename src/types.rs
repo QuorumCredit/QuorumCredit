@@ -480,6 +480,15 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
+    // ── Issue #892: Governance Proposal Queuing and Timelock ─────────────────
+    /// proposal_id → QueuedProposal (governance proposal in queue)
+    QueuedProposal(u64),
+    /// Monotonically increasing proposal ID counter
+    QueuedProposalCounter,
+    /// ProposalQueueConfig (global configuration for proposal queue system)
+    ProposalQueueConfig,
+    /// Issue #893: Multi-tier admin approval thresholds
+    MultiTierAdminThresholds,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -599,6 +608,55 @@ pub struct ConfigUpdateProposal {
 }
 
 // ── Admin Governance Queue with Multi-Signature Confirmation ─────────────────────
+
+/// Issue #893: Admin operation types for multi-tier approval thresholds.
+/// Different operations can require different numbers of admin approvals based on criticality.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdminOperationType {
+    /// Low-risk operations (e.g., setting parameters like min_stake)
+    Standard,
+    /// Medium-risk operations (e.g., adding/removing tokens, admin changes)
+    HighRisk,
+    /// Critical operations (e.g., contract upgrade, pause, emergency actions)
+    Critical,
+}
+
+/// Issue #893: Multi-tier admin approval thresholds for different operation types.
+/// Allows different admin operations to require different numbers of approvals.
+#[contracttype]
+#[derive(Clone)]
+pub struct MultiTierAdminThresholds {
+    /// Approvals required for standard operations (default: same as admin_threshold)
+    pub standard_threshold: u32,
+    /// Approvals required for high-risk operations (default: 2x standard)
+    pub high_risk_threshold: u32,
+    /// Approvals required for critical operations (default: all admins)
+    pub critical_threshold: u32,
+}
+
+impl MultiTierAdminThresholds {
+    /// Create default thresholds based on total admin count.
+    /// Standard = 1, HighRisk = (total/2)+1, Critical = total
+    pub fn default_for_admin_count(admin_count: u32) -> Self {
+        let high_risk = if admin_count > 1 { (admin_count / 2) + 1 } else { 1 };
+        let critical = admin_count;
+        MultiTierAdminThresholds {
+            standard_threshold: 1,
+            high_risk_threshold: high_risk,
+            critical_threshold: critical,
+        }
+    }
+
+    /// Get the threshold for a specific operation type
+    pub fn get_threshold(&self, operation_type: AdminOperationType) -> u32 {
+        match operation_type {
+            AdminOperationType::Standard => self.standard_threshold,
+            AdminOperationType::HighRisk => self.high_risk_threshold,
+            AdminOperationType::Critical => self.critical_threshold,
+        }
+    }
+}
 
 /// Types of governance actions that can be proposed in the admin governance queue.
 #[contracttype]
@@ -1073,6 +1131,9 @@ pub struct Config {
     /// when current admins are unavailable.
     pub successor_admin: Option<Address>,
     pub rate_limit_config: RateLimitConfig,
+    /// Issue #893: Multi-tier admin approval thresholds for different operation types.
+    /// If not set, falls back to single admin_threshold for all operations.
+    pub multi_tier_thresholds: Option<MultiTierAdminThresholds>,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -1601,3 +1662,69 @@ pub enum LoanPrivacyLevel {
     /// Only the borrower can view loan details.
     Private,
 }
+
+// ── Issue #892: Governance Proposal Queuing and Timelock ──────────────────
+
+/// Issue #892: Status of a queued governance proposal
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProposalQueueStatus {
+    /// Proposal queued, awaiting approval votes
+    Pending,
+    /// Proposal approved, waiting for timelock to expire
+    Approved,
+    /// Proposal executed successfully
+    Executed,
+    /// Proposal was cancelled by admins
+    Cancelled,
+    /// Proposal timelock window expired without execution
+    Expired,
+}
+
+/// Issue #892: A governance proposal in the execution queue
+#[contracttype]
+#[derive(Clone)]
+pub struct QueuedProposal {
+    /// Unique proposal ID (monotonically increasing)
+    pub id: u64,
+    /// The governance action to be executed
+    pub action: GovernanceAction,
+    /// Address that created this proposal
+    pub proposer: Address,
+    /// Addresses that have approved this proposal (multisig)
+    pub approvals: Vec<Address>,
+    /// Current status of the proposal
+    pub status: ProposalQueueStatus,
+    /// Ledger timestamp when proposal was queued
+    pub created_at: u64,
+    /// Ledger timestamp when proposal can be executed (after timelock)
+    pub executable_at: u64,
+    /// Ledger timestamp when proposal expires (after execution window)
+    pub expires_at: u64,
+    /// Optional description or justification
+    pub description: soroban_sdk::String,
+    /// Ledger timestamp when proposal was executed (if any)
+    pub executed_at: Option<u64>,
+}
+
+/// Issue #892: Configuration for proposal queuing system
+#[contracttype]
+#[derive(Clone)]
+pub struct ProposalQueueConfig {
+    /// Delay after approval before execution is allowed (seconds)
+    pub timelock_delay_secs: u64,
+    /// Window after timelock during which execution is allowed (seconds)
+    pub execution_window_secs: u64,
+    /// Number of admin approvals required to move from Pending to Approved
+    pub approvals_required: u32,
+    /// Whether to allow non-admin proposers
+    pub allow_public_proposals: bool,
+}
+
+/// Issue #892: Constants for proposal queue system
+pub const DEFAULT_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 24 * 60 * 60; // 24 hours
+pub const DEFAULT_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+pub const MIN_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 60 * 60; // 1 hour
+pub const MAX_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 365 * 24 * 60 * 60; // 365 days
+pub const MIN_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 24 * 60 * 60; // 1 day
+pub const MAX_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 90 * 24 * 60 * 60; // 90 days

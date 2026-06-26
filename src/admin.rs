@@ -4,9 +4,10 @@ use crate::helpers::{
     validate_admin_config,
 };
 use crate::types::{
-    AdminActionProposal, Config, ConfigUpdateKey, ConfigUpdateProposal, DataKey,
-    GovernanceAction, GovernanceProposal, GovernanceProposalStatus, GovernanceQueueConfig,
-    DEFAULT_GOVERNANCE_EXECUTION_WINDOW, DEFAULT_GOVERNANCE_TIMELOCK_DELAY,
+    AdminActionProposal, AdminOperationType, Config, ConfigUpdateKey, ConfigUpdateProposal,
+    DataKey, GovernanceAction, GovernanceProposal, GovernanceProposalStatus,
+    GovernanceQueueConfig, MultiTierAdminThresholds, DEFAULT_GOVERNANCE_EXECUTION_WINDOW,
+    DEFAULT_GOVERNANCE_TIMELOCK_DELAY,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
@@ -2059,4 +2060,65 @@ pub fn get_governance_proposal_count(env: Env) -> u64 {
         .instance()
         .get(&DataKey::GovernanceProposalCounter)
         .unwrap_or(0u64)
+}
+
+// ── Issue #893: Multi-Tier Admin Approval ──────────────────────────────────────
+
+/// Issue #893: Set multi-tier admin approval thresholds for different operation types.
+/// Allows different admin operations to require different numbers of approvals.
+pub fn set_multi_tier_thresholds(
+    env: Env,
+    admin_signers: Vec<Address>,
+    thresholds: MultiTierAdminThresholds,
+) {
+    require_admin_approval(&env, &admin_signers);
+
+    // Validate thresholds
+    let admin_count = config(&env).admins.len() as u32;
+    assert!(
+        thresholds.standard_threshold > 0 && thresholds.standard_threshold <= admin_count,
+        "invalid standard threshold"
+    );
+    assert!(
+        thresholds.high_risk_threshold > 0 && thresholds.high_risk_threshold <= admin_count,
+        "invalid high-risk threshold"
+    );
+    assert!(
+        thresholds.critical_threshold > 0 && thresholds.critical_threshold <= admin_count,
+        "invalid critical threshold"
+    );
+
+    env.storage()
+        .instance()
+        .set(&DataKey::MultiTierAdminThresholds, &thresholds);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("multi")),
+        (
+            thresholds.standard_threshold,
+            thresholds.high_risk_threshold,
+            thresholds.critical_threshold,
+        ),
+    );
+}
+
+/// Issue #893: Get the current multi-tier admin approval thresholds.
+pub fn get_multi_tier_thresholds(env: Env) -> Option<MultiTierAdminThresholds> {
+    env.storage()
+        .instance()
+        .get(&DataKey::MultiTierAdminThresholds)
+}
+
+/// Issue #893: Get the effective threshold for a specific operation type.
+pub fn get_effective_approval_threshold(
+    env: Env,
+    operation_type: AdminOperationType,
+) -> u32 {
+    let cfg = config(&env);
+
+    if let Some(multi_tier) = cfg.multi_tier_thresholds {
+        multi_tier.get_threshold(operation_type)
+    } else {
+        cfg.admin_threshold
+    }
 }

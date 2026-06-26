@@ -289,6 +289,39 @@ pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
     }
 }
 
+/// Issue #893: Require admin approval for a specific operation type with multi-tier thresholds.
+/// Different operation types can require different numbers of approvals based on criticality.
+pub fn require_admin_approval_for_operation(
+    env: &Env,
+    admin_signers: &Vec<Address>,
+    operation_type: crate::types::AdminOperationType,
+) {
+    use crate::types::{AdminOperationType, DataKey};
+    
+    let cfg = config(env);
+    
+    // Determine the required threshold based on operation type
+    let required_threshold = if let Some(multi_tier) = &cfg.multi_tier_thresholds {
+        multi_tier.get_threshold(operation_type)
+    } else {
+        // Fall back to single threshold if multi-tier not configured
+        cfg.admin_threshold
+    };
+
+    assert!(
+        admin_signers.len() >= required_threshold as usize,
+        "insufficient admin approvals for this operation type"
+    );
+
+    for signer in admin_signers.iter() {
+        assert!(
+            cfg.admins.iter().any(|a| a == signer),
+            "signer is not a registered admin"
+        );
+        signer.require_auth();
+    }
+}
+
 pub fn is_admin(env: &Env, addr: &Address) -> bool {
     config(env).admins.iter().any(|a| a == *addr)
 }
