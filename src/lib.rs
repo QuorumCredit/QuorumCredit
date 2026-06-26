@@ -27,6 +27,8 @@ pub mod cross_chain;
 pub mod collateral_pool;
 /// Issue #868: Gradual Unstaking
 pub mod gradual_unstake;
+/// Issue #887: Loan Subordination and Cascading Debt Hierarchy
+pub mod subordination;
 
 pub use errors::ContractError;
 pub use types::*;
