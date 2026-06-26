@@ -480,6 +480,20 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
+    // ── Issue #63: Signature Replay Protection ────────────────────────────────
+    /// caller → last consumed nonce (u64); used to prevent signature replay.
+    Nonce(Address),
+    // ── Issue #64: Oracle Price Staleness ─────────────────────────────────────
+    /// oracle_key (Symbol) → OraclePriceRecord
+    OraclePrice(soroban_sdk::Symbol),
+    // ── Issue #65: Graduated Response / Tiered Lockdown ───────────────────────
+    /// Current threat level governing protocol restrictions.
+    ThreatLevelKey,
+    // ── Issue #66: LRU Cache Index ────────────────────────────────────────────
+    /// u32 count of tracked loan cache entries (for LRU eviction).
+    LruIndex,
+    /// u64 loan_id of the oldest cached loan entry (LRU eviction pointer).
+    LruOldestLoanId,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1601,3 +1615,53 @@ pub enum LoanPrivacyLevel {
     /// Only the borrower can view loan details.
     Private,
 }
+
+// ── Issue #63: Signature Replay Protection ────────────────────────────────────
+
+/// How many nonce slots to keep in history before rolling over (per caller).
+/// A window of 1_000 gives ~1 k in-flight requests before a nonce is reusable.
+pub const NONCE_WINDOW: u64 = 1_000;
+
+// ── Issue #64: Oracle Price Staleness ─────────────────────────────────────────
+
+/// Maximum age (in seconds) for an oracle price before it is considered stale (5 minutes).
+pub const ORACLE_PRICE_MAX_AGE_SECS: u64 = 5 * 60;
+
+/// On-chain oracle price record written by the registered oracle contract.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OraclePriceRecord {
+    /// Price in micro-units (e.g. stroops-per-USD, scaled by 1e7).
+    pub price: i128,
+    /// Ledger timestamp when the price was recorded.
+    pub recorded_at: u64,
+    /// Oracle address that submitted this price.
+    pub oracle: Address,
+}
+
+// ── Issue #65: Graduated Response / Tiered Lockdown ───────────────────────────
+
+/// Protocol threat level governing which operations are permitted.
+///
+/// | Level    | Restriction                                     |
+/// |----------|-------------------------------------------------|
+/// | Normal   | All operations allowed (default).               |
+/// | Elevated | New vouches and loans blocked.                  |
+/// | Critical | All writes blocked (read-only).                 |
+/// | Lockdown | Full halt — even reads are rate-limited.        |
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ThreatLevel {
+    Normal,
+    Elevated,
+    Critical,
+    Lockdown,
+}
+
+// ── Issue #66: Read-Optimized Cache ───────────────────────────────────────────
+
+/// TTL for cached records in seconds (5 minutes).
+pub const CACHE_TTL_SECS: u64 = 5 * 60;
+
+/// Maximum number of cache entries tracked by the LRU index.
+pub const CACHE_LRU_MAX_ENTRIES: u32 = 64;
