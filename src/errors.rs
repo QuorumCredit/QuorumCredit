@@ -152,4 +152,6 @@ AppealAlreadyVoted = 128,
 AppealQuorumNotMet = 129,
 /// Escrow period has expired; appeal can no longer be filed or voted on.
 EscrowExpired = 130,
+/// The proposed delegation would create a circular dependency chain.
+CircularDelegation = 131,
 }

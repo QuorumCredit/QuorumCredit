@@ -1003,6 +1003,61 @@ pub fn transfer_vouch(
     Ok(())
 }
 
+fn detect_circular_delegation(
+    env: &Env,
+    voucher: &Address,
+    delegate: &Address,
+) -> Result<(), ContractError> {
+    if delegate == voucher {
+        return Err(ContractError::CircularDelegation);
+    }
+    // Bounded traversal from delegate to see if we ever reach back to voucher
+    const MAX_DEPTH: u32 = 10;
+    let mut visited: Vec<Address> = Vec::new(env);
+    visited.push_back(delegate.clone());
+
+    let mut queue: Vec<Address> = Vec::new(env);
+    queue.push_back(delegate.clone());
+
+    while queue.len() > 0 {
+        let current = queue.get(0).unwrap();
+        queue.remove(0);
+
+        // Get all borrowers this address has vouched for
+        let history: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherHistory(current.clone()))
+            .unwrap_or(Vec::new(env));
+
+        for h_borrower in history.iter() {
+            let vouches: Vec<VouchRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Vouches(h_borrower.clone()))
+                .unwrap_or(Vec::new(env));
+
+            for v in vouches.iter() {
+                if v.voucher == current {
+                    if let Some(next_delegate) = v.delegate {
+                        if next_delegate == *voucher {
+                            return Err(ContractError::CircularDelegation);
+                        }
+                        if !visited.iter().any(|a| a == &next_delegate) {
+                            if visited.len() as u32 >= MAX_DEPTH {
+                                return Ok(());
+                            }
+                            visited.push_back(next_delegate.clone());
+                            queue.push_back(next_delegate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn delegate_vouch(
     env: Env,
     voucher: Address,
@@ -1016,6 +1071,9 @@ pub fn delegate_vouch(
     if delegate == voucher {
         return Err(ContractError::InvalidStateTransition);
     }
+
+    // Check for circular delegations before making changes
+    detect_circular_delegation(&env, &voucher, &delegate)?;
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -1083,6 +1141,50 @@ pub fn revoke_delegation(
         .persistent()
         .get(&DataKey::Vouches(borrower.clone()))
         .ok_or(ContractError::NoVouchesForBorrower)?;
+
+    let idx = vouches
+        .iter()
+        .position(|v| v.voucher == voucher && v.token == token)
+        .ok_or(ContractError::VoucherNotFound)? as u32;
+
+    let mut vouch_rec = vouches.get(idx).unwrap();
+    vouch_rec.delegate = None;
+    vouches.set(idx, vouch_rec.clone());
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    env.storage()
+        .persistent()
+        .remove(&DataKey::VouchDelegation(borrower.clone(), voucher.clone(), token.clone()));
+
+    let timestamp = env.ledger().timestamp();
+    let mut vouch_history: Vec<VouchHistoryEntry> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    vouch_history.push_back(VouchHistoryEntry {
+        timestamp,
+        modification_type: soroban_sdk::String::from_str(&env, "revoked_delegation"),
+        stake_amount: vouch_rec.stake,
+        delegate: None,
+    });
+
+    env.storage().persistent().set(
+        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
+        &vouch_history,
+    );
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("revoke_del")),
+        (voucher, borrower),
+    );
+
+    Ok(())
+}
 
 pub fn set_vouch_expiry(
     env: Env,
@@ -1262,15 +1364,21 @@ pub fn dispute_vouch(
 /// Vouchers with higher reputation scores get their stake weighted more heavily,
 /// providing them with greater yield and governance influence (Issue #866).
 /// Weight multiplier: 1.0 + (reputation_score * 10 bps), capped at 2.0x (10000 bps).
+/// Reliable vouchers (few slashes) get a further boost; slashed vouchers are penalized.
 pub fn vouch_reputation_weight(env: &Env, voucher: &Address) -> i128 {
-    let rep_score: u32 = env
+    let stats: Option<crate::types::VoucherStats> = env
         .storage()
         .persistent()
-        .get::<DataKey, crate::types::VoucherStats>(&DataKey::VoucherStats(voucher.clone()))
-        .map(|s| s.successful_vouches)
-        .unwrap_or(0);
+        .get::<DataKey, crate::types::VoucherStats>(&DataKey::VoucherStats(voucher.clone()));
+    let rep_score: u32 = stats.as_ref().map(|s| s.successful_vouches).unwrap_or(0);
+    let slashed: u32 = stats.as_ref().map(|s| s.total_vouches_slashed).unwrap_or(0);
     // Each successful vouch adds 500 bps (5%) weight, max 10000 bps (100% = 2x)
-    let weight_bps = (rep_score as i128 * 500).min(10_000);
+    let mut weight_bps = (rep_score as i128 * 500).min(10_000);
+    // Penalize vouchers with slashed history: -1000 bps per slash, min 0
+    if slashed > 0 {
+        let penalty = (slashed as i128 * 1000).min(weight_bps);
+        weight_bps = weight_bps.saturating_sub(penalty);
+    }
     BPS_DENOMINATOR + weight_bps
 }
 
