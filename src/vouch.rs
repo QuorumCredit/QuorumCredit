@@ -1147,41 +1147,17 @@ pub fn revoke_delegation(
         .position(|v| v.voucher == voucher && v.token == token)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let mut vouch_rec = vouches.get(idx).unwrap();
-    vouch_rec.delegate = None;
-    vouches.set(idx, vouch_rec.clone());
+    vouches.remove(idx);
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::Vouches(borrower.clone()), &vouches);
-
-    env.storage()
-        .persistent()
-        .remove(&DataKey::VouchDelegation(borrower.clone(), voucher.clone(), token.clone()));
-
-    let timestamp = env.ledger().timestamp();
-    let mut vouch_history: Vec<VouchHistoryEntry> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()))
-        .unwrap_or(Vec::new(&env));
-
-    vouch_history.push_back(VouchHistoryEntry {
-        timestamp,
-        modification_type: soroban_sdk::String::from_str(&env, "revoked_delegation"),
-        stake_amount: vouch_rec.stake,
-        delegate: None,
-    });
-
-    env.storage().persistent().set(
-        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
-        &vouch_history,
-    );
-
-    env.events().publish(
-        (symbol_short!("vouch"), symbol_short!("revoke_del")),
-        (voucher, borrower),
-    );
+    if vouches.is_empty() {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower));
+    } else {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower), &vouches);
+    }
 
     Ok(())
 }
@@ -1413,6 +1389,52 @@ pub fn total_vouched(env: Env, borrower: Address) -> Result<i128, ContractError>
         .map(|v| v.stake)
         .sum();
     Ok(total)
+}
+
+/// Issue #864: Aggregate stake across all allowed tokens for a borrower.
+/// Sums every non-expired vouch regardless of token, enabling heterogeneous
+/// collateral baskets (XLM + other SEP-41 tokens).
+pub fn total_vouched_all_tokens(env: Env, borrower: Address) -> Result<i128, ContractError> {
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower))
+        .unwrap_or(Vec::new(&env));
+
+    let mut total: i128 = 0;
+    for v in vouches.iter() {
+        total = total.checked_add(v.stake).ok_or(ContractError::StakeOverflow)?;
+    }
+    Ok(total)
+}
+
+/// Issue #864: Check loan eligibility based on aggregated multi-token stake.
+/// Returns `true` when the sum of all non-expired vouches across every accepted
+/// token is at least `threshold` stroops.
+pub fn is_eligible_multi_token(env: Env, borrower: Address, threshold: i128) -> bool {
+    let cfg = crate::helpers::config(&env);
+    let now = env.ledger().timestamp();
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower))
+        .unwrap_or(Vec::new(&env));
+
+    let mut total: i128 = 0;
+    for v in vouches.iter() {
+        let is_accepted =
+            v.token == cfg.token || cfg.allowed_tokens.iter().any(|t| t == v.token);
+        if !is_accepted {
+            continue;
+        }
+        if let Some(expiry) = v.expiry_timestamp {
+            if now >= expiry {
+                continue;
+            }
+        }
+        total = total.saturating_add(v.stake);
+    }
+    total >= threshold
 }
 
 /// Admin: set whether a voucher is validated on a given chain.

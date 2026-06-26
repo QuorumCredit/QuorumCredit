@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod admin;
+pub mod attributes;
 pub mod credit_score;
 pub mod errors;
 pub mod governance;
@@ -8,6 +9,7 @@ pub mod helpers;
 pub mod insurance;
 pub mod loan;
 pub mod partial_repayment;
+pub mod periodic_payments;
 pub mod reputation;
 pub mod rbac;
 pub mod syndication;
@@ -15,10 +17,16 @@ pub mod syndication;
 mod tests;
 pub mod types;
 pub mod vouch;
+pub mod vouch_groups;
+pub mod yield_stream;
 pub mod cache;
 pub mod error_response;
 pub mod versioning;
 pub mod cross_chain;
+/// Issue #867: Cross-Collateral Vouch Pools
+pub mod collateral_pool;
+/// Issue #868: Gradual Unstaking
+pub mod gradual_unstake;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -59,6 +67,32 @@ mod integration_invariants;
 mod integration_stress_test;
 #[cfg(test)]
 mod integration_regression_test;
+#[cfg(test)]
+mod governance_history_test;
+#[cfg(test)]
+mod slash_vote_cancel_test;
+#[cfg(test)]
+mod dynamic_quorum_adjustment_test;
+#[cfg(test)]
+mod conditional_vote_delegation_test;
+
+#[cfg(test)]
+mod risk_assessment_voting_test;
+#[cfg(test)]
+mod fee_structure_voting_test;
+#[cfg(test)]
+mod withdrawal_timelock_test;
+#[cfg(test)]
+mod cross_chain_proposal_sync_test;
+
+#[cfg(test)]
+mod proposal_metadata_test;
+#[cfg(test)]
+mod emergency_pause_auto_unpause_test;
+#[cfg(test)]
+mod governance_snapshot_test;
+#[cfg(test)]
+mod vote_escrow_lock_test;
 
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
@@ -1552,5 +1586,80 @@ impl QuorumCreditContract {
 
     pub fn is_bridge_nonce_used(env: Env, origin_chain: u32, nonce: u64) -> bool {
         cross_chain::is_bridge_nonce_used(env, origin_chain, nonce)
+    }
+
+    // ── Custom Attributes ────────────────────────────────────────────────────
+
+    pub fn set_attribute(env: Env, caller: Address, key: soroban_sdk::String, value: soroban_sdk::String) -> Result<(), ContractError> {
+        attributes::set_attribute(env, caller, key, value)
+    }
+
+    pub fn get_attributes(env: Env, caller: Address) -> Vec<AttributeEntry> {
+        attributes::get_attributes(env, caller)
+    }
+
+    pub fn remove_attribute(env: Env, caller: Address, key: soroban_sdk::String) -> Result<(), ContractError> {
+        attributes::remove_attribute(env, caller, key)
+    }
+
+    // ── Yield Stream ─────────────────────────────────────────────────────────
+
+    pub fn claim_streamed_yield(env: Env, voucher: Address, loan_id: u64) -> Result<i128, ContractError> {
+        yield_stream::claim_streamed_yield(env, voucher, loan_id)
+    }
+
+    pub fn get_yield_stream_state(env: Env, loan_id: u64) -> Option<YieldStreamState> {
+        yield_stream::get_yield_stream_state(env, loan_id)
+    }
+
+    pub fn get_voucher_yield_claim(env: Env, loan_id: u64, voucher: Address) -> Option<VoucherYieldClaim> {
+        yield_stream::get_voucher_yield_claim(env, loan_id, voucher)
+    }
+
+    // ── Vouch Groups ─────────────────────────────────────────────────────────
+
+    pub fn create_vouch_group(env: Env, caller: Address, name: soroban_sdk::String) -> Result<u64, ContractError> {
+        vouch_groups::create_vouch_group(env, caller, name)
+    }
+
+    pub fn add_voucher_to_group(env: Env, caller: Address, group_id: u64, voucher: Address) -> Result<(), ContractError> {
+        vouch_groups::add_voucher_to_group(env, caller, group_id, voucher)
+    }
+
+    pub fn remove_voucher_from_group(env: Env, caller: Address, group_id: u64, voucher: Address) -> Result<(), ContractError> {
+        vouch_groups::remove_voucher_from_group(env, caller, group_id, voucher)
+    }
+
+    pub fn get_vouch_group(env: Env, group_id: u64) -> Option<VouchGroup> {
+        vouch_groups::get_vouch_group(env, group_id)
+    }
+
+    pub fn get_voucher_group_ids(env: Env, voucher: Address) -> Vec<u64> {
+        vouch_groups::get_voucher_group_ids(env, voucher)
+    }
+
+    // ── Periodic Payments ────────────────────────────────────────────────────
+
+    pub fn set_periodic_payment(
+        env: Env,
+        caller: Address,
+        loan_id: u64,
+        schedule_type: ScheduleType,
+        period_count: u32,
+        period_interest_bps: u32,
+    ) -> Result<(), ContractError> {
+        periodic_payments::set_periodic_payment(env, caller, loan_id, schedule_type, period_count, period_interest_bps)
+    }
+
+    pub fn make_periodic_payment(env: Env, borrower: Address, loan_id: u64, payment: i128) -> Result<(), ContractError> {
+        periodic_payments::make_periodic_payment(env, borrower, loan_id, payment)
+    }
+
+    pub fn get_periodic_payment_config(env: Env, loan_id: u64) -> Option<PeriodicPaymentConfig> {
+        periodic_payments::get_periodic_payment_config(env, loan_id)
+    }
+
+    pub fn get_periodic_payment_status(env: Env, loan_id: u64) -> Option<PeriodicPaymentStatus> {
+        periodic_payments::get_periodic_payment_status(env, loan_id)
     }
 }
