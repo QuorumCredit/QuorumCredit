@@ -493,20 +493,8 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128, token: Address)
         return false;
     }
 
-    let vouches: Vec<VouchRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Vouches(borrower))
-        .unwrap_or(Vec::new(&env));
-
-    let total: i128 = vouches
-        .iter()
-        .filter(|v| v.token == token)
-        .map(|v| {
-            let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
-            v.stake * weight / BPS_DENOMINATOR
-        })
-        .sum();
+    // O(1) eligibility check using cached total weighted stake
+    let total = crate::vouch::get_cached_weighted_stake(&env, &borrower, &token);
 
     total >= threshold
 }

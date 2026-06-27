@@ -378,6 +378,9 @@ pub enum DataKey {
     SlashThresholdProposalCounter,
     /// Per-borrower timestamp of the last successful slash.
     LastSlashedAt(Address),
+    /// Cached total weighted stake per borrower per token: (borrower, token) → i128
+    /// Used for O(1) eligibility checks; invalidated on vouch operations.
+    TotalWeightedStakeCache(Address, Address),
     /// Admin config-update proposal id → proposal record.
     ConfigUpdateProposal(u64),
     ConfigUpdateProposalCounter,
