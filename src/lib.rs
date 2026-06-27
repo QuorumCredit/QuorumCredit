@@ -98,7 +98,18 @@ mod loan_features_test;
 
 #[cfg(test)]
 mod co_borrower_test;
+
 #[cfg(test)]
+mod incremental_config_test;
+
+#[cfg(test)]
+mod storage_compaction_test;
+
+#[cfg(test)]
+mod vectorized_score_test;
+
+#[cfg(test)]
+mod query_pagination_test;#[cfg(test)]
 mod dynamic_rate_test;
 #[cfg(test)]
 mod forbearance_test;
@@ -1883,5 +1894,72 @@ impl QuorumCreditContract {
         caller: Address,
     ) -> Result<Option<LoanRecord>, ContractError> {
         loan::get_loan_with_privacy(env, borrower, caller)
+    }
+
+    // ── Issue #938: Incremental Config Changes ────────────────────────────────
+
+    /// Enqueue a named config field change to be applied no earlier than `apply_after`.
+    pub fn enqueue_config_patch(
+        env: Env,
+        admin_signers: Vec<Address>,
+        field: ConfigField,
+        new_value: i128,
+        apply_after: u64,
+    ) {
+        admin::enqueue_config_patch(env, admin_signers, field, new_value, apply_after)
+    }
+
+    /// Apply the next pending config patch whose not-before timestamp has passed.
+    /// Returns `true` if a patch was applied.
+    pub fn apply_next_config_patch(env: Env) -> bool {
+        admin::apply_next_config_patch(env)
+    }
+
+    pub fn get_config_patch(env: Env, idx: u32) -> Option<ConfigPatch> {
+        admin::get_config_patch(env, idx)
+    }
+
+    pub fn get_config_patch_count(env: Env) -> u32 {
+        admin::get_config_patch_count(env)
+    }
+
+    // ── Issue #939: Storage Compaction ───────────────────────────────────────
+
+    /// Archive a completed/defaulted loan: store a compact summary, delete the full record.
+    pub fn archive_loan(
+        env: Env,
+        admin_signers: Vec<Address>,
+        loan_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::archive_loan(env, admin_signers, loan_id)
+    }
+
+    pub fn get_archived_loan(env: Env, loan_id: u64) -> Option<ArchivedLoan> {
+        admin::get_archived_loan(env, loan_id)
+    }
+
+    // ── Issue #940: Vectorized Score Updates ─────────────────────────────────
+
+    /// Batch-update credit scores for multiple borrowers in a single call.
+    /// Returns `(updated_count, skipped_count)`.
+    pub fn batch_update_credit_scores(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrowers: Vec<Address>,
+    ) -> (u32, u32) {
+        admin::batch_update_credit_scores(env, admin_signers, borrowers)
+    }
+
+    // ── Issue #941: Query Pagination ─────────────────────────────────────────
+
+    /// Return a paginated slice of vouch records.
+    /// `cursor` = 0-based start index; `page_size` capped at 50.
+    pub fn get_vouches_paginated(
+        env: Env,
+        borrower: Address,
+        cursor: u32,
+        page_size: u32,
+    ) -> VouchPage {
+        admin::get_vouches_paginated(env, borrower, cursor, page_size)
     }
 }

@@ -480,6 +480,14 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
+    // ── Issue #938: Incremental Config Changes ────────────────────────────────
+    /// Index → ConfigPatch (pending incremental config update)
+    ConfigPatch(u32),
+    /// Total number of enqueued config patches
+    ConfigPatchCount,
+    // ── Issue #939: Storage Compaction ────────────────────────────────────────
+    /// loan_id → ArchivedLoan (compacted record after full loan deletion)
+    ArchivedLoan(u64),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1600,4 +1608,65 @@ pub enum LoanPrivacyLevel {
     VouchersOnly,
     /// Only the borrower can view loan details.
     Private,
+}
+
+// ── Issue #938: Incremental Config Changes ───────────────────────────────────
+
+/// A single pending config field update to be applied gradually.
+#[contracttype]
+#[derive(Clone)]
+pub struct ConfigPatch {
+    /// Identifies which config field to update.
+    pub field: ConfigField,
+    /// The new value encoded as i128 (booleans: 1 = true, 0 = false; u32/u64 cast to i128).
+    pub new_value: i128,
+    /// Ledger timestamp when this patch becomes applicable (not-before time).
+    pub apply_after: u64,
+    /// Whether this patch has already been applied.
+    pub applied: bool,
+}
+
+/// Discriminator for config fields that can be updated via incremental patching.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigField {
+    YieldBps,
+    SlashBps,
+    MaxVouchers,
+    MinLoanAmount,
+    LoanDuration,
+    MaxLoanToStakeRatio,
+    GracePeriod,
+    LiquidityMiningRateBps,
+    VotingPeriodSeconds,
+    SlashCooldownSeconds,
+    PrepaymentPenaltyBps,
+    EarlyRepaymentDiscountBps,
+}
+
+// ── Issue #939: Storage Compaction ───────────────────────────────────────────
+
+/// A compacted (archived) loan record retaining only the minimal data needed
+/// for credit-history and audit purposes.
+#[contracttype]
+#[derive(Clone)]
+pub struct ArchivedLoan {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub amount: i128,
+    pub status: LoanStatus,
+    pub created_at: u64,
+    pub repayment_timestamp: Option<u64>,
+}
+
+// ── Issue #941: Query Pagination ─────────────────────────────────────────────
+
+/// A paginated slice of vouch records with a cursor for the next page.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchPage {
+    /// The vouch records in this page.
+    pub records: Vec<VouchRecord>,
+    /// Index of the next record to fetch; `None` if this is the last page.
+    pub next_cursor: Option<u32>,
 }
