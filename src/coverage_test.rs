@@ -175,6 +175,71 @@ mod coverage_tests {
     }
 
     #[test]
+    fn test_batch_update_config_single_storage_write() {
+        let s = setup();
+        let before = s.client.get_config();
+        s.client.batch_update_config(
+            &admins(&s),
+            &Some(250i128),           // yield_bps
+            &Some(4000i128),          // slash_bps
+            &Some(10u32),             // max_vouchers
+            &Some(50_000i128),        // min_loan_amount
+            &Some(40u64),             // loan_duration
+            &Some(300u32),            // max_loan_to_stake_ratio
+            &Some(10u64),             // grace_period
+            &Some(150u32),            // liquidity_mining_rate_bps
+        );
+        let after = s.client.get_config();
+        assert_eq!(after.yield_bps, 250);
+        assert_eq!(after.slash_bps, 4000);
+        assert_eq!(after.max_vouchers, 10);
+        assert_eq!(after.min_loan_amount, 50_000);
+        assert_eq!(after.loan_duration, 40);
+        assert_eq!(after.max_loan_to_stake_ratio, 300);
+        assert_eq!(after.grace_period, 10);
+        assert_eq!(after.liquidity_mining_rate_bps, 150);
+    }
+
+    #[test]
+    fn test_batch_update_config_partial_none_values() {
+        let s = setup();
+        let before = s.client.get_config();
+        s.client.batch_update_config(
+            &admins(&s),
+            &Some(300i128),           // yield_bps - change
+            &None,                    // slash_bps - keep
+            &Some(15u32),             // max_vouchers - change
+            &None,                    // min_loan_amount - keep
+            &None,                    // loan_duration - keep
+            &None,                    // max_loan_to_stake_ratio - keep
+            &None,                    // grace_period - keep
+            &None,                    // liquidity_mining_rate_bps - keep
+        );
+        let after = s.client.get_config();
+        assert_eq!(after.yield_bps, 300);
+        assert_eq!(after.slash_bps, before.slash_bps);
+        assert_eq!(after.max_vouchers, 15);
+        assert_eq!(after.min_loan_amount, before.min_loan_amount);
+        assert_eq!(after.loan_duration, before.loan_duration);
+    }
+
+    #[test]
+    fn test_batch_update_config_all_none_values() {
+        let s = setup();
+        let before = s.client.get_config();
+        s.client.batch_update_config(
+            &admins(&s),
+            &None, &None, &None, &None, &None, &None, &None, &None
+        );
+        let after = s.client.get_config();
+        assert_eq!(before.yield_bps, after.yield_bps);
+        assert_eq!(before.slash_bps, after.slash_bps);
+        assert_eq!(before.max_vouchers, after.max_vouchers);
+        assert_eq!(before.min_loan_amount, after.min_loan_amount);
+        assert_eq!(before.loan_duration, after.loan_duration);
+    }
+
+    #[test]
     fn test_set_reputation_nft() {
         let s = setup();
         let nft = Address::generate(&s.env);
