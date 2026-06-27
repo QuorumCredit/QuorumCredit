@@ -1,11 +1,11 @@
-//! Caching layer for read-heavy endpoints (Issue #724)
+//! Caching layer for read-heavy endpoints (Issue #724, #934)
 //!
 //! This module provides utilities for caching frequently accessed data
 //! to reduce storage reads and improve performance.
 
 use crate::types::{
-    CachedConfigRecord, CachedLoanRecord, CachedVouchesRecord, CacheKey, Config, DataKey,
-    LoanRecord, VouchRecord, CACHE_TTL_SECS,
+    CachedConfigRecord, CachedLoanRecord, CachedVouchesRecord, CacheKey, CachedYieldRecord,
+    Config, DataKey, LoanRecord, VouchRecord, CACHE_TTL_SECS, YIELD_CACHE_TTL_SECS,
 };
 use soroban_sdk::{Address, Env, Vec};
 
@@ -111,4 +111,565 @@ pub fn set_cached_config(env: &Env, config: Config) {
 pub fn invalidate_config_cache(env: &Env) {
     let cache_key = CacheKey::ConfigCache;
     env.storage().persistent().remove(&cache_key);
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
+}
+
+// ── Issue #934: Yield Calculation Caching ────────────────────────────────────
+
+/// Get a cached yield bps for a (borrower, voucher) pair if valid.
+///
+/// Returns `None` if the cache is missing, expired, or the base yield_bps from
+/// the current config differs from the one recorded at cache time (stale config).
+pub fn get_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    current_base_yield_bps: i128,
+) -> Option<i128> {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    if let Some(cached) = env.storage().persistent().get::<DataKey, CachedYieldRecord>(&key) {
+        let current_time = env.ledger().timestamp();
+        if current_time.saturating_sub(cached.cached_at) < YIELD_CACHE_TTL_SECS
+            && cached.base_yield_bps == current_base_yield_bps
+        {
+            return Some(cached.yield_bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+    }
+    None
+}
+
+/// Store a computed yield bps for a (borrower, voucher) pair.
+pub fn set_cached_yield(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    yield_bps: i128,
+    base_yield_bps: i128,
+) {
+    let key = DataKey::YieldCache(borrower.clone(), voucher.clone());
+    let record = CachedYieldRecord {
+        yield_bps,
+        cached_at: env.ledger().timestamp(),
+        base_yield_bps,
+    };
+    env.storage().persistent().set(&key, &record);
+}
+
+/// Invalidate the cached yield for a (borrower, voucher) pair.
+/// Call this when stake, reputation, or config changes affect the yield rate.
+pub fn invalidate_yield_cache(env: &Env, borrower: &Address, voucher: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::YieldCache(borrower.clone(), voucher.clone()));
 }

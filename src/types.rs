@@ -480,6 +480,18 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
+    // ── Issue #934: Yield Calculation Caching ─────────────────────────────────
+    /// (borrower, voucher) → CachedYieldRecord: cached per-vouch yield bps
+    YieldCache(Address, Address),
+    // ── Issue #935: Batch Token Transfers ────────────────────────────────────
+    /// Vec<BatchTransfer>: queued token transfers for batch processing
+    PendingTransfers,
+    // ── Issue #936: Merkle Tree Verification ─────────────────────────────────
+    /// borrower → VouchMerkleRoot: committed Merkle root over vouch list
+    VouchMerkleRoot(Address),
+    // ── Issue #937: Lazy Slash Execution ─────────────────────────────────────
+    /// Vec<LazySlashEntry>: slash operations queued for batch execution
+    LazySlashQueue,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1600,4 +1612,87 @@ pub enum LoanPrivacyLevel {
     VouchersOnly,
     /// Only the borrower can view loan details.
     Private,
+}
+
+// ── Issue #934: Yield Calculation Caching ─────────────────────────────────────
+
+/// Cache TTL for general cached records (5 minutes).
+pub const CACHE_TTL_SECS: u64 = 5 * 60;
+
+/// Cache TTL for per-vouch yield rate calculations (1 hour).
+/// Yield rates change slowly (based on vouch age, reputation counts), so a longer
+/// TTL is appropriate here to avoid recomputing on every incremental stake update.
+pub const YIELD_CACHE_TTL_SECS: u64 = 60 * 60;
+
+/// Cached per-vouch yield rate for a (borrower, voucher) pair.
+#[contracttype]
+#[derive(Clone)]
+pub struct CachedYieldRecord {
+    /// Cached yield rate in basis points.
+    pub yield_bps: i128,
+    /// Ledger timestamp when this cache entry was written.
+    pub cached_at: u64,
+    /// The base yield_bps from Config at cache time (used to detect config changes).
+    pub base_yield_bps: i128,
+}
+
+// ── Issue #936: Merkle Tree Verification ─────────────────────────────────────
+
+/// Stored Merkle root over the canonical vouch list for a borrower.
+/// Enables off-chain provers to submit compact inclusion proofs instead of the
+/// full vouch list, and on-chain callers to verify single-root integrity.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchMerkleRoot {
+    /// SHA-256 root hash of the ordered vouch set (leaf = hash(voucher || stake || token)).
+    pub root: soroban_sdk::BytesN<32>,
+    /// Number of vouches committed in this root.
+    pub vouch_count: u32,
+    /// Ledger timestamp when the root was last computed and stored.
+    pub computed_at: u64,
+}
+
+// ── Issue #937: Lazy Slash Execution ─────────────────────────────────────────
+
+/// A slash that has been queued but not yet executed.
+/// Queued slashes are executed in batches via `process_slash_queue`.
+#[contracttype]
+#[derive(Clone)]
+pub struct QueuedSlash {
+    /// Borrower whose stake is to be slashed.
+    pub borrower: Address,
+    /// Ledger timestamp when the slash was queued.
+    pub queued_at: u64,
+    /// Earliest timestamp at which this slash may be executed (queued_at + slash_delay).
+    pub executable_at: u64,
+    /// Whether this entry has already been executed.
+    pub executed: bool,
+}
+
+// ── Issue #935: Batch Token Transfers ────────────────────────────────────────
+
+/// A queued token transfer to be executed in batch.
+#[contracttype]
+#[derive(Clone)]
+pub struct BatchTransfer {
+    /// Recipient address.
+    pub to: Address,
+    /// Amount in stroops.
+    pub amount: i128,
+    /// Token contract address.
+    pub token: Address,
+}
+
+// ── Issue #937: Lazy Slash Execution ─────────────────────────────────────────
+
+/// A slash entry queued for deferred batch execution.
+#[contracttype]
+#[derive(Clone)]
+pub struct LazySlashEntry {
+    /// Borrower to be slashed.
+    pub borrower: Address,
+    /// Amount to slash (typically 50% of total vouched stake).
+    pub slash_amount: i128,
+    /// Ledger timestamp when the slash was queued.
+    pub queued_at: u64,
 }
