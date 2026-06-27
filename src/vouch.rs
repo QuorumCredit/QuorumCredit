@@ -1477,3 +1477,45 @@ pub fn execute_vouch_withdrawal(
 ) -> Result<(), ContractError> {
     Err(ContractError::InvalidStateTransition)
 }
+
+/// Issue #71: Batch stake calculation.
+///
+/// Returns the total primary-token stake for each borrower in `borrowers` in a
+/// single contract call, avoiding O(n) round-trips from the client side.
+///
+/// For each borrower the function sums only vouches whose `token` field matches
+/// the configured primary token, mirroring the behaviour of `total_vouched`.
+/// The result Vec preserves the same order as the input Vec so callers can zip
+/// the two slices by index.
+///
+/// Overflow is handled conservatively: if the running total for any borrower
+/// would overflow `i128` the stake for that entry is clamped to `i128::MAX`.
+pub fn batch_total_stake(
+    env: Env,
+    borrowers: Vec<Address>,
+) -> Result<Vec<crate::types::BorrowerStake>, ContractError> {
+    let cfg = crate::helpers::config(&env);
+    let mut results: Vec<crate::types::BorrowerStake> = Vec::new(&env);
+
+    for borrower in borrowers.iter() {
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let mut total: i128 = 0i128;
+        for v in vouches.iter() {
+            if v.token == cfg.token {
+                total = total.saturating_add(v.stake);
+            }
+        }
+
+        results.push_back(crate::types::BorrowerStake {
+            borrower,
+            total_stake: total,
+        });
+    }
+
+    Ok(results)
+}

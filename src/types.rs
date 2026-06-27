@@ -1601,3 +1601,16 @@ pub enum LoanPrivacyLevel {
     /// Only the borrower can view loan details.
     Private,
 }
+
+// ── Issue #71: Parallel Stake Calculation ────────────────────────────────────
+
+/// One entry in the result of `batch_total_stake`: the total active stake
+/// (in stroops, primary token only) held by all vouchers for a single borrower.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BorrowerStake {
+    /// The borrower whose stake is being summarised.
+    pub borrower: Address,
+    /// Sum of all primary-token vouch stakes for this borrower, in stroops.
+    pub total_stake: i128,
+}

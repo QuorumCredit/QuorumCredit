@@ -62,3 +62,5 @@ mod input_validation_test;
 mod invariants_test;
 #[path = "regression_tests.rs"]
 mod regression_tests;
+#[path = "batch_stake_test.rs"]
+mod batch_stake_test;
