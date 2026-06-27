@@ -969,6 +969,21 @@ impl QuorumCreditContract {
         vouches.iter().any(|v| v.voucher == voucher)
     }
 
+    /// Returns the total primary-token stake for `borrower`.
+    pub fn total_vouched(env: Env, borrower: Address) -> Result<i128, ContractError> {
+        vouch::total_vouched(env, borrower)
+    }
+
+    /// Issue #71: Batch stake calculation.
+    /// Returns the total primary-token stake for each address in `borrowers`
+    /// in a single call, preserving input order.
+    pub fn batch_total_stake(
+        env: Env,
+        borrowers: Vec<Address>,
+    ) -> Result<Vec<BorrowerStake>, ContractError> {
+        vouch::batch_total_stake(env, borrowers)
+    }
+
     pub fn get_config(env: Env) -> Config {
         config(&env)
     }
