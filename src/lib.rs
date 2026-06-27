@@ -1,12 +1,14 @@
 #![no_std]
 
 pub mod admin;
+pub mod archive;
 pub mod attributes;
 pub mod credit_score;
 pub mod errors;
 pub mod governance;
 pub mod helpers;
 pub mod insurance;
+pub mod ipfs_archive;
 pub mod loan;
 pub mod partial_repayment;
 pub mod periodic_payments;
@@ -1576,6 +1578,91 @@ impl QuorumCreditContract {
         caller: Address,
     ) -> Result<(), ContractError> {
         syndication::handle_syndication_default(env, syndication_id, caller)
+    }
+
+    // ── Data Archiving ────────────────────────────────────────────────────────
+
+    /// Get the total count of archived loans.
+    pub fn get_archive_count(env: Env) -> u64 {
+        archive::get_archive_count(&env)
+    }
+
+    /// Retrieve an archived loan by archive ID.
+    pub fn get_archived_loan(env: Env, archive_id: u64) -> Option<ArchivedLoanRecord> {
+        archive::get_archived_loan(&env, archive_id)
+    }
+
+    /// Archive vouch history when it exceeds the threshold.
+    /// This moves old entries to archived storage to reduce persistent storage bloat.
+    pub fn archive_vouch_history(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        max_active_entries: u32,
+    ) -> Result<(), ContractError> {
+        archive::archive_vouch_history(&env, &borrower, &voucher, &token, max_active_entries)
+    }
+
+    /// Retrieve archived vouch history for a specific batch.
+    pub fn get_archived_vouch_history(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        batch_id: u32,
+    ) -> Vec<VouchHistoryEntry> {
+        archive::get_archived_vouch_history(&env, &borrower, &voucher, &token, batch_id)
+    }
+
+    // ── IPFS Archiving ────────────────────────────────────────────────────────
+
+    /// Register an IPFS archive for a completed loan.
+    /// Called after uploading the loan archive to IPFS to store the content hash.
+    pub fn register_loan_ipfs_archive(
+        env: Env,
+        archive_id: u64,
+        ipfs_hash: String,
+    ) -> Result<(), ContractError> {
+        ipfs_archive::register_loan_ipfs_archive(&env, archive_id, ipfs_hash)
+    }
+
+    /// Retrieve the IPFS hash for an archived loan.
+    pub fn get_loan_ipfs_archive(env: Env, archive_id: u64) -> Option<IpfsArchiveReference> {
+        ipfs_archive::get_loan_ipfs_archive(&env, archive_id)
+    }
+
+    /// Register an IPFS archive for vouch history batch.
+    pub fn register_vouch_history_ipfs_archive(
+        env: Env,
+        archive_id: u64,
+        ipfs_hash: String,
+    ) -> Result<(), ContractError> {
+        ipfs_archive::register_vouch_history_ipfs_archive(&env, archive_id, ipfs_hash)
+    }
+
+    /// Retrieve the IPFS hash for archived vouch history.
+    pub fn get_vouch_history_ipfs_archive(env: Env, archive_id: u64) -> Option<IpfsArchiveReference> {
+        ipfs_archive::get_vouch_history_ipfs_archive(&env, archive_id)
+    }
+
+    /// Get the total count of IPFS archives.
+    pub fn get_ipfs_archive_count(env: Env) -> u64 {
+        ipfs_archive::get_loan_ipfs_archive_count(&env)
+    }
+
+    /// Check if an archive has been backed up to IPFS.
+    pub fn is_archive_ipfs_backed(env: Env, archive_id: u64) -> bool {
+        ipfs_archive::is_archive_ipfs_backed(&env, archive_id)
+    }
+
+    /// Verify the integrity of an archived loan against IPFS.
+    pub fn verify_loan_archive_integrity(
+        env: Env,
+        archive_id: u64,
+        expected_ipfs_hash: String,
+    ) -> Result<bool, ContractError> {
+        ipfs_archive::verify_loan_archive_integrity(&env, archive_id, expected_ipfs_hash)
     }
 
     pub fn get_syndication(env: Env, syndication_id: u64) -> Option<LoanSyndication> {

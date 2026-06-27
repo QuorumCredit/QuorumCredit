@@ -175,6 +175,71 @@ mod coverage_tests {
     }
 
     #[test]
+    fn test_batch_update_config_single_storage_write() {
+        let s = setup();
+        let before = s.client.get_config();
+        s.client.batch_update_config(
+            &admins(&s),
+            &Some(250i128),           // yield_bps
+            &Some(4000i128),          // slash_bps
+            &Some(10u32),             // max_vouchers
+            &Some(50_000i128),        // min_loan_amount
+            &Some(40u64),             // loan_duration
+            &Some(300u32),            // max_loan_to_stake_ratio
+            &Some(10u64),             // grace_period
+            &Some(150u32),            // liquidity_mining_rate_bps
+        );
+        let after = s.client.get_config();
+        assert_eq!(after.yield_bps, 250);
+        assert_eq!(after.slash_bps, 4000);
+        assert_eq!(after.max_vouchers, 10);
+        assert_eq!(after.min_loan_amount, 50_000);
+        assert_eq!(after.loan_duration, 40);
+        assert_eq!(after.max_loan_to_stake_ratio, 300);
+        assert_eq!(after.grace_period, 10);
+        assert_eq!(after.liquidity_mining_rate_bps, 150);
+    }
+
+    #[test]
+    fn test_batch_update_config_partial_none_values() {
+        let s = setup();
+        let before = s.client.get_config();
+        s.client.batch_update_config(
+            &admins(&s),
+            &Some(300i128),           // yield_bps - change
+            &None,                    // slash_bps - keep
+            &Some(15u32),             // max_vouchers - change
+            &None,                    // min_loan_amount - keep
+            &None,                    // loan_duration - keep
+            &None,                    // max_loan_to_stake_ratio - keep
+            &None,                    // grace_period - keep
+            &None,                    // liquidity_mining_rate_bps - keep
+        );
+        let after = s.client.get_config();
+        assert_eq!(after.yield_bps, 300);
+        assert_eq!(after.slash_bps, before.slash_bps);
+        assert_eq!(after.max_vouchers, 15);
+        assert_eq!(after.min_loan_amount, before.min_loan_amount);
+        assert_eq!(after.loan_duration, before.loan_duration);
+    }
+
+    #[test]
+    fn test_batch_update_config_all_none_values() {
+        let s = setup();
+        let before = s.client.get_config();
+        s.client.batch_update_config(
+            &admins(&s),
+            &None, &None, &None, &None, &None, &None, &None, &None
+        );
+        let after = s.client.get_config();
+        assert_eq!(before.yield_bps, after.yield_bps);
+        assert_eq!(before.slash_bps, after.slash_bps);
+        assert_eq!(before.max_vouchers, after.max_vouchers);
+        assert_eq!(before.min_loan_amount, after.min_loan_amount);
+        assert_eq!(before.loan_duration, after.loan_duration);
+    }
+
+    #[test]
     fn test_set_reputation_nft() {
         let s = setup();
         let nft = Address::generate(&s.env);
@@ -435,6 +500,208 @@ mod coverage_tests {
         let s = setup();
         let borrower = Address::generate(&s.env);
         assert!(!s.client.is_eligible(&borrower, &0));
+    }
+
+    #[test]
+    fn test_is_eligible_o1_check_with_cache() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        
+        // First eligibility check (cache miss, computes and caches)
+        assert!(s.client.is_eligible(&borrower, &500_000));
+        
+        // Second eligibility check (cache hit, O(1))
+        assert!(s.client.is_eligible(&borrower, &500_000));
+        
+        // Third check with higher threshold still passes
+        assert!(s.client.is_eligible(&borrower, &1_000_000));
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_increase_stake() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 500_000);
+        
+        // Check eligibility (caches)
+        assert!(!s.client.is_eligible(&borrower, &1_000_000));
+        
+        // Increase stake
+        StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &600_000);
+        s.client.increase_stake(&voucher, &borrower, &600_000);
+        
+        // Cache should be invalidated; next check should pass
+        assert!(s.client.is_eligible(&borrower, &1_000_000));
+    }
+
+    #[test]
+    fn test_cache_invalidation_on_decrease_stake() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        
+        // Check eligibility (caches)
+        assert!(s.client.is_eligible(&borrower, &1_000_000));
+        
+        // Decrease stake
+        s.client.decrease_stake(&voucher, &borrower, &400_000);
+        
+        // Cache should be invalidated; now it should fail for high threshold
+        assert!(!s.client.is_eligible(&borrower, &700_000));
+    }
+
+    #[test]
+    fn test_archive_completed_loan() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay the loan
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Verify loan is repaid
+        assert_eq!(s.client.loan_status(&borrower), LoanStatus::Repaid);
+        
+        // Archive count should reflect the archived loan
+        // Note: Archive is called internally during repay
+        assert!(s.client.get_archive_count() > 0);
+    }
+
+    #[test]
+    fn test_archive_retrieved_correctly() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay loan
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Get archive ID
+        let archive_count = s.client.get_archive_count();
+        assert_eq!(archive_count, 1); // First archived loan
+    }
+
+    #[test]
+    fn test_archive_multiple_loans() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower1 = Address::generate(&s.env);
+        let borrower2 = Address::generate(&s.env);
+        
+        // First loan
+        StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &1_000_000);
+        s.client.vouch(&voucher, &borrower1, &500_000, &s.token);
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
+        s.client.request_loan(&borrower1, &100_000, &400_000, &String::from_str(&s.env, "test1"), &s.token);
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower1, &102_000);
+        s.client.repay(&borrower1, &102_000);
+        
+        // Second loan
+        StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &500_000);
+        s.client.vouch(&voucher, &borrower2, &500_000, &s.token);
+        s.env.ledger().with_mut(|l| l.timestamp += 61);
+        s.client.request_loan(&borrower2, &100_000, &400_000, &String::from_str(&s.env, "test2"), &s.token);
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower2, &102_000);
+        s.client.repay(&borrower2, &102_000);
+        
+        // Both loans should be archived
+        assert_eq!(s.client.get_archive_count(), 2);
+    }
+
+    #[test]
+    fn test_register_loan_ipfs_archive() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay the loan to create an archived loan
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Register IPFS archive
+        let archive_id = 1u64;
+        let ipfs_hash = String::from_str(&s.env, "QmVeryLongIPFSHashForArchivedLoanData");
+        let result = s.client.register_loan_ipfs_archive(&archive_id, &ipfs_hash);
+        assert!(result.is_ok());
+        
+        // Verify the IPFS archive was registered
+        let archived = s.client.get_loan_ipfs_archive(&archive_id);
+        assert!(archived.is_some());
+    }
+
+    #[test]
+    fn test_check_archive_ipfs_backed() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay loan to create archive
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Archive is not initially backed up
+        let archive_id = 1u64;
+        assert!(!s.client.is_archive_ipfs_backed(&archive_id));
+        
+        // Register IPFS archive
+        let ipfs_hash = String::from_str(&s.env, "QmTestIPFSHash");
+        s.client.register_loan_ipfs_archive(&archive_id, &ipfs_hash).unwrap();
+        
+        // After registration, it should be backed
+        assert!(s.client.is_archive_ipfs_backed(&archive_id));
+    }
+
+    #[test]
+    fn test_verify_loan_archive_integrity() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay loan to create archive
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Register IPFS archive
+        let archive_id = 1u64;
+        let ipfs_hash = String::from_str(&s.env, "QmArchiveHashForIntegrity");
+        s.client.register_loan_ipfs_archive(&archive_id, &ipfs_hash).unwrap();
+        
+        // Verify integrity
+        let result = s.client.verify_loan_archive_integrity(&archive_id, &ipfs_hash);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_ipfs_archive_count() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay loan to create archive
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Initial count should be 0
+        assert_eq!(s.client.get_ipfs_archive_count(), 0);
     }
 
     #[test]

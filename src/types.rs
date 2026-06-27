@@ -378,6 +378,26 @@ pub enum DataKey {
     SlashThresholdProposalCounter,
     /// Per-borrower timestamp of the last successful slash.
     LastSlashedAt(Address),
+    /// Cached total weighted stake per borrower per token: (borrower, token) → i128
+    /// Used for O(1) eligibility checks; invalidated on vouch operations.
+    TotalWeightedStakeCache(Address, Address),
+    /// Archived loan records: archive_id → ArchivedLoanRecord
+    /// Old completed or slashed loans are moved here to reduce persistent storage.
+    ArchivedLoan(u64),
+    /// Archive counter for generating unique archive IDs
+    ArchiveCounter,
+    /// Archived vouch history: (borrower, voucher, token, batch_id) → Vec<VouchHistoryEntry>
+    /// Old vouch history entries are moved here when history grows beyond a threshold.
+    ArchivedVouchHistory(Address, Address, Address, u32),
+    /// IPFS archive reference for loans: archive_id → IpfsArchiveReference
+    /// Maps archive IDs to their IPFS content hashes for off-chain storage.
+    IpfsLoanArchive(u64),
+    /// IPFS archive reference for vouch history: archive_id → IpfsArchiveReference
+    IpfsVouchHistoryArchive(u64),
+    /// Counter for IPFS archives created
+    IpfsArchiveCounter,
+    /// Flag indicating if an archive has been backed up to IPFS: archive_id → bool
+    IpfsBackedArchive(u64),
     /// Admin config-update proposal id → proposal record.
     ConfigUpdateProposal(u64),
     ConfigUpdateProposalCounter,
@@ -1145,6 +1165,49 @@ pub struct LoanRecord {
     pub milestone_bonus_applied: bool,
     /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
+}
+
+/// An archived loan record, stored separately to reduce active persistent storage.
+/// Created when a loan reaches a terminal state (Repaid or Defaulted) and is moved
+/// from active storage to archive to preserve history while reducing bloat.
+#[contracttype]
+#[derive(Clone)]
+pub struct ArchivedLoanRecord {
+    /// Unique archive ID (monotonically increasing).
+    pub archive_id: u64,
+    /// Original loan ID before archival.
+    pub original_loan_id: u64,
+    /// Borrower address for historical audit trail.
+    pub borrower: Address,
+    /// Total principal in stroops.
+    pub amount: i128,
+    /// Cumulative repayments in stroops.
+    pub amount_repaid: i128,
+    /// Total yield locked in stroops.
+    pub total_yield: i128,
+    /// Final loan status before archival (should be Repaid or Defaulted).
+    pub final_status: LoanStatus,
+    /// Timestamp when the loan was originally created.
+    pub created_at: u64,
+    /// Timestamp when the loan was archived (terminal state reached).
+    pub archived_at: u64,
+    /// Original loan purpose for audit trail.
+    pub loan_purpose: soroban_sdk::String,
+    /// Token used for this loan.
+    pub token_address: Address,
+}
+
+/// A reference to archived data stored on IPFS.
+/// The actual data blob is stored on IPFS, and this contract maintains the hash for retrieval.
+#[contracttype]
+#[derive(Clone)]
+pub struct IpfsArchiveReference {
+    /// IPFS content hash (e.g., "Qm..." for v0 IPFS, "baf..." for v1 CIDv1)
+    pub ipfs_hash: soroban_sdk::String,
+    /// Timestamp when this archive was created
+    pub archived_at: u64,
+    /// Type of archive: "loan", "vouch_history", etc.
+    pub archive_type: soroban_sdk::String,
 }
 
 /// #645: Pending loan restructure request — borrower requests, vouchers approve.
