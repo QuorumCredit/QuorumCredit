@@ -619,6 +619,92 @@ mod coverage_tests {
     }
 
     #[test]
+    fn test_register_loan_ipfs_archive() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay the loan to create an archived loan
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Register IPFS archive
+        let archive_id = 1u64;
+        let ipfs_hash = String::from_str(&s.env, "QmVeryLongIPFSHashForArchivedLoanData");
+        let result = s.client.register_loan_ipfs_archive(&archive_id, &ipfs_hash);
+        assert!(result.is_ok());
+        
+        // Verify the IPFS archive was registered
+        let archived = s.client.get_loan_ipfs_archive(&archive_id);
+        assert!(archived.is_some());
+    }
+
+    #[test]
+    fn test_check_archive_ipfs_backed() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay loan to create archive
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Archive is not initially backed up
+        let archive_id = 1u64;
+        assert!(!s.client.is_archive_ipfs_backed(&archive_id));
+        
+        // Register IPFS archive
+        let ipfs_hash = String::from_str(&s.env, "QmTestIPFSHash");
+        s.client.register_loan_ipfs_archive(&archive_id, &ipfs_hash).unwrap();
+        
+        // After registration, it should be backed
+        assert!(s.client.is_archive_ipfs_backed(&archive_id));
+    }
+
+    #[test]
+    fn test_verify_loan_archive_integrity() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay loan to create archive
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Register IPFS archive
+        let archive_id = 1u64;
+        let ipfs_hash = String::from_str(&s.env, "QmArchiveHashForIntegrity");
+        s.client.register_loan_ipfs_archive(&archive_id, &ipfs_hash).unwrap();
+        
+        // Verify integrity
+        let result = s.client.verify_loan_archive_integrity(&archive_id, &ipfs_hash);
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn test_ipfs_archive_count() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        do_vouch(&s, &voucher, &borrower, 1_000_000);
+        do_loan(&s, &borrower, 100_000);
+        
+        // Repay loan to create archive
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &102_000);
+        s.client.repay(&borrower, &102_000);
+        
+        // Initial count should be 0
+        assert_eq!(s.client.get_ipfs_archive_count(), 0);
+    }
+
+    #[test]
     fn test_repayment_count() {
         let s = setup();
         let voucher = Address::generate(&s.env);

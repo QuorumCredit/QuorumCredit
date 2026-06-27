@@ -389,6 +389,15 @@ pub enum DataKey {
     /// Archived vouch history: (borrower, voucher, token, batch_id) → Vec<VouchHistoryEntry>
     /// Old vouch history entries are moved here when history grows beyond a threshold.
     ArchivedVouchHistory(Address, Address, Address, u32),
+    /// IPFS archive reference for loans: archive_id → IpfsArchiveReference
+    /// Maps archive IDs to their IPFS content hashes for off-chain storage.
+    IpfsLoanArchive(u64),
+    /// IPFS archive reference for vouch history: archive_id → IpfsArchiveReference
+    IpfsVouchHistoryArchive(u64),
+    /// Counter for IPFS archives created
+    IpfsArchiveCounter,
+    /// Flag indicating if an archive has been backed up to IPFS: archive_id → bool
+    IpfsBackedArchive(u64),
     /// Admin config-update proposal id → proposal record.
     ConfigUpdateProposal(u64),
     ConfigUpdateProposalCounter,
@@ -1186,6 +1195,19 @@ pub struct ArchivedLoanRecord {
     pub loan_purpose: soroban_sdk::String,
     /// Token used for this loan.
     pub token_address: Address,
+}
+
+/// A reference to archived data stored on IPFS.
+/// The actual data blob is stored on IPFS, and this contract maintains the hash for retrieval.
+#[contracttype]
+#[derive(Clone)]
+pub struct IpfsArchiveReference {
+    /// IPFS content hash (e.g., "Qm..." for v0 IPFS, "baf..." for v1 CIDv1)
+    pub ipfs_hash: soroban_sdk::String,
+    /// Timestamp when this archive was created
+    pub archived_at: u64,
+    /// Type of archive: "loan", "vouch_history", etc.
+    pub archive_type: soroban_sdk::String,
 }
 
 /// #645: Pending loan restructure request — borrower requests, vouchers approve.
