@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod admin;
+pub mod archive;
 pub mod attributes;
 pub mod credit_score;
 pub mod errors;
@@ -1576,6 +1577,41 @@ impl QuorumCreditContract {
         caller: Address,
     ) -> Result<(), ContractError> {
         syndication::handle_syndication_default(env, syndication_id, caller)
+    }
+
+    // ── Data Archiving ────────────────────────────────────────────────────────
+
+    /// Get the total count of archived loans.
+    pub fn get_archive_count(env: Env) -> u64 {
+        archive::get_archive_count(&env)
+    }
+
+    /// Retrieve an archived loan by archive ID.
+    pub fn get_archived_loan(env: Env, archive_id: u64) -> Option<ArchivedLoanRecord> {
+        archive::get_archived_loan(&env, archive_id)
+    }
+
+    /// Archive vouch history when it exceeds the threshold.
+    /// This moves old entries to archived storage to reduce persistent storage bloat.
+    pub fn archive_vouch_history(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        max_active_entries: u32,
+    ) -> Result<(), ContractError> {
+        archive::archive_vouch_history(&env, &borrower, &voucher, &token, max_active_entries)
+    }
+
+    /// Retrieve archived vouch history for a specific batch.
+    pub fn get_archived_vouch_history(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        batch_id: u32,
+    ) -> Vec<VouchHistoryEntry> {
+        archive::get_archived_vouch_history(&env, &borrower, &voucher, &token, batch_id)
     }
 
     pub fn get_syndication(env: Env, syndication_id: u64) -> Option<LoanSyndication> {
