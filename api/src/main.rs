@@ -1,5 +1,6 @@
 mod analytics;
 mod auth;
+mod load_test;
 mod logging;
 mod rate_limiter;
 mod webhook;
@@ -296,12 +297,14 @@ async fn ready_check(State(state): State<AppState>) -> Result<Json<serde_json::V
 }
 
 pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
+    // try_init instead of init so multiple test invocations don't panic when
+    // the subscriber is already registered in the same process.
+    let _ = tracing_subscriber::fmt()
         .with_target(false)
         .with_thread_ids(true)
         .with_file(true)
         .with_line_number(true)
-        .init();
+        .try_init();
 
     let jwt_secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "default_secret".to_string());
 
