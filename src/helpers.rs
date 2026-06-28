@@ -289,6 +289,39 @@ pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
     }
 }
 
+/// Issue #893: Require admin approval for a specific operation type with multi-tier thresholds.
+/// Different operation types can require different numbers of approvals based on criticality.
+pub fn require_admin_approval_for_operation(
+    env: &Env,
+    admin_signers: &Vec<Address>,
+    operation_type: crate::types::AdminOperationType,
+) {
+    use crate::types::{AdminOperationType, DataKey};
+    
+    let cfg = config(env);
+    
+    // Determine the required threshold based on operation type
+    let required_threshold = if let Some(multi_tier) = &cfg.multi_tier_thresholds {
+        multi_tier.get_threshold(operation_type)
+    } else {
+        // Fall back to single threshold if multi-tier not configured
+        cfg.admin_threshold
+    };
+
+    assert!(
+        admin_signers.len() >= required_threshold as usize,
+        "insufficient admin approvals for this operation type"
+    );
+
+    for signer in admin_signers.iter() {
+        assert!(
+            cfg.admins.iter().any(|a| a == signer),
+            "signer is not a registered admin"
+        );
+        signer.require_auth();
+    }
+}
+
 pub fn is_admin(env: &Env, addr: &Address) -> bool {
     config(env).admins.iter().any(|a| a == *addr)
 }
@@ -450,5 +483,117 @@ pub fn check_permission(
         Ok(())
     } else {
         Err(ContractError::PermissionDenied)
+    }
+}
+
+// ── Issue #63: Signature Replay Protection ────────────────────────────────────
+
+/// Verifies `nonce` is strictly greater than the last consumed nonce for `caller`,
+/// then records it. Returns `Err(ReplayAttackDetected)` if the nonce has already
+/// been consumed.
+///
+/// Callers must include `nonce` in the signed payload to prevent replays.
+pub fn verify_and_consume_nonce(
+    env: &Env,
+    caller: &Address,
+    nonce: u64,
+) -> Result<(), ContractError> {
+    let last: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Nonce(caller.clone()))
+        .unwrap_or(0);
+    if nonce <= last {
+        return Err(ContractError::ReplayAttackDetected);
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::Nonce(caller.clone()), &nonce);
+    Ok(())
+}
+
+/// Returns the next expected nonce for `caller` (last consumed + 1).
+pub fn next_nonce(env: &Env, caller: &Address) -> u64 {
+    let last: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Nonce(caller.clone()))
+        .unwrap_or(0);
+    last + 1
+}
+
+// ── Issue #64: Oracle Price Staleness ─────────────────────────────────────────
+
+/// Validates that an oracle price record is fresh (within `ORACLE_PRICE_MAX_AGE_SECS`).
+/// Returns `Err(AttestationExpired)` if the price is stale.
+pub fn validate_price_freshness(
+    env: &Env,
+    price_record: &crate::types::OraclePriceRecord,
+) -> Result<(), ContractError> {
+    let now = env.ledger().timestamp();
+    if now.saturating_sub(price_record.recorded_at) > crate::types::ORACLE_PRICE_MAX_AGE_SECS {
+        return Err(ContractError::AttestationExpired);
+    }
+    Ok(())
+}
+
+/// Retrieves an oracle price record and validates its freshness in one call.
+pub fn get_fresh_price(
+    env: &Env,
+    key: soroban_sdk::Symbol,
+) -> Result<crate::types::OraclePriceRecord, ContractError> {
+    let record: crate::types::OraclePriceRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::OraclePrice(key))
+        .ok_or(ContractError::OracleUnauthorized)?;
+    validate_price_freshness(env, &record)?;
+    Ok(record)
+}
+
+// ── Issue #65: Graduated Response / Tiered Lockdown ───────────────────────────
+
+/// Returns the current [`ThreatLevel`] (defaults to `Normal`).
+pub fn get_threat_level(env: &Env) -> crate::types::ThreatLevel {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ThreatLevelKey)
+        .unwrap_or(crate::types::ThreatLevel::Normal)
+}
+
+/// Sets the protocol threat level. Requires admin approval.
+pub fn set_threat_level(
+    env: &Env,
+    admin_signers: &soroban_sdk::Vec<Address>,
+    level: crate::types::ThreatLevel,
+) {
+    require_admin_approval(env, admin_signers);
+    env.storage()
+        .persistent()
+        .set(&DataKey::ThreatLevelKey, &level);
+}
+
+/// Enforces graduated response restrictions for a write operation.
+///
+/// - `Normal`   → allowed
+/// - `Elevated` → blocks new vouches/loans (callers pass `is_new_activity = true`)
+/// - `Critical` → blocks all writes
+/// - `Lockdown` → blocks all writes
+pub fn require_graduated_response(
+    env: &Env,
+    is_new_activity: bool,
+) -> Result<(), ContractError> {
+    match get_threat_level(env) {
+        crate::types::ThreatLevel::Normal => Ok(()),
+        crate::types::ThreatLevel::Elevated => {
+            if is_new_activity {
+                Err(ContractError::ContractPaused)
+            } else {
+                Ok(())
+            }
+        }
+        crate::types::ThreatLevel::Critical | crate::types::ThreatLevel::Lockdown => {
+            Err(ContractError::ContractPaused)
+        }
     }
 }

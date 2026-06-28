@@ -480,14 +480,17 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
-    // ── Issue #938: Incremental Config Changes ────────────────────────────────
-    /// Index → ConfigPatch (pending incremental config update)
-    ConfigPatch(u32),
-    /// Total number of enqueued config patches
-    ConfigPatchCount,
-    // ── Issue #939: Storage Compaction ────────────────────────────────────────
-    /// loan_id → ArchivedLoan (compacted record after full loan deletion)
-    ArchivedLoan(u64),
+    // ── Issue #887: Loan Subordination and Cascading Debt Hierarchy ──────────
+    /// (senior_loan_id, subordinate_loan_id) → SubordinationRecord
+    SubordinationRelation(u64, u64),
+    /// senior_loan_id → Vec<u64> (IDs of all subordinate loans ordered by priority)
+    SubordinateLoansList(u64),
+    /// subordinate_loan_id → u64 (ID of direct senior loan, if any)
+    SeniorLoanOf(u64),
+    /// senior_loan_id → CascadingDefault (tracks cascade triggered by default)
+    CascadingDefaultRecord(u64),
+    /// Waterfall distribution configuration for a borrower
+    WaterfallConfig(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -607,6 +610,55 @@ pub struct ConfigUpdateProposal {
 }
 
 // ── Admin Governance Queue with Multi-Signature Confirmation ─────────────────────
+
+/// Issue #893: Admin operation types for multi-tier approval thresholds.
+/// Different operations can require different numbers of admin approvals based on criticality.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdminOperationType {
+    /// Low-risk operations (e.g., setting parameters like min_stake)
+    Standard,
+    /// Medium-risk operations (e.g., adding/removing tokens, admin changes)
+    HighRisk,
+    /// Critical operations (e.g., contract upgrade, pause, emergency actions)
+    Critical,
+}
+
+/// Issue #893: Multi-tier admin approval thresholds for different operation types.
+/// Allows different admin operations to require different numbers of approvals.
+#[contracttype]
+#[derive(Clone)]
+pub struct MultiTierAdminThresholds {
+    /// Approvals required for standard operations (default: same as admin_threshold)
+    pub standard_threshold: u32,
+    /// Approvals required for high-risk operations (default: 2x standard)
+    pub high_risk_threshold: u32,
+    /// Approvals required for critical operations (default: all admins)
+    pub critical_threshold: u32,
+}
+
+impl MultiTierAdminThresholds {
+    /// Create default thresholds based on total admin count.
+    /// Standard = 1, HighRisk = (total/2)+1, Critical = total
+    pub fn default_for_admin_count(admin_count: u32) -> Self {
+        let high_risk = if admin_count > 1 { (admin_count / 2) + 1 } else { 1 };
+        let critical = admin_count;
+        MultiTierAdminThresholds {
+            standard_threshold: 1,
+            high_risk_threshold: high_risk,
+            critical_threshold: critical,
+        }
+    }
+
+    /// Get the threshold for a specific operation type
+    pub fn get_threshold(&self, operation_type: AdminOperationType) -> u32 {
+        match operation_type {
+            AdminOperationType::Standard => self.standard_threshold,
+            AdminOperationType::HighRisk => self.high_risk_threshold,
+            AdminOperationType::Critical => self.critical_threshold,
+        }
+    }
+}
 
 /// Types of governance actions that can be proposed in the admin governance queue.
 #[contracttype]
@@ -1081,6 +1133,9 @@ pub struct Config {
     /// when current admins are unavailable.
     pub successor_admin: Option<Address>,
     pub rate_limit_config: RateLimitConfig,
+    /// Issue #893: Multi-tier admin approval thresholds for different operation types.
+    /// If not set, falls back to single admin_threshold for all operations.
+    pub multi_tier_thresholds: Option<MultiTierAdminThresholds>,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -1610,63 +1665,77 @@ pub enum LoanPrivacyLevel {
     Private,
 }
 
-// ── Issue #938: Incremental Config Changes ───────────────────────────────────
+// ── Issue #887: Loan Subordination and Cascading Debt Hierarchy ──────────────
 
-/// A single pending config field update to be applied gradually.
+/// Issue #887: Subordination level in the debt hierarchy.
+/// Determines priority order for repayment and default cascading.
 #[contracttype]
-#[derive(Clone)]
-pub struct ConfigPatch {
-    /// Identifies which config field to update.
-    pub field: ConfigField,
-    /// The new value encoded as i128 (booleans: 1 = true, 0 = false; u32/u64 cast to i128).
-    pub new_value: i128,
-    /// Ledger timestamp when this patch becomes applicable (not-before time).
-    pub apply_after: u64,
-    /// Whether this patch has already been applied.
-    pub applied: bool,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum SubordinationLevel {
+    /// Senior (Priority 0): Highest priority. Must be fully repaid first.
+    /// Default of senior loan blocks all subordinate loans.
+    Senior = 0,
+    /// Mezzanine (Priority 1): Intermediate level.
+    /// Can have both senior and subordinate loans.
+    Mezzanine = 1,
+    /// Subordinate (Priority 2+): Lowest priority.
+    /// Repaid after seniors. Affected by senior defaults (cascading).
+    Subordinate = 2,
 }
 
-/// Discriminator for config fields that can be updated via incremental patching.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ConfigField {
-    YieldBps,
-    SlashBps,
-    MaxVouchers,
-    MinLoanAmount,
-    LoanDuration,
-    MaxLoanToStakeRatio,
-    GracePeriod,
-    LiquidityMiningRateBps,
-    VotingPeriodSeconds,
-    SlashCooldownSeconds,
-    PrepaymentPenaltyBps,
-    EarlyRepaymentDiscountBps,
-}
-
-// ── Issue #939: Storage Compaction ───────────────────────────────────────────
-
-/// A compacted (archived) loan record retaining only the minimal data needed
-/// for credit-history and audit purposes.
+/// Issue #887: Represents a subordination relationship between two loans.
+/// Links a subordinate (junior) loan to its senior (creditor priority) loan.
 #[contracttype]
 #[derive(Clone)]
-pub struct ArchivedLoan {
-    pub loan_id: u64,
-    pub borrower: Address,
-    pub amount: i128,
-    pub status: LoanStatus,
+pub struct SubordinationRecord {
+    /// ID of the senior (higher priority) loan
+    pub senior_loan_id: u64,
+    /// ID of the subordinate (lower priority) loan
+    pub subordinate_loan_id: u64,
+    /// The subordination level relative to the senior loan
+    pub subordination_level: SubordinationLevel,
+    /// Ledger timestamp when this subordination relationship was created
     pub created_at: u64,
-    pub repayment_timestamp: Option<u64>,
+    /// Whether this subordination is currently active (true) or waived (false)
+    pub is_active: bool,
+    /// Priority order index if senior loan has multiple subordinates (0 = highest priority)
+    pub priority_index: u32,
 }
 
-// ── Issue #941: Query Pagination ─────────────────────────────────────────────
-
-/// A paginated slice of vouch records with a cursor for the next page.
+/// Issue #887: Represents cascading default information.
+/// Tracks which loans are affected when a senior loan defaults.
 #[contracttype]
 #[derive(Clone)]
-pub struct VouchPage {
-    /// The vouch records in this page.
-    pub records: Vec<VouchRecord>,
-    /// Index of the next record to fetch; `None` if this is the last page.
-    pub next_cursor: Option<u32>,
+pub struct CascadingDefault {
+    /// ID of the senior loan that defaulted and triggered the cascade
+    pub triggering_senior_loan_id: u64,
+    /// IDs of all subordinate loans affected by this default
+    pub affected_subordinate_ids: Vec<u64>,
+    /// Ledger timestamp when the cascade was triggered
+    pub triggered_at: u64,
+    /// Whether the cascade has been fully resolved (all affected loans handled)
+    pub is_resolved: bool,
 }
+
+/// Issue #887: Waterfall repayment distribution result.
+/// Specifies how a repayment should be split between senior and subordinate loans.
+#[contracttype]
+#[derive(Clone)]
+pub struct WaterfallDistribution {
+    /// Amount to apply to the senior loan in stroops
+    pub senior_amount: i128,
+    /// Amount to apply to subordinate loans in stroops
+    pub subordinate_amount: i128,
+    /// Total amount distributed across all tiers
+    pub total_distributed: i128,
+}
+
+/// Issue #887: DataKey for subordination relationships
+/// Added to DataKey enum for storage:
+/// `SubordinationRelation(u64, u64)` => (senior_loan_id, subordinate_loan_id) -> SubordinationRecord
+/// `SubordinateLoansList(u64)` => senior_loan_id -> Vec<u64> (IDs of all subordinate loans)
+/// `SeniorLoanOf(u64)` => subordinate_loan_id -> u64 (ID of direct senior loan)
+/// `CascadingDefaultRecord(u64)` => senior_loan_id -> CascadingDefault
+pub const MAX_SUBORDINATION_DEPTH: u32 = 10; // Prevent deeply nested hierarchies
+pub const MAX_SUBORDINATES_PER_LOAN: u32 = 50; // Prevent excessive branching

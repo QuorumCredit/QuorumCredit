@@ -4,9 +4,10 @@ use crate::helpers::{
     validate_admin_config,
 };
 use crate::types::{
-    AdminActionProposal, Config, ConfigUpdateKey, ConfigUpdateProposal, DataKey,
-    GovernanceAction, GovernanceProposal, GovernanceProposalStatus, GovernanceQueueConfig,
-    DEFAULT_GOVERNANCE_EXECUTION_WINDOW, DEFAULT_GOVERNANCE_TIMELOCK_DELAY,
+    AdminActionProposal, AdminOperationType, Config, ConfigUpdateKey, ConfigUpdateProposal,
+    DataKey, GovernanceAction, GovernanceProposal, GovernanceProposalStatus,
+    GovernanceQueueConfig, MultiTierAdminThresholds, DEFAULT_GOVERNANCE_EXECUTION_WINDOW,
+    DEFAULT_GOVERNANCE_TIMELOCK_DELAY,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
 
@@ -2061,304 +2062,63 @@ pub fn get_governance_proposal_count(env: Env) -> u64 {
         .unwrap_or(0u64)
 }
 
-// ── Issue #938: Incremental Config Changes ────────────────────────────────────
+// ── Issue #893: Multi-Tier Admin Approval ──────────────────────────────────────
 
-/// Enqueue a single config field change to be applied no earlier than `apply_after`.
-/// Changes are applied one at a time via `apply_next_config_patch`, allowing gradual
-/// roll-out instead of an atomic replacement of the entire config.
-pub fn enqueue_config_patch(
+/// Issue #893: Set multi-tier admin approval thresholds for different operation types.
+/// Allows different admin operations to require different numbers of approvals.
+pub fn set_multi_tier_thresholds(
     env: Env,
     admin_signers: Vec<Address>,
-    field: crate::types::ConfigField,
-    new_value: i128,
-    apply_after: u64,
+    thresholds: MultiTierAdminThresholds,
 ) {
-    require_not_paused(&env).expect("contract paused");
     require_admin_approval(&env, &admin_signers);
 
-    let count: u32 = env
-        .storage()
-        .instance()
-        .get(&DataKey::ConfigPatchCount)
-        .unwrap_or(0u32);
-
-    let patch = crate::types::ConfigPatch {
-        field,
-        new_value,
-        apply_after,
-        applied: false,
-    };
+    // Validate thresholds
+    let admin_count = config(&env).admins.len() as u32;
+    assert!(
+        thresholds.standard_threshold > 0 && thresholds.standard_threshold <= admin_count,
+        "invalid standard threshold"
+    );
+    assert!(
+        thresholds.high_risk_threshold > 0 && thresholds.high_risk_threshold <= admin_count,
+        "invalid high-risk threshold"
+    );
+    assert!(
+        thresholds.critical_threshold > 0 && thresholds.critical_threshold <= admin_count,
+        "invalid critical threshold"
+    );
 
     env.storage()
         .instance()
-        .set(&DataKey::ConfigPatch(count), &patch);
-    env.storage()
-        .instance()
-        .set(&DataKey::ConfigPatchCount, &(count + 1));
+        .set(&DataKey::MultiTierAdminThresholds, &thresholds);
 
     env.events().publish(
-        (symbol_short!("cfg"), symbol_short!("enqueue")),
-        (admin_signers.get(0).unwrap(), count, apply_after),
+        (symbol_short!("admin"), symbol_short!("multi")),
+        (
+            thresholds.standard_threshold,
+            thresholds.high_risk_threshold,
+            thresholds.critical_threshold,
+        ),
     );
 }
 
-/// Apply the next pending config patch whose `apply_after` timestamp has passed.
-/// Returns `true` if a patch was applied, `false` if no eligible patch exists.
-/// Anyone may call this — it is permissionless so automation scripts can trigger it.
-pub fn apply_next_config_patch(env: Env) -> bool {
-    let count: u32 = env
-        .storage()
-        .instance()
-        .get(&DataKey::ConfigPatchCount)
-        .unwrap_or(0u32);
-
-    let now = env.ledger().timestamp();
-
-    for idx in 0..count {
-        let mut patch: crate::types::ConfigPatch = match env
-            .storage()
-            .instance()
-            .get(&DataKey::ConfigPatch(idx))
-        {
-            Some(p) => p,
-            None => continue,
-        };
-
-        if patch.applied || now < patch.apply_after {
-            continue;
-        }
-
-        let mut cfg = config(&env);
-        let v = patch.new_value;
-
-        match patch.field {
-            crate::types::ConfigField::YieldBps => {
-                if v < 0 || v > 10_000 {
-                    panic_with_error!(&env, ContractError::InvalidBps);
-                }
-                cfg.yield_bps = v;
-            }
-            crate::types::ConfigField::SlashBps => {
-                if v <= 0 || v > 10_000 {
-                    panic_with_error!(&env, ContractError::InvalidAmount);
-                }
-                cfg.slash_bps = v;
-            }
-            crate::types::ConfigField::MaxVouchers => {
-                if v <= 0 {
-                    panic_with_error!(&env, ContractError::InvalidAmount);
-                }
-                cfg.max_vouchers = v as u32;
-            }
-            crate::types::ConfigField::MinLoanAmount => {
-                if v <= 0 {
-                    panic_with_error!(&env, ContractError::InvalidAmount);
-                }
-                cfg.min_loan_amount = v;
-            }
-            crate::types::ConfigField::LoanDuration => {
-                if v <= 0 {
-                    panic_with_error!(&env, ContractError::InvalidAmount);
-                }
-                cfg.loan_duration = v as u64;
-            }
-            crate::types::ConfigField::MaxLoanToStakeRatio => {
-                if v <= 0 {
-                    panic_with_error!(&env, ContractError::InvalidAmount);
-                }
-                cfg.max_loan_to_stake_ratio = v as u32;
-            }
-            crate::types::ConfigField::GracePeriod => {
-                if v as u64 > cfg.loan_duration {
-                    panic_with_error!(&env, ContractError::InvalidAmount);
-                }
-                cfg.grace_period = v as u64;
-            }
-            crate::types::ConfigField::LiquidityMiningRateBps => {
-                if v < 0 || v > 10_000 {
-                    panic_with_error!(&env, ContractError::InvalidBps);
-                }
-                cfg.liquidity_mining_rate_bps = v as u32;
-            }
-            crate::types::ConfigField::VotingPeriodSeconds => {
-                if v <= 0 {
-                    panic_with_error!(&env, ContractError::InvalidAmount);
-                }
-                cfg.voting_period_seconds = v as u64;
-            }
-            crate::types::ConfigField::SlashCooldownSeconds => {
-                cfg.slash_cooldown_seconds = v as u64;
-            }
-            crate::types::ConfigField::PrepaymentPenaltyBps => {
-                if v < 0 || v > 10_000 {
-                    panic_with_error!(&env, ContractError::InvalidBps);
-                }
-                cfg.prepayment_penalty_bps = v as u32;
-            }
-            crate::types::ConfigField::EarlyRepaymentDiscountBps => {
-                if v < 0 || v > 10_000 {
-                    panic_with_error!(&env, ContractError::InvalidBps);
-                }
-                cfg.early_repayment_discount_bps = v as u32;
-            }
-        }
-
-        env.storage().instance().set(&DataKey::Config, &cfg);
-
-        patch.applied = true;
-        env.storage()
-            .instance()
-            .set(&DataKey::ConfigPatch(idx), &patch);
-
-        env.events().publish(
-            (symbol_short!("cfg"), symbol_short!("applied")),
-            (idx, now),
-        );
-
-        return true;
-    }
-
-    false
-}
-
-/// Get a config patch by index.
-pub fn get_config_patch(env: Env, idx: u32) -> Option<crate::types::ConfigPatch> {
+/// Issue #893: Get the current multi-tier admin approval thresholds.
+pub fn get_multi_tier_thresholds(env: Env) -> Option<MultiTierAdminThresholds> {
     env.storage()
         .instance()
-        .get(&DataKey::ConfigPatch(idx))
+        .get(&DataKey::MultiTierAdminThresholds)
 }
 
-/// Get total number of enqueued config patches (applied and pending).
-pub fn get_config_patch_count(env: Env) -> u32 {
-    env.storage()
-        .instance()
-        .get(&DataKey::ConfigPatchCount)
-        .unwrap_or(0u32)
-}
-
-// ── Issue #939: Storage Compaction ────────────────────────────────────────────
-
-/// Archive a completed or defaulted loan: store a compact summary and delete the
-/// full `LoanRecord` from persistent storage, reducing rent costs.
-/// Only loans with status `Repaid` or `Defaulted` (or `PartialDefault` / `ForgivenDefault`)
-/// can be archived. Requires admin approval.
-pub fn archive_loan(env: Env, admin_signers: Vec<Address>, loan_id: u64) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
-
-    let loan: crate::types::LoanRecord = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Loan(loan_id))
-        .ok_or(ContractError::NoActiveLoan)?;
-
-    // Only closed loans can be archived.
-    match loan.status {
-        crate::types::LoanStatus::Repaid
-        | crate::types::LoanStatus::Defaulted
-        | crate::types::LoanStatus::PartialDefault
-        | crate::types::LoanStatus::ForgivenDefault => {}
-        _ => return Err(ContractError::InvalidStateTransition),
-    }
-
-    // Write compact archive record.
-    let archived = crate::types::ArchivedLoan {
-        loan_id,
-        borrower: loan.borrower.clone(),
-        amount: loan.amount,
-        status: loan.status,
-        created_at: loan.created_at,
-        repayment_timestamp: loan.repayment_timestamp,
-    };
-
-    env.storage()
-        .persistent()
-        .set(&DataKey::ArchivedLoan(loan_id), &archived);
-
-    // Remove the full record to free storage rent.
-    env.storage().persistent().remove(&DataKey::Loan(loan_id));
-
-    env.events().publish(
-        (symbol_short!("store"), symbol_short!("archive")),
-        (admin_signers.get(0).unwrap(), loan_id),
-    );
-
-    Ok(())
-}
-
-/// Retrieve an archived (compacted) loan record.
-pub fn get_archived_loan(env: Env, loan_id: u64) -> Option<crate::types::ArchivedLoan> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::ArchivedLoan(loan_id))
-}
-
-// ── Issue #940: Vectorized Score Updates ────────────────────────────────────
-
-/// Batch-update credit scores for multiple borrowers in a single call.
-/// Updates are best-effort: any borrower that fails score calculation is skipped
-/// and counted in the returned failure count.
-/// Returns `(updated_count, skipped_count)`.
-pub fn batch_update_credit_scores(
+/// Issue #893: Get the effective threshold for a specific operation type.
+pub fn get_effective_approval_threshold(
     env: Env,
-    admin_signers: Vec<Address>,
-    borrowers: Vec<Address>,
-) -> (u32, u32) {
-    require_admin_approval(&env, &admin_signers);
+    operation_type: AdminOperationType,
+) -> u32 {
+    let cfg = config(&env);
 
-    let mut updated: u32 = 0;
-    let mut skipped: u32 = 0;
-
-    for borrower in borrowers.iter() {
-        match crate::credit_score::update_credit_score(env.clone(), borrower.clone()) {
-            Ok(()) => updated += 1,
-            Err(_) => skipped += 1,
-        }
-    }
-
-    env.events().publish(
-        (symbol_short!("credit"), symbol_short!("batch")),
-        (admin_signers.get(0).unwrap(), updated, skipped),
-    );
-
-    (updated, skipped)
-}
-
-// ── Issue #941: Query Pagination ─────────────────────────────────────────────
-
-/// Return a paginated slice of vouch records for a borrower.
-///
-/// * `cursor` — zero-based index of the first record to return (pass `0` for the first page).
-/// * `page_size` — maximum number of records per page (capped at 50 internally).
-///
-/// Returns a `VouchPage` with the records and an optional cursor pointing to the
-/// start of the next page (`None` when the last page has been reached).
-pub fn get_vouches_paginated(
-    env: Env,
-    borrower: Address,
-    cursor: u32,
-    page_size: u32,
-) -> crate::types::VouchPage {
-    let page_size = page_size.min(50).max(1);
-
-    let all_vouches: Vec<crate::types::VouchRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Vouches(borrower))
-        .unwrap_or(Vec::new(&env));
-
-    let total = all_vouches.len();
-    let start = cursor.min(total);
-    let end = (start + page_size).min(total);
-
-    let mut records: Vec<crate::types::VouchRecord> = Vec::new(&env);
-    for i in start..end {
-        records.push_back(all_vouches.get(i).unwrap());
-    }
-
-    let next_cursor = if end < total { Some(end) } else { None };
-
-    crate::types::VouchPage {
-        records,
-        next_cursor,
+    if let Some(multi_tier) = cfg.multi_tier_thresholds {
+        multi_tier.get_threshold(operation_type)
+    } else {
+        cfg.admin_threshold
     }
 }

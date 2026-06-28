@@ -509,6 +509,52 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
 /// Propose a slash action with a delay before execution.
 /// This implements the "confirmation window" for the slash action.
+
+/// Queue a slash operation for deferred batch execution (Issue #937: Lazy Slash).
+/// This allows multiple slashes to be batched together, reducing gas costs.
+pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<(), ContractError> {
+    require_admin_approval(env.clone(), &env.current_contract_address(), &vec![env.current_contract_address()])?;
+    
+    // Calculate slash amount from existing vouch stake if not provided
+    let actual_slash = if slash_amount > 0 {
+        slash_amount
+    } else {
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+        
+        let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+        let cfg = config(&env);
+        total_stake.checked_mul(cfg.slash_bps).ok_or(ContractError::ArithmeticError)? / BPS_DENOMINATOR
+    };
+    
+    crate::lazy_slash::queue_slash(&env, borrower.clone(), actual_slash)?;
+    
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("slash_queued")),
+        (borrower.clone(), actual_slash),
+    );
+    
+    Ok(())
+}
+
+/// Execute all queued slash operations in a single batch (Issue #937: Lazy Slash).
+/// Returns the number of slashes executed.
+pub fn execute_queued_slashes(env: Env) -> Result<u32, ContractError> {
+    require_admin_approval(env.clone(), &env.current_contract_address(), &vec![env.current_contract_address()])?;
+    
+    let executed = crate::lazy_slash::execute_queued_slashes(&env)?;
+    
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("slash_queue_executed")),
+        (executed,),
+    );
+    
+    Ok(executed)
+}
+
 pub fn propose_slash(
     env: Env,
     proposer: Address,

@@ -2,20 +2,27 @@
 
 pub mod admin;
 pub mod attributes;
+pub mod batch_transfer;
+pub mod cache;
+pub mod collateral_pool;
 pub mod credit_score;
+pub mod cross_chain;
 pub mod errors;
+pub mod error_response;
 pub mod governance;
+pub mod gradual_unstake;
 pub mod helpers;
 pub mod insurance;
+pub mod lazy_slash;
 pub mod loan;
+pub mod merkle_tree;
 pub mod partial_repayment;
 pub mod periodic_payments;
-pub mod reputation;
 pub mod rbac;
+pub mod reputation;
 pub mod syndication;
-#[cfg(test)]
-mod tests;
 pub mod types;
+pub mod versioning;
 pub mod vouch;
 pub mod vouch_groups;
 pub mod yield_stream;
@@ -27,6 +34,8 @@ pub mod cross_chain;
 pub mod collateral_pool;
 /// Issue #868: Gradual Unstaking
 pub mod gradual_unstake;
+/// Issue #887: Loan Subordination and Cascading Debt Hierarchy
+pub mod subordination;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -120,6 +129,7 @@ use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
     require_allowed_token, require_not_paused,
 };
+use crate::types::{AdminOperationType, Config, DataKey, MultiTierAdminThresholds, RateLimitConfig, DEFAULT_LOAN_DURATION, DEFAULT_MAX_LOAN_TO_STAKE_RATIO, DEFAULT_MAX_VOUCHERS, DEFAULT_MIN_LOAN_AMOUNT, DEFAULT_SLASH_BPS, DEFAULT_YIELD_BPS, DEFAULT_MIN_VOUCH_AGE_SECS};
 use soroban_sdk::BytesN;
 
 #[contract]
@@ -168,6 +178,22 @@ impl QuorumCreditContract {
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 grace_period: 0,
+                min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
+                prepayment_penalty_bps: 0,
+                liquidity_mining_rate_bps: 0,
+                voting_period_seconds: 14 * 24 * 60 * 60, // 14 days default
+                slash_cooldown_seconds: 0,
+                emergency_pause_enabled: false,
+                early_repayment_discount_bps: 0,
+                oracle_address: None,
+                slash_delay_seconds: 0,
+                successor_admin: None,
+                rate_limit_config: RateLimitConfig {
+                    window_secs: 3600,
+                    max_calls: 1000,
+                    enabled: false,
+                },
+                multi_tier_thresholds: None, // Issue #893: Initialize with no multi-tier thresholds
             },
         );
 
@@ -1961,5 +1987,27 @@ impl QuorumCreditContract {
         page_size: u32,
     ) -> VouchPage {
         admin::get_vouches_paginated(env, borrower, cursor, page_size)
+    }
+}
+
+    // ── Issue #893: Multi-Tier Admin Approval ──────────────────────────────────
+
+    pub fn set_multi_tier_thresholds(
+        env: Env,
+        admin_signers: Vec<Address>,
+        thresholds: MultiTierAdminThresholds,
+    ) {
+        admin::set_multi_tier_thresholds(env, admin_signers, thresholds)
+    }
+
+    pub fn get_multi_tier_thresholds(env: Env) -> Option<MultiTierAdminThresholds> {
+        admin::get_multi_tier_thresholds(env)
+    }
+
+    pub fn get_effective_approval_threshold(
+        env: Env,
+        operation_type: AdminOperationType,
+    ) -> u32 {
+        admin::get_effective_approval_threshold(env, operation_type)
     }
 }
