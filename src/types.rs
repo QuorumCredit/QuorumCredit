@@ -480,13 +480,17 @@ pub enum DataKey {
     // ── Issue #885: Loan Status Privacy ──────────────────────────────────────
     /// borrower → LoanPrivacyLevel
     LoanPrivacy(Address),
-    // ── Issue #892: Governance Proposal Queuing and Timelock ─────────────────
-    /// proposal_id → QueuedProposal (governance proposal in queue)
-    QueuedProposal(u64),
-    /// Monotonically increasing proposal ID counter
-    QueuedProposalCounter,
-    /// ProposalQueueConfig (global configuration for proposal queue system)
-    ProposalQueueConfig,
+    // ── Issue #887: Loan Subordination and Cascading Debt Hierarchy ──────────
+    /// (senior_loan_id, subordinate_loan_id) → SubordinationRecord
+    SubordinationRelation(u64, u64),
+    /// senior_loan_id → Vec<u64> (IDs of all subordinate loans ordered by priority)
+    SubordinateLoansList(u64),
+    /// subordinate_loan_id → u64 (ID of direct senior loan, if any)
+    SeniorLoanOf(u64),
+    /// senior_loan_id → CascadingDefault (tracks cascade triggered by default)
+    CascadingDefaultRecord(u64),
+    /// Waterfall distribution configuration for a borrower
+    WaterfallConfig(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1609,68 +1613,77 @@ pub enum LoanPrivacyLevel {
     Private,
 }
 
-// ── Issue #892: Governance Proposal Queuing and Timelock ──────────────────
+// ── Issue #887: Loan Subordination and Cascading Debt Hierarchy ──────────────
 
-/// Issue #892: Status of a queued governance proposal
+/// Issue #887: Subordination level in the debt hierarchy.
+/// Determines priority order for repayment and default cascading.
 #[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProposalQueueStatus {
-    /// Proposal queued, awaiting approval votes
-    Pending,
-    /// Proposal approved, waiting for timelock to expire
-    Approved,
-    /// Proposal executed successfully
-    Executed,
-    /// Proposal was cancelled by admins
-    Cancelled,
-    /// Proposal timelock window expired without execution
-    Expired,
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum SubordinationLevel {
+    /// Senior (Priority 0): Highest priority. Must be fully repaid first.
+    /// Default of senior loan blocks all subordinate loans.
+    Senior = 0,
+    /// Mezzanine (Priority 1): Intermediate level.
+    /// Can have both senior and subordinate loans.
+    Mezzanine = 1,
+    /// Subordinate (Priority 2+): Lowest priority.
+    /// Repaid after seniors. Affected by senior defaults (cascading).
+    Subordinate = 2,
 }
 
-/// Issue #892: A governance proposal in the execution queue
+/// Issue #887: Represents a subordination relationship between two loans.
+/// Links a subordinate (junior) loan to its senior (creditor priority) loan.
 #[contracttype]
 #[derive(Clone)]
-pub struct QueuedProposal {
-    /// Unique proposal ID (monotonically increasing)
-    pub id: u64,
-    /// The governance action to be executed
-    pub action: GovernanceAction,
-    /// Address that created this proposal
-    pub proposer: Address,
-    /// Addresses that have approved this proposal (multisig)
-    pub approvals: Vec<Address>,
-    /// Current status of the proposal
-    pub status: ProposalQueueStatus,
-    /// Ledger timestamp when proposal was queued
+pub struct SubordinationRecord {
+    /// ID of the senior (higher priority) loan
+    pub senior_loan_id: u64,
+    /// ID of the subordinate (lower priority) loan
+    pub subordinate_loan_id: u64,
+    /// The subordination level relative to the senior loan
+    pub subordination_level: SubordinationLevel,
+    /// Ledger timestamp when this subordination relationship was created
     pub created_at: u64,
-    /// Ledger timestamp when proposal can be executed (after timelock)
-    pub executable_at: u64,
-    /// Ledger timestamp when proposal expires (after execution window)
-    pub expires_at: u64,
-    /// Optional description or justification
-    pub description: soroban_sdk::String,
-    /// Ledger timestamp when proposal was executed (if any)
-    pub executed_at: Option<u64>,
+    /// Whether this subordination is currently active (true) or waived (false)
+    pub is_active: bool,
+    /// Priority order index if senior loan has multiple subordinates (0 = highest priority)
+    pub priority_index: u32,
 }
 
-/// Issue #892: Configuration for proposal queuing system
+/// Issue #887: Represents cascading default information.
+/// Tracks which loans are affected when a senior loan defaults.
 #[contracttype]
 #[derive(Clone)]
-pub struct ProposalQueueConfig {
-    /// Delay after approval before execution is allowed (seconds)
-    pub timelock_delay_secs: u64,
-    /// Window after timelock during which execution is allowed (seconds)
-    pub execution_window_secs: u64,
-    /// Number of admin approvals required to move from Pending to Approved
-    pub approvals_required: u32,
-    /// Whether to allow non-admin proposers
-    pub allow_public_proposals: bool,
+pub struct CascadingDefault {
+    /// ID of the senior loan that defaulted and triggered the cascade
+    pub triggering_senior_loan_id: u64,
+    /// IDs of all subordinate loans affected by this default
+    pub affected_subordinate_ids: Vec<u64>,
+    /// Ledger timestamp when the cascade was triggered
+    pub triggered_at: u64,
+    /// Whether the cascade has been fully resolved (all affected loans handled)
+    pub is_resolved: bool,
 }
 
-/// Issue #892: Constants for proposal queue system
-pub const DEFAULT_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 24 * 60 * 60; // 24 hours
-pub const DEFAULT_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
-pub const MIN_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 60 * 60; // 1 hour
-pub const MAX_PROPOSAL_TIMELOCK_DELAY_SECS: u64 = 365 * 24 * 60 * 60; // 365 days
-pub const MIN_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 24 * 60 * 60; // 1 day
-pub const MAX_PROPOSAL_EXECUTION_WINDOW_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
+/// Issue #887: Waterfall repayment distribution result.
+/// Specifies how a repayment should be split between senior and subordinate loans.
+#[contracttype]
+#[derive(Clone)]
+pub struct WaterfallDistribution {
+    /// Amount to apply to the senior loan in stroops
+    pub senior_amount: i128,
+    /// Amount to apply to subordinate loans in stroops
+    pub subordinate_amount: i128,
+    /// Total amount distributed across all tiers
+    pub total_distributed: i128,
+}
+
+/// Issue #887: DataKey for subordination relationships
+/// Added to DataKey enum for storage:
+/// `SubordinationRelation(u64, u64)` => (senior_loan_id, subordinate_loan_id) -> SubordinationRecord
+/// `SubordinateLoansList(u64)` => senior_loan_id -> Vec<u64> (IDs of all subordinate loans)
+/// `SeniorLoanOf(u64)` => subordinate_loan_id -> u64 (ID of direct senior loan)
+/// `CascadingDefaultRecord(u64)` => senior_loan_id -> CascadingDefault
+pub const MAX_SUBORDINATION_DEPTH: u32 = 10; // Prevent deeply nested hierarchies
+pub const MAX_SUBORDINATES_PER_LOAN: u32 = 50; // Prevent excessive branching
