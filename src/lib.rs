@@ -1651,6 +1651,56 @@ impl QuorumCreditContract {
         archive::get_archived_vouch_history(&env, &borrower, &voucher, &token, batch_id)
     }
 
+    // ── IPFS Archiving ────────────────────────────────────────────────────────
+
+    /// Register an IPFS archive for a completed loan.
+    /// Called after uploading the loan archive to IPFS to store the content hash.
+    pub fn register_loan_ipfs_archive(
+        env: Env,
+        archive_id: u64,
+        ipfs_hash: String,
+    ) -> Result<(), ContractError> {
+        ipfs_archive::register_loan_ipfs_archive(&env, archive_id, ipfs_hash)
+    }
+
+    /// Retrieve the IPFS hash for an archived loan.
+    pub fn get_loan_ipfs_archive(env: Env, archive_id: u64) -> Option<IpfsArchiveReference> {
+        ipfs_archive::get_loan_ipfs_archive(&env, archive_id)
+    }
+
+    /// Register an IPFS archive for vouch history batch.
+    pub fn register_vouch_history_ipfs_archive(
+        env: Env,
+        archive_id: u64,
+        ipfs_hash: String,
+    ) -> Result<(), ContractError> {
+        ipfs_archive::register_vouch_history_ipfs_archive(&env, archive_id, ipfs_hash)
+    }
+
+    /// Retrieve the IPFS hash for archived vouch history.
+    pub fn get_vouch_history_ipfs_archive(env: Env, archive_id: u64) -> Option<IpfsArchiveReference> {
+        ipfs_archive::get_vouch_history_ipfs_archive(&env, archive_id)
+    }
+
+    /// Get the total count of IPFS archives.
+    pub fn get_ipfs_archive_count(env: Env) -> u64 {
+        ipfs_archive::get_loan_ipfs_archive_count(&env)
+    }
+
+    /// Check if an archive has been backed up to IPFS.
+    pub fn is_archive_ipfs_backed(env: Env, archive_id: u64) -> bool {
+        ipfs_archive::is_archive_ipfs_backed(&env, archive_id)
+    }
+
+    /// Verify the integrity of an archived loan against IPFS.
+    pub fn verify_loan_archive_integrity(
+        env: Env,
+        archive_id: u64,
+        expected_ipfs_hash: String,
+    ) -> Result<bool, ContractError> {
+        ipfs_archive::verify_loan_archive_integrity(&env, archive_id, expected_ipfs_hash)
+    }
+
     pub fn get_syndication(env: Env, syndication_id: u64) -> Option<LoanSyndication> {
         syndication::get_syndication(env, syndication_id)
     }
