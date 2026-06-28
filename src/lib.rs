@@ -105,6 +105,11 @@ mod forbearance_test;
 #[cfg(test)]
 mod refinance_test;
 
+#[cfg(test)]
+mod incentives_verification_test;
+#[cfg(test)]
+mod regression_past_bugs_test;
+
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
     require_allowed_token, require_not_paused,

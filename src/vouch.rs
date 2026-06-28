@@ -514,7 +514,7 @@ pub fn withdraw_vouch(
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("withdraw")),
-        (voucher, borrower, stake),
+        (voucher, borrower, vouch_stake),
     );
 
     Ok(())

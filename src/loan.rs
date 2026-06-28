@@ -218,7 +218,6 @@ pub fn request_loan(
         maturity_date: None,
         rate_type: crate::types::RateType::Fixed,
         index_reference: None,
-        escrow_status: EscrowStatus::None,
         retry_count: 0,
     };
 

@@ -383,13 +383,9 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     // Calculate total stake backing this borrower (used for loan-size scaling)
     let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
 
-    // Determine the effective slash rate, factoring in loan size and/or protocol health
-    let effective_slash_bps =
-        crate::helpers::calculate_effective_slash_bps(env, loan.amount, total_stake);
-
-    let mut total_slashed: i128 = 0;
-    let mut remaining_vouches: Vec<VouchRecord> = Vec::new(env);
-    // Calculate effective slash basis points based on default count (graduated penalties)
+    // Calculate effective slash basis points based on default count (graduated penalties).
+    // Note: the dynamic-health calculation is intentionally not used here —
+    // the graduated default_count logic is the authoritative rate for execute_slash.
     let default_count: u32 = env
         .storage()
         .persistent()
@@ -400,6 +396,9 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     if effective_slash_bps > 10_000 {
         effective_slash_bps = 10_000;
     }
+
+    let mut total_slashed: i128 = 0;
+    let mut remaining_vouches: Vec<VouchRecord> = Vec::new(env);
 
     for v in vouches.iter() {
         if v.token != loan.token_address {

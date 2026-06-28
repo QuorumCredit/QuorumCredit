@@ -75,7 +75,7 @@ pub enum ContractError {
     /// No escrow record found for this borrower (#666/#667).
     NoEscrowFound = 56,
     /// No slash record found for the given slash ID.
-    SlashRecordNotFound = 57,
+    SlashRecordNotFound = 142,
     /// Slash has already been reversed and cannot be reversed again.
     SlashAlreadyReversed = 58,
     /// Caller has exceeded the configured rate limit.
