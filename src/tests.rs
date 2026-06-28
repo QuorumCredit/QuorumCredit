@@ -64,3 +64,11 @@ mod invariants_test;
 mod regression_tests;
 #[path = "batch_stake_test.rs"]
 mod batch_stake_test;
+#[path = "operations_runbook_test.rs"]
+mod operations_runbook_test;
+#[path = "mainnet_deployment_test.rs"]
+mod mainnet_deployment_test;
+#[path = "api_reference_test.rs"]
+mod api_reference_test;
+#[path = "monitoring_setup_test.rs"]
+mod monitoring_setup_test;
