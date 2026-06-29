@@ -131,6 +131,18 @@ mod incentives_verification_test;
 #[cfg(test)]
 mod regression_past_bugs_test;
 
+/// Issue #104: Event regression tests — event snapshots for critical transitions.
+#[cfg(test)]
+mod event_regression_test;
+
+/// Issue #105: Performance regression tests — gas/latency baselines.
+#[cfg(test)]
+mod gas_test;
+
+/// Issue #107: Specification tests — auto-generated from API spec.
+#[cfg(test)]
+mod spec_test;
+
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
     require_allowed_token, require_not_paused,
@@ -2094,7 +2106,6 @@ impl QuorumCreditContract {
     ) -> VouchPage {
         admin::get_vouches_paginated(env, borrower, cursor, page_size)
     }
-}
 
     // ── Issue #893: Multi-Tier Admin Approval ──────────────────────────────────
 
