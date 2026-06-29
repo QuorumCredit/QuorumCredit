@@ -1796,102 +1796,71 @@ pub fn execute_withdrawal(env: Env, lock_id: u64) -> Result<(), ContractError> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Issue #906: Cross-Chain Proposal Sync
+// Issue #906 / #970: Cross-Chain Governance / Multi-chain Voting
+// Delegated to crate::cross_chain_governance
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Initiate a cross-chain proposal sync.
-pub fn initiate_cross_chain_sync(
+/// Propose a cross-chain governance action (admin-only).
+///
+/// See [`crate::cross_chain_governance::propose_cross_chain`] for full docs.
+pub fn propose_cross_chain(
     env: Env,
-    proposer: Address,
-    source_chain: String,
-    target_chains: Vec<String>,
-    proposal_type: String,
-    proposal_data: Vec<u8>,
+    admin_signers: Vec<Address>,
+    source_chain: soroban_sdk::String,
+    target_chains: soroban_sdk::Vec<soroban_sdk::String>,
+    proposal_type: soroban_sdk::String,
+    proposal_data: soroban_sdk::Bytes,
 ) -> Result<u64, ContractError> {
-    proposer.require_auth();
-    require_not_paused(&env)?;
-
-    if target_chains.is_empty() {
-        panic_with_error!(&env, ContractError::InvalidAmount);
-    }
-
-    let sync_id: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::CrossChainSyncCounter)
-        .unwrap_or(0u64)
-        .checked_add(1)
-        .expect("sync ID overflow");
-
-    let votes_required = target_chains.len() as u32;
-
-    let sync = crate::types::CrossChainProposalSync {
-        id: sync_id,
-        source_chain: source_chain.clone(),
-        target_chains: target_chains.clone(),
-        proposal_type: proposal_type.clone(),
-        proposal_data: proposal_data.clone(),
-        votes_required,
-        votes_received: 0,
-        status: crate::types::GovernanceProposalStatus::Pending,
-        created_at: env.ledger().timestamp(),
-        eta: env.ledger().timestamp() + 259200,  // 3 days
-    };
-
-    env.storage()
-        .instance()
-        .set(&DataKey::CrossChainProposalSync(sync_id), &sync);
-    env.storage()
-        .instance()
-        .set(&DataKey::CrossChainSyncCounter, &sync_id);
-
-    env.events().publish(
-        (symbol_short!("xchain"), symbol_short!("initiated")),
-        (sync_id, proposer, source_chain, target_chains.len()),
-    );
-
-    Ok(sync_id)
+    crate::cross_chain_governance::propose_cross_chain(
+        env,
+        admin_signers,
+        source_chain,
+        target_chains,
+        proposal_type,
+        proposal_data,
+    )
 }
 
-/// Vote on a cross-chain proposal sync from another chain.
-pub fn vote_cross_chain_sync(
+/// Submit a vote from a target chain on an open proposal.
+///
+/// See [`crate::cross_chain_governance::vote_cross_chain`] for full docs.
+pub fn vote_cross_chain(
     env: Env,
+    relayer: Address,
     sync_id: u64,
-    chain_id: String,
+    chain_id: soroban_sdk::String,
     approve: bool,
 ) -> Result<(), ContractError> {
-    require_not_paused(&env)?;
+    crate::cross_chain_governance::vote_cross_chain(env, relayer, sync_id, chain_id, approve)
+}
 
-    let mut sync: crate::types::CrossChainProposalSync = env
-        .storage()
-        .instance()
-        .get(&DataKey::CrossChainProposalSync(sync_id))
-        .ok_or(ContractError::NoActiveLoan)?;
+/// Execute an approved cross-chain proposal after the timelock.
+///
+/// See [`crate::cross_chain_governance::execute_cross_chain`] for full docs.
+pub fn execute_cross_chain(env: Env, sync_id: u64) -> Result<(), ContractError> {
+    crate::cross_chain_governance::execute_cross_chain(env, sync_id)
+}
 
-    if sync.status != crate::types::GovernanceProposalStatus::Pending {
-        panic_with_error!(&env, ContractError::InvalidStateTransition);
-    }
+/// Cancel a pending or approved cross-chain proposal (admin-only).
+///
+/// See [`crate::cross_chain_governance::cancel_cross_chain`] for full docs.
+pub fn cancel_cross_chain(
+    env: Env,
+    admin_signers: Vec<Address>,
+    sync_id: u64,
+) -> Result<(), ContractError> {
+    crate::cross_chain_governance::cancel_cross_chain(env, admin_signers, sync_id)
+}
 
-    if approve {
-        sync.votes_received = sync
-            .votes_received
-            .checked_add(1)
-            .expect("vote overflow");
+/// Query a cross-chain proposal by ID.
+pub fn get_cross_chain_proposal(
+    env: Env,
+    sync_id: u64,
+) -> Option<crate::types::CrossChainProposalSync> {
+    crate::cross_chain_governance::get_cross_chain_proposal(env, sync_id)
+}
 
-        // Execute if quorum reached
-        if sync.votes_received >= sync.votes_required {
-            sync.status = crate::types::GovernanceProposalStatus::Approved;
-        }
-    }
-
-    env.storage()
-        .instance()
-        .set(&DataKey::CrossChainProposalSync(sync_id), &sync);
-
-    env.events().publish(
-        (symbol_short!("xchain"), symbol_short!("voted")),
-        (sync_id, chain_id, approve),
-    );
-
-    Ok(())
+/// Return the total number of cross-chain proposals created.
+pub fn get_cross_chain_proposal_count(env: Env) -> u64 {
+    crate::cross_chain_governance::get_cross_chain_proposal_count(env)
 }

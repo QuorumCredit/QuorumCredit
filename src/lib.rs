@@ -8,6 +8,8 @@ pub mod cache;
 pub mod collateral_pool;
 pub mod credit_score;
 pub mod cross_chain;
+/// Issue #970: Cross-Chain Governance / Multi-chain Voting
+pub mod cross_chain_governance;
 pub mod errors;
 pub mod error_response;
 pub mod governance;
@@ -94,6 +96,9 @@ mod fee_structure_voting_test;
 mod withdrawal_timelock_test;
 #[cfg(test)]
 mod cross_chain_proposal_sync_test;
+
+#[cfg(test)]
+mod cross_chain_governance_test;
 
 #[cfg(test)]
 mod proposal_metadata_test;
@@ -1835,6 +1840,74 @@ impl QuorumCreditContract {
 
     pub fn is_bridge_nonce_used(env: Env, origin_chain: u32, nonce: u64) -> bool {
         cross_chain::is_bridge_nonce_used(env, origin_chain, nonce)
+    }
+
+    // ── Issue #970: Cross-Chain Governance / Multi-chain Voting ──────────────
+
+    /// Propose a cross-chain governance action (admin-only).
+    ///
+    /// Creates a proposal that requires votes from all `target_chains` before
+    /// it can be executed. Returns the new `sync_id`.
+    pub fn propose_cross_chain(
+        env: Env,
+        admin_signers: Vec<Address>,
+        source_chain: soroban_sdk::String,
+        target_chains: Vec<soroban_sdk::String>,
+        proposal_type: soroban_sdk::String,
+        proposal_data: soroban_sdk::Bytes,
+    ) -> Result<u64, ContractError> {
+        cross_chain_governance::propose_cross_chain(
+            env,
+            admin_signers,
+            source_chain,
+            target_chains,
+            proposal_type,
+            proposal_data,
+        )
+    }
+
+    /// Submit a chain-vote on an open cross-chain proposal.
+    ///
+    /// `relayer` must authenticate. Each chain may only vote once.
+    /// When all required chains have approved, status transitions to Approved.
+    pub fn vote_cross_chain(
+        env: Env,
+        relayer: Address,
+        sync_id: u64,
+        chain_id: soroban_sdk::String,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        cross_chain_governance::vote_cross_chain(env, relayer, sync_id, chain_id, approve)
+    }
+
+    /// Execute an approved cross-chain proposal after the timelock has elapsed.
+    ///
+    /// Emits an `xchain/executed` event that bridge relayers observe to apply
+    /// the change on each target chain.
+    pub fn execute_cross_chain(env: Env, sync_id: u64) -> Result<(), ContractError> {
+        cross_chain_governance::execute_cross_chain(env, sync_id)
+    }
+
+    /// Cancel a pending or approved cross-chain proposal (admin-only).
+    pub fn cancel_cross_chain(
+        env: Env,
+        admin_signers: Vec<Address>,
+        sync_id: u64,
+    ) -> Result<(), ContractError> {
+        cross_chain_governance::cancel_cross_chain(env, admin_signers, sync_id)
+    }
+
+    /// Query a cross-chain proposal by its `sync_id`.
+    pub fn get_cross_chain_proposal(
+        env: Env,
+        sync_id: u64,
+    ) -> Option<CrossChainProposalSync> {
+        cross_chain_governance::get_cross_chain_proposal(env, sync_id)
+    }
+
+    /// Return the total number of cross-chain proposals created.
+    pub fn get_cross_chain_proposal_count(env: Env) -> u64 {
+        cross_chain_governance::get_cross_chain_proposal_count(env)
     }
 
     // ── Custom Attributes ────────────────────────────────────────────────────
