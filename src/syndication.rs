@@ -136,7 +136,7 @@ pub fn join_syndication(
     // Create member
     let syndication_member = SyndicationMember {
         address: member.clone(),
-        role,
+        role: role.clone(),
         share_bps,
         collateral,
         vouch_stake,
@@ -144,18 +144,18 @@ pub fn join_syndication(
         joined_at: now,
     };
 
+    // Store member index before moving into Vec
+    env.storage().persistent().set(
+        &DataKey::SyndicationMember(syndication_id, member.clone()),
+        &syndication_member,
+    );
+
     // Add member to syndication
     syndication.members.push_back(syndication_member);
 
     // Update totals
     syndication.total_collateral += collateral;
     syndication.total_vouch_stake += vouch_stake;
-
-    // Store member index
-    env.storage().persistent().set(
-        &DataKey::SyndicationMember(syndication_id, member),
-        &syndication_member,
-    );
 
     // Update syndication
     env.storage()
@@ -275,7 +275,7 @@ pub fn leave_syndication(
             // Remove member index
             env.storage()
                 .persistent()
-                .remove(&DataKey::SyndicationMember(syndication_id, member));
+                .remove(&DataKey::SyndicationMember(syndication_id, member.clone()));
 
             if existing_member.approved {
                 syndication.approval_count -= 1;
