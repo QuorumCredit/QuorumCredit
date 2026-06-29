@@ -88,6 +88,10 @@ pub enum ContractError {
     ArithmeticError = 62,
     /// No rollback snapshot found for the requested deployment index (#744).
     RollbackSnapshotNotFound = 63,
+    /// The chain_id used in a cross-chain vouch is not registered or is inactive.
+    InvalidChain = 98,
+    /// A bridge for this chain_id has already been registered.
+    BridgeAlreadyRegistered = 99,
     /// No Ed25519 verification key is configured for the origin chain.
     BridgeNotConfigured = 100,
     /// The origin/destination chain combination is invalid.
