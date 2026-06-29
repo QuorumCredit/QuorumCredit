@@ -511,6 +511,16 @@ pub enum DataKey {
     CascadingDefaultRecord(u64),
     /// Waterfall distribution configuration for a borrower
     WaterfallConfig(Address),
+    // ── Issue #905: Withdrawal Timelock ───────────────────────────────────────
+    /// lock_id → WithdrawalTimelock
+    WithdrawalTimelock(u64),
+    /// Monotonically increasing withdrawal timelock ID counter
+    WithdrawalTimelockCounter,
+    // ── Issue #906 / #970: Cross-Chain Governance / Multi-chain Voting ────────
+    /// sync_id → CrossChainProposalSync
+    CrossChainProposalSync(u64),
+    /// Monotonically increasing cross-chain sync proposal ID counter
+    CrossChainSyncCounter,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1651,22 +1661,44 @@ pub struct WithdrawalTimelock {
     pub cancelled: bool,
 }
 
-// ── Cross-Chain Proposal Sync (Issue #906) ────────────────────────────────────
+// ── Cross-Chain Proposal Sync (Issue #906 / #970) ─────────────────────────────
 
+/// A governance proposal that must be ratified by multiple chains before execution.
+/// Each target chain submits a vote; when `votes_received >= votes_required`
+/// the status transitions to Approved and the proposal becomes executable.
 #[contracttype]
 #[derive(Clone)]
 pub struct CrossChainProposalSync {
+    /// Unique monotonically-increasing proposal ID.
     pub id: u64,
-    pub source_chain: String,
-    pub target_chains: Vec<String>,
-    pub proposal_type: String,  // "risk", "fee", "timelock"
-    pub proposal_data: Vec<u8>,
+    /// Human-readable identifier for the originating chain (e.g. "stellar").
+    pub source_chain: soroban_sdk::String,
+    /// Identifiers of all chains that must vote (e.g. ["ethereum", "polygon"]).
+    pub target_chains: Vec<soroban_sdk::String>,
+    /// Category of the proposal: "risk", "fee", or "timelock".
+    pub proposal_type: soroban_sdk::String,
+    /// ABI-encoded or XDR-serialised proposal payload, chain-agnostic.
+    pub proposal_data: soroban_sdk::Bytes,
+    /// Number of chain-votes required for quorum.
     pub votes_required: u32,
+    /// Number of chain-votes received so far.
     pub votes_received: u32,
+    /// Chains that have already cast a vote (prevent double-voting per chain).
+    pub voted_chains: Vec<soroban_sdk::String>,
+    /// Current lifecycle status.
     pub status: GovernanceProposalStatus,
+    /// Ledger timestamp when the proposal was created.
     pub created_at: u64,
+    /// Earliest ledger timestamp at which the proposal may be executed.
     pub eta: u64,
+    /// Ledger timestamp when the proposal expires if not executed.
+    pub expires_at: u64,
 }
+
+/// Default cross-chain proposal ETA delay from creation: 3 days.
+pub const CROSS_CHAIN_PROPOSAL_ETA_SECS: u64 = 3 * 24 * 60 * 60;
+/// Default cross-chain proposal expiry window after ETA: 7 days.
+pub const CROSS_CHAIN_PROPOSAL_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
 
 // ── Error Standardization (Issue #725) ────────────────────────────────────────
 
