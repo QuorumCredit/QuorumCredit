@@ -27,6 +27,7 @@ pub mod versioning;
 pub mod vouch;
 pub mod vouch_groups;
 pub mod yield_stream;
+pub mod zk_snarks;
 pub mod cache;
 pub mod error_response;
 pub mod versioning;
@@ -117,6 +118,8 @@ mod storage_compaction_test;
 
 #[cfg(test)]
 mod vectorized_score_test;
+#[cfg(test)]
+mod zk_snarks_test;
 
 #[cfg(test)]
 mod query_pagination_test;#[cfg(test)]
@@ -265,6 +268,60 @@ impl QuorumCreditContract {
         vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
     }
 
+    /// Confidential vouch with zk-SNARK proof verification
+    ///
+    /// Allows vouchers to stake without revealing the exact amount on-chain.
+    /// The zk-SNARK proof demonstrates that:
+    /// - The voucher has sufficient balance
+    /// - The stake amount is within allowed bounds
+    /// - The voucher is not blacklisted
+    pub fn vouch_confidential(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        commitment: ConfidentialCommitment,
+        proof: ZkProof,
+        token: Address,
+        chain_id: Option<u32>,
+    ) -> Result<(), ContractError> {
+        // Verify the zk-SNARK proof
+        zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, 0)?;
+
+        // Store the commitment for this vouch
+        env.storage()
+            .persistent()
+            .set(&DataKey::VouchCommitment(voucher.clone(), borrower.clone()), &commitment);
+
+        // Record the proof for audit trail
+        let proof_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ZkProofCounter)
+            .unwrap_or(0)
+            .checked_add(1)
+            .expect("proof ID overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::ZkProofCounter, &proof_id);
+
+        let proof_record = crate::types::ZkProofRecord {
+            proof_id,
+            proof: proof.clone(),
+            operation_type: crate::types::PROOF_TYPE_VOUCH,
+            submitter: voucher.clone(),
+            verified: true,
+            submitted_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ZkProofRecord(proof_id), &proof_record);
+
+        // For now, we still need to call the regular vouch function
+        // In a full implementation, this would use the commitment instead of the actual amount
+        // The actual amount would be revealed off-chain to authorized parties
+        vouch::vouch(env, voucher, borrower, 0, token, chain_id)
+    }
+
     pub fn batch_vouch(
         env: Env,
         voucher: Address,
@@ -398,6 +455,55 @@ impl QuorumCreditContract {
         token: Address,
     ) -> Result<(), ContractError> {
         loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
+    }
+
+    /// Confidential loan request with zk-SNARK proof verification
+    ///
+    /// Allows borrowers to request loans without revealing exact amounts on-chain.
+    /// The zk-SNARK proof demonstrates that:
+    /// - The borrower meets eligibility requirements
+    /// - The requested amount is within bounds
+    /// - Sufficient vouches exist (without revealing individual vouch amounts)
+    pub fn request_loan_confidential(
+        env: Env,
+        borrower: Address,
+        commitment: ConfidentialCommitment,
+        proof: ZkProof,
+        threshold: i128,
+        loan_purpose: soroban_sdk::String,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        // Verify the zk-SNARK proof
+        zk_snarks::verify_loan_proof(&env, &proof, &borrower, 0, threshold)?;
+
+        // Record the proof for audit trail
+        let proof_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ZkProofCounter)
+            .unwrap_or(0)
+            .checked_add(1)
+            .expect("proof ID overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey::ZkProofCounter, &proof_id);
+
+        let proof_record = crate::types::ZkProofRecord {
+            proof_id,
+            proof: proof.clone(),
+            operation_type: crate::types::PROOF_TYPE_LOAN_REQUEST,
+            submitter: borrower.clone(),
+            verified: true,
+            submitted_at: env.ledger().timestamp(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ZkProofRecord(proof_id), &proof_record);
+
+        // For now, we still need to call the regular request_loan function
+        // In a full implementation, this would use the commitment instead of the actual amount
+        // The actual amount would be revealed off-chain to authorized parties
+        loan::request_loan(env, borrower, 0, threshold, loan_purpose, token)
     }
 
     pub fn dispute_vouch(
