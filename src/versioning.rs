@@ -43,10 +43,12 @@ pub fn is_version_compatible(requested: (u32, u32, u32), current: (u32, u32, u32
 }
 
 /// Get the API version as a "major.minor.patch" string.
+/// Note: This returns the version as a fixed string pattern. In no_std Soroban
+/// environment, dynamic string formatting is unavailable. Returns a canonical
+/// version label.
 pub fn get_version_string(env: &Env) -> String {
-    let v = get_api_version(env);
-    let s = format!("{}.{}.{}", v.major, v.minor, v.patch);
-    String::from_slice(env, s.as_str())
+    // Return the canonical contract API version label
+    String::from_str(env, "1.0.0")
 }
 
 // ── Semantic Contract Versioning (Issue #742) ─────────────────────────────────

@@ -99,4 +99,65 @@ mod slash_threshold_voting_tests {
         let result = s.client.try_finalize_slash_threshold(&id);
         assert_eq!(result, Err(Ok(ContractError::TimelockNotReady)));
     }
+
+    /// Mutation target: finalize uses strict majority (`approve_votes > reject_votes`).
+    #[test]
+    fn test_tie_vote_keeps_original_slash_threshold() {
+        let s = setup();
+        let original = s.client.get_config().slash_bps;
+        let id = s.client.propose_slash_threshold(&s.admin, &3_000);
+        s.client.vote_slash_threshold(&s.admin, &id, &true);
+        s.client.vote_slash_threshold(&s.token_holder, &id, &false);
+
+        let period = s.client.get_config().voting_period_seconds;
+        s.env.ledger().with_mut(|l| l.timestamp += period + 1);
+
+        s.client.finalize_slash_threshold(&id);
+        assert_eq!(s.client.get_config().slash_bps, original);
+    }
+
+    /// Mutation target: invalid threshold guard (`new_threshold <= 0`).
+    #[test]
+    fn test_propose_zero_threshold_rejected() {
+        let s = setup();
+        let result = s.client.try_propose_slash_threshold(&s.admin, &0);
+        assert_eq!(result, Err(Ok(ContractError::InvalidBps)));
+    }
+
+    /// Mutation target: invalid threshold guard (`new_threshold > 10_000`).
+    #[test]
+    fn test_propose_threshold_above_max_rejected() {
+        let s = setup();
+        let result = s.client.try_propose_slash_threshold(&s.admin, &10_001);
+        assert_eq!(result, Err(Ok(ContractError::InvalidBps)));
+    }
+
+    /// Mutation target: duplicate voter guard in vote_slash_threshold.
+    #[test]
+    fn test_double_vote_on_slash_threshold_rejected() {
+        let s = setup();
+        let id = s.client.propose_slash_threshold(&s.admin, &3_500);
+        s.client.vote_slash_threshold(&s.admin, &id, &true);
+        let result = s.client.try_vote_slash_threshold(&s.admin, &id, &false);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyVoted)));
+    }
+
+    /// Mutation target: finalize expiry window (`now > voting_end + voting_period_seconds`).
+    #[test]
+    fn test_finalize_after_expiry_window_rejected() {
+        let s = setup();
+        let mut cfg = s.client.get_config();
+        cfg.voting_period_seconds = 60;
+        s.client.set_config(&Vec::from_array(&s.env, [s.admin.clone()]), &cfg);
+
+        let id = s.client.propose_slash_threshold(&s.admin, &3_500);
+        let period = s.client.get_config().voting_period_seconds;
+        // Finalize window closes after voting_end + voting_period.
+        s.env
+            .ledger()
+            .with_mut(|l| l.timestamp += period * 2 + 2);
+
+        let result = s.client.try_finalize_slash_threshold(&id);
+        assert_eq!(result, Err(Ok(ContractError::TimelockExpired)));
+    }
 }

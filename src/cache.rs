@@ -1,12 +1,13 @@
-//! Caching layer for read-heavy endpoints (Issues #724, #66)
+//! Caching layer for read-heavy endpoints (Issues #724, #66, #934)
 //!
 //! TTL-based caching with LRU eviction: once the index reaches
 //! `CACHE_LRU_MAX_ENTRIES`, the oldest entry is evicted before a new one
 //! is inserted, bounding on-chain storage growth.
 
 use crate::types::{
-    CachedConfigRecord, CachedLoanRecord, CachedVouchesRecord, CacheKey, Config, DataKey,
-    LoanRecord, VouchRecord, CACHE_LRU_MAX_ENTRIES, CACHE_TTL_SECS,
+    CachedConfigRecord, CachedLoanRecord, CachedVouchesRecord, CachedYieldRecord, CacheKey,
+    Config, DataKey, LoanRecord, VouchRecord, CACHE_LRU_MAX_ENTRIES, CACHE_TTL_SECS,
+    YIELD_CACHE_TTL_SECS,
 };
 use soroban_sdk::{Address, Env, Vec};
 
@@ -14,8 +15,6 @@ use soroban_sdk::{Address, Env, Vec};
 /// Only Loan cache entries are tracked for eviction (there is at most one
 /// Config and one Vouches entry per borrower, making them self-limiting).
 fn evict_oldest_loan_if_needed(env: &Env) {
-    // Count existing loan cache entries via a best-effort scan is expensive on-chain.
-    // Instead we use a simple counter stored under DataKey::LruIndex as a u32.
     let count: u32 = env
         .storage()
         .persistent()
@@ -29,7 +28,6 @@ fn evict_oldest_loan_if_needed(env: &Env) {
         return;
     }
 
-    // At capacity: evict the entry tracked by LruOldestLoanId (if set).
     if let Some(oldest_id) = env
         .storage()
         .persistent()
@@ -38,12 +36,10 @@ fn evict_oldest_loan_if_needed(env: &Env) {
         env.storage()
             .persistent()
             .remove(&CacheKey::LoanCache(oldest_id));
-        // Advance the oldest pointer by 1.
         env.storage()
             .persistent()
             .set(&DataKey::LruOldestLoanId, &(oldest_id + 1));
     }
-    // count stays the same (evicted one, inserting one).
 }
 
 /// Check if a cached record is still valid (not expired).
@@ -59,7 +55,6 @@ pub fn get_cached_loan(env: &Env, loan_id: u64) -> Option<LoanRecord> {
         if is_cache_valid(cached.cached_at, current_time) {
             return Some(cached.data);
         } else {
-            // Invalidate expired cache
             env.storage().persistent().remove(&cache_key);
         }
     }
@@ -69,7 +64,6 @@ pub fn get_cached_loan(env: &Env, loan_id: u64) -> Option<LoanRecord> {
 /// Set a cached loan record (with LRU eviction if at capacity).
 pub fn set_cached_loan(env: &Env, loan_id: u64, loan: LoanRecord) {
     evict_oldest_loan_if_needed(env);
-    // Track oldest loan id pointer for eviction (first write only).
     if !env
         .storage()
         .persistent()

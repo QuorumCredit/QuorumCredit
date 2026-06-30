@@ -7,6 +7,20 @@ from typing import Any, Optional
 stellar_sdk: Any = importlib.import_module("stellar_sdk")
 
 
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def xlm_to_stroops(xlm: float) -> int:
+    """Convert XLM to stroops (1 XLM = 10,000,000 stroops)."""
+    return round(xlm * 10_000_000)
+
+
+def stroops_to_xlm(stroops: int | str) -> float:
+    """Convert stroops to XLM."""
+    return int(stroops) / 10_000_000
+
+
+# ── Data models ────────────────────────────────────────────────────────────────
+
 @dataclass(frozen=True)
 class ClientConfig:
     contract_id: str
@@ -49,10 +63,14 @@ class Config:
     loan_duration: int
 
 
+# ── Client ─────────────────────────────────────────────────────────────────────
+
 class QuorumCreditClient:
     def __init__(self, config: ClientConfig) -> None:
         self.config = config
         self.server: Any = stellar_sdk.SorobanServer(config.rpc_url)
+
+    # ── Initialization ─────────────────────────────────────────────────────────
 
     async def initialize(
         self,
@@ -62,6 +80,8 @@ class QuorumCreditClient:
         token: str,
     ) -> str:
         return str(await self._invoke("initialize", False, deployer, admins, admin_threshold, token))
+
+    # ── Vouching ───────────────────────────────────────────────────────────────
 
     async def vouch(self, voucher: str, borrower: str, stake: int | str, token: str) -> str:
         return str(await self._invoke("vouch", False, voucher, borrower, stake, token))
@@ -77,6 +97,21 @@ class QuorumCreditClient:
             raise ValueError("borrowers and stakes must have the same length")
         return str(await self._invoke("batch_vouch", False, voucher, borrowers, stakes, token))
 
+    async def increase_stake(
+        self, voucher: str, borrower: str, additional_stake: int | str, token: str
+    ) -> str:
+        return str(await self._invoke("increase_stake", False, voucher, borrower, additional_stake, token))
+
+    async def decrease_stake(
+        self, voucher: str, borrower: str, reduced_stake: int | str, token: str
+    ) -> str:
+        return str(await self._invoke("decrease_stake", False, voucher, borrower, reduced_stake, token))
+
+    async def withdraw_vouch(self, voucher: str, borrower: str, token: str) -> str:
+        return str(await self._invoke("withdraw_vouch", False, voucher, borrower, token))
+
+    # ── Loans ──────────────────────────────────────────────────────────────────
+
     async def request_loan(
         self,
         borrower: str,
@@ -90,8 +125,34 @@ class QuorumCreditClient:
     async def repay(self, borrower: str, payment: int | str) -> str:
         return str(await self._invoke("repay", False, borrower, payment))
 
+    # ── Governance ─────────────────────────────────────────────────────────────
+
     async def slash(self, admin_signers: list[str], borrower: str) -> str:
         return str(await self._invoke("slash", False, admin_signers, borrower))
+
+    async def vote_slash(self, voucher: str, borrower: str, approve: bool) -> str:
+        return str(await self._invoke("vote_slash", False, voucher, borrower, approve))
+
+    async def execute_slash_vote(self, borrower: str) -> str:
+        return str(await self._invoke("execute_slash_vote", False, borrower))
+
+    # ── Admin ──────────────────────────────────────────────────────────────────
+
+    async def pause(self, admin_signers: list[str]) -> str:
+        return str(await self._invoke("pause", False, admin_signers))
+
+    async def unpause(self, admin_signers: list[str]) -> str:
+        return str(await self._invoke("unpause", False, admin_signers))
+
+    async def update_config(
+        self,
+        admin_signers: list[str],
+        yield_bps: Optional[int | str] = None,
+        slash_bps: Optional[int | str] = None,
+    ) -> str:
+        return str(await self._invoke("update_config", False, admin_signers, yield_bps, slash_bps))
+
+    # ── Queries ────────────────────────────────────────────────────────────────
 
     async def get_loan(self, borrower: str) -> Optional[LoanRecord]:
         result = await self._invoke("get_loan", True, borrower)
@@ -106,6 +167,25 @@ class QuorumCreditClient:
 
     async def get_config(self) -> Config:
         return self._parse_config(await self._invoke("get_config", True))
+
+    async def loan_status(self, borrower: str) -> str:
+        result = await self._invoke("loan_status", True, borrower)
+        return str(self._native(result)) if result else "None"
+
+    async def get_admins(self) -> list[str]:
+        result = await self._invoke("get_admins", True)
+        native = self._native(result) if result else []
+        return list(native) if isinstance(native, (list, tuple)) else []
+
+    async def total_vouched(self, borrower: str) -> str:
+        result = await self._invoke("total_vouched", True, borrower)
+        return str(self._native(result)) if result else "0"
+
+    async def get_fee_treasury(self) -> str:
+        result = await self._invoke("get_fee_treasury", True)
+        return str(self._native(result)) if result else "0"
+
+    # ── Internals ──────────────────────────────────────────────────────────────
 
     async def _invoke(self, name: str, readonly: bool, *args: object) -> Any:
         if readonly:

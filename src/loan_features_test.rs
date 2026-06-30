@@ -109,6 +109,44 @@ mod loan_features_tests {
         assert!(request.is_none());
     }
 
+    #[test]
+    fn test_suspend_loan_on_missed_payment() {
+        let (env, client, admin1, _admin2, borrower, _voucher, _token) = setup_with_loan();
+        let admins = Vec::from_array(&env, [admin1.clone()]);
+
+        client
+            .suspend_loan_on_missed_payment(&admin1, &borrower)
+            .unwrap();
+
+        let loan = client.get_loan(&borrower).unwrap();
+        assert!(loan.suspension_timestamp.is_some());
+        assert_eq!(loan.suspension_amount_repaid, 0);
+        assert_eq!(client.loan_status_extended(&borrower), crate::types::LoanStatusEx::Suspended);
+    }
+
+    #[test]
+    fn test_resume_loan_after_grace_period_and_payment() {
+        let (env, client, admin1, _admin2, borrower, _voucher, token) = setup_with_loan();
+
+        client
+            .suspend_loan_on_missed_payment(&admin1, &borrower)
+            .unwrap();
+
+        let payment = 100_000_000;
+        client.repay(&borrower, &payment).unwrap();
+
+        env.ledger().with_mut(|l| {
+            l.timestamp += crate::types::PAYMENT_GRACE_PERIOD + 1;
+        });
+
+        client.resume_loan(&admin1, &borrower).unwrap();
+
+        let loan = client.get_loan(&borrower).unwrap();
+        assert!(loan.suspension_timestamp.is_none());
+        assert_eq!(loan.suspension_amount_repaid, 0);
+        assert_eq!(client.loan_status_extended(&borrower), crate::types::LoanStatusEx::Active);
+    }
+
     // ── #882: Loan Insurance Integration Tests ──────────────────────────────
 
     #[test]

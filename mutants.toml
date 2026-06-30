@@ -1,0 +1,28 @@
+# mutants.toml
+
+# Per-mutant test timeout in seconds. Soroban tests are fast; 60 s is generous.
+timeout = 60
+
+# Source files included in the mutation scope.
+# Only these files will have mutants generated.
+include_globs = [
+    "src/lib.rs",
+    "src/vouch.rs",
+    "src/governance.rs",
+    "src/admin.rs",
+    "src/helpers.rs",
+]
+
+# Exclude test modules, build scripts, and generated code.
+exclude_globs = [
+    "src/*_test.rs",
+    "src/tests/**",
+    "build.rs",
+]
+
+# Functions to skip (e.g. trivial getters, pure logging).
+# Add entries here when a surviving mutant is accepted as low-risk.
+# Example:
+# [[exclude_functions]]
+# name = "get_version"
+# reason = "Version string is cosmetic; no test coverage required."

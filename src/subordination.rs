@@ -142,7 +142,7 @@ pub fn apply_waterfall_distribution(
             break;
         }
 
-        let loan = match get_loan_record(env, *senior_id) {
+        let loan = match get_loan_record(env, senior_id) {
             Some(l) => l,
             None => continue,
         };
@@ -235,14 +235,14 @@ fn would_create_cycle(env: &Env, potential_senior_id: u64, potential_subordinate
     // Trace from potential_subordinate backward through seniors
     // If we reach potential_senior_id, a cycle exists
     let mut current = potential_subordinate_id;
-    let mut visited = Vec::new(env);
+    let mut visited: Vec<u64> = Vec::new(env);
 
     loop {
         if current == potential_senior_id {
             return true; // Cycle detected
         }
 
-        if visited.iter().any(|&id| id == current) {
+        if visited.iter().any(|id| id == current) {
             return false; // No cycle in this branch
         }
 

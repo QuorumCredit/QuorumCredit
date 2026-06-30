@@ -263,11 +263,11 @@ describe("useLoanSocket via LoanStatusDashboard", () => {
 // ---------------------------------------------------------------------------
 
 describe("LoanCard", () => {
-  function renderCard(loan: LoanRecord) {
+  function renderCard(loan: LoanRecord, accessibility?: { colorblindFriendly?: boolean; highContrast?: boolean }) {
     const testStore = makeStore();
     return render(
       <Provider store={testStore}>
-        <LoanCard loan={loan} />
+        <LoanCard loan={loan} accessibility={accessibility} />
       </Provider>
     );
   }
@@ -297,6 +297,12 @@ describe("LoanCard", () => {
   it("shows Active status badge", () => {
     renderCard(activeLoan);
     expect(screen.getByLabelText("Status: Active")).toBeInTheDocument();
+  });
+
+  it("adds an icon and explicit label in colorblind-friendly mode", () => {
+    renderCard(activeLoan, { colorblindFriendly: true });
+    expect(screen.getByText(/● Active/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Status: Active")).toHaveTextContent("● Active");
   });
 
   it("shows Repaid status badge", () => {

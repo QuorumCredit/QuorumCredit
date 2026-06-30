@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 soroban-sdk = { version = "26.0.0", features = ["alloc"] }
+sha3 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 soroban-sdk = { version = "26.0.0", features = ["testutils"] }

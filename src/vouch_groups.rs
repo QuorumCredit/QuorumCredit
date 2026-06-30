@@ -41,13 +41,29 @@ pub fn remove_voucher_from_group(env: Env, caller: Address, group_id: u64, vouch
     require_not_thawing(&env)?;
     let mut group: VouchGroup = env.storage().persistent().get(&DataKey::VouchGroup(group_id)).ok_or(ContractError::NoActiveLoan)?;
     let len_before = group.vouchers.len();
-    group.vouchers = group.vouchers.iter().filter(|v| *v != voucher).collect();
+    {
+        let mut new_vouchers = Vec::new(&env);
+        for v in group.vouchers.iter() {
+            if v != voucher {
+                new_vouchers.push_back(v.clone());
+            }
+        }
+        group.vouchers = new_vouchers;
+    }
     if group.vouchers.len() == len_before {
         return Err(ContractError::VoucherNotFound);
     }
     env.storage().persistent().set(&DataKey::VouchGroup(group_id), &group);
     let mut group_ids: Vec<u64> = env.storage().persistent().get(&DataKey::VoucherGroupIds(voucher.clone())).unwrap_or(Vec::new(&env));
-    group_ids = group_ids.iter().filter(|g| *g != group_id).collect();
+    {
+        let mut new_ids = Vec::new(&env);
+        for g in group_ids.iter() {
+            if g != group_id {
+                new_ids.push_back(g);
+            }
+        }
+        group_ids = new_ids;
+    }
     env.storage().persistent().set(&DataKey::VoucherGroupIds(voucher.clone()), &group_ids);
     env.events().publish((symbol_short!("vgrp"), symbol_short!("rm")), (caller, group_id, voucher));
     Ok(())

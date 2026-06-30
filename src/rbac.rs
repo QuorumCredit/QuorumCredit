@@ -1,7 +1,7 @@
 use crate::errors::ContractError;
 use crate::helpers::require_admin_approval;
 use crate::types::{AdminPermission, AdminRole, DataKey};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 
 /// Assigns an admin role to an address. Requires admin authorization.
 pub fn assign_admin_role(
@@ -16,7 +16,7 @@ pub fn assign_admin_role(
     
     env.events().publish(
         ("admin", "role_assigned"),
-        (&admin_signers[0], &target_admin, &role),
+        (admin_signers.get(0), &target_admin, &role),
     );
 }
 

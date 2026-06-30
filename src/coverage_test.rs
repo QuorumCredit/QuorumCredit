@@ -37,7 +37,7 @@ mod coverage_tests {
 
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
         StellarAssetClient::new(&s.env, &s.token).mint(voucher, &stake);
-        s.client.vouch(voucher, borrower, &stake, &s.token);
+        s.client.vouch(voucher, borrower, &stake, &s.token, &None);
         s.env.ledger().with_mut(|l| l.timestamp += 61);
     }
 
@@ -350,7 +350,10 @@ mod coverage_tests {
         StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &2_000_000);
         let borrowers = Vec::from_array(&s.env, [b1.clone(), b2.clone()]);
         let stakes = Vec::from_array(&s.env, [1_000_000i128, 1_000_000i128]);
-        s.client.batch_vouch(&voucher, &borrowers, &stakes, &s.token);
+        let results = s.client.batch_vouch(&voucher, &borrowers, &stakes, &s.token, &None);
+        assert_eq!(results.len(), 2);
+        assert!(results.get(0).unwrap().success);
+        assert!(results.get(1).unwrap().success);
         assert!(s.client.vouch_exists(&voucher, &b1));
         assert!(s.client.vouch_exists(&voucher, &b2));
     }

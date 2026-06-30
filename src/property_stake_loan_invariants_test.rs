@@ -34,7 +34,8 @@
 ///        None → Active → (Repaid | Defaulted); no backwards transitions.
 #[cfg(test)]
 mod property_stake_loan_invariants_tests {
-    use crate::{LoanStatus, QuorumCreditContract, QuorumCreditContractClient};
+    use crate::helpers::calculate_protocol_health_score;
+    use crate::{ContractError, LoanStatus, QuorumCreditContract, QuorumCreditContractClient};
     use crate::types::BPS_DENOMINATOR;
     use soroban_sdk::{
         testutils::Address as _,
@@ -532,5 +533,55 @@ mod property_stake_loan_invariants_tests {
                 "lifecycle: all loans should be Repaid after full payment"
             );
         }
+    }
+
+    // ── Mutation testing: helpers.rs & governance quorum guards ───────────────
+
+    /// Mutation target: calculate_protocol_health_score initialized + unpaused baseline.
+    #[test]
+    fn mutation_kill_protocol_health_score_baseline() {
+        let s = setup();
+        // Config present (3000) + not paused (3000); yield reserve empty (0).
+        assert_eq!(calculate_protocol_health_score(&s.env), 6_000);
+    }
+
+    /// Mutation target: emergency pause removes the not-paused health component.
+    #[test]
+    fn mutation_kill_protocol_health_score_when_emergency_paused() {
+        let s = setup();
+        s.client.emergency_pause(&s.admin_vec.get(0).unwrap());
+        assert_eq!(calculate_protocol_health_score(&s.env), 3_000);
+    }
+
+    /// Mutation target: execute_slash_vote rejects when approve stake is below quorum.
+    #[test]
+    fn mutation_kill_slash_quorum_not_met_on_partial_approval() {
+        let s = setup();
+        let voucher1 = Address::generate(&s.env);
+        let voucher2 = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        let stake: i128 = 1_000_000;
+
+        mint(&s, &voucher1, stake);
+        mint(&s, &voucher2, stake);
+        s.client.vouch(&voucher1, &borrower, &stake, &s.token, &None);
+        s.client.vouch(&voucher2, &borrower, &stake, &s.token, &None);
+        s.client.request_loan(
+            &borrower,
+            &500_000,
+            &(stake * 2),
+            &purpose(&s.env),
+            &s.token,
+        );
+
+        // 75% quorum: a single 50%-weighted approve vote must not be executable.
+        s.client.set_slash_vote_quorum(&s.admin_vec, &7500);
+        s.client.vote_slash(&voucher1, &borrower, &true);
+
+        let vote = s.client.get_slash_vote(&borrower).unwrap();
+        assert!(!vote.executed);
+
+        let result = s.client.try_execute_slash_vote(&borrower);
+        assert_eq!(result, Err(Ok(ContractError::QuorumNotMet)));
     }
 }
