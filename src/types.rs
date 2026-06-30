@@ -48,6 +48,8 @@ pub const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
 pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 /// Default maximum number of vouchers that may back a single borrower.
 pub const DEFAULT_MAX_VOUCHERS_PER_BORROWER: u32 = 50;
+/// Default timelock delay for config changes, in seconds (7 days).
+pub const CONFIG_TIMELOCK_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Default governance voting period for slash-threshold proposals, in seconds (7 days).
 pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum delay before a timelocked governance action may be executed, in seconds (24 hours).

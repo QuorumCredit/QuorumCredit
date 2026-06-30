@@ -1903,3 +1903,127 @@ pub fn vote_cross_chain_sync(
 
     Ok(())
 }
+
+pub fn propose_config_change(
+    env: Env,
+    proposer: Address,
+    new_config: crate::types::Config,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+    require_not_paused(&env)?;
+    let cfg = config(&env);
+    assert!(
+        cfg.admins.iter().any(|a| a == &proposer),
+        "only admins can propose config changes"
+    );
+
+    let proposal_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TimelockCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("proposal ID overflow");
+
+    let eta = env.ledger().timestamp() + crate::types::CONFIG_TIMELOCK_SECONDS;
+
+    let proposal = TimelockProposal {
+        id: proposal_id,
+        action: TimelockAction::SetConfig(new_config),
+        proposer: proposer.clone(),
+        eta,
+        executed: false,
+        cancelled: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::Timelock(proposal_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::TimelockCounter, &proposal_id);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("config_prop")),
+        (proposal_id, proposer, eta),
+    );
+
+    Ok(proposal_id)
+}
+
+pub fn execute_config_change(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let mut proposal: TimelockProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::Timelock(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    if proposal.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        return Err(ContractError::ProposalNotFound);
+    }
+
+    if env.ledger().timestamp() < proposal.eta {
+        return Err(ContractError::ProposalNotFound);
+    }
+
+    const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+    if env.ledger().timestamp() > proposal.eta + TIMELOCK_EXPIRY {
+        return Err(ContractError::ProposalNotFound);
+    }
+
+    if let TimelockAction::SetConfig(new_config) = &proposal.action {
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::Timelock(proposal_id), &proposal);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Config, new_config);
+
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("config_exec")),
+            (proposal_id,),
+        );
+
+        Ok(())
+    } else {
+        Err(ContractError::ProposalNotFound)
+    }
+}
+
+pub fn cancel_config_change(
+    env: Env,
+    admin_signers: Vec<Address>,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+    crate::helpers::require_admin_approval(&env, &admin_signers);
+
+    let mut proposal: TimelockProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::Timelock(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    if proposal.executed || proposal.cancelled {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    proposal.cancelled = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::Timelock(proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("config_cancel")),
+        (proposal_id,),
+    );
+
+    Ok(())
+}

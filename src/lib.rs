@@ -1330,6 +1330,28 @@ impl QuorumCreditContract {
         governance::get_slash_threshold_proposal(env, proposal_id)
     }
 
+    // ── Config Timelock ───────────────────────────────────────────────────────
+
+    pub fn propose_config_change(
+        env: Env,
+        proposer: Address,
+        new_config: Config,
+    ) -> Result<u64, ContractError> {
+        governance::propose_config_change(env, proposer, new_config)
+    }
+
+    pub fn execute_config_change(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        governance::execute_config_change(env, proposal_id)
+    }
+
+    pub fn cancel_config_change(
+        env: Env,
+        admin_signers: Vec<Address>,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        governance::cancel_config_change(env, admin_signers, proposal_id)
+    }
+
     // ── Slash Appeal & Escrow (Issue #841) ────────────────────────────────────
 
     pub fn appeal_slash(env: Env, borrower: Address) -> Result<(), ContractError> {
