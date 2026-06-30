@@ -130,8 +130,8 @@ mod regression_past_bugs_test;
 mod batch_vouch_selective_rollback_test;
 
 use crate::helpers::{
-    config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
-    require_allowed_token, require_not_paused,
+    config, get_active_loan_record, has_active_loan, is_zero_address,
+    loan_status as helper_loan_status, require_allowed_token, require_not_paused,
 };
 use crate::types::{AdminOperationType, Config, DataKey, MultiTierAdminThresholds, RateLimitConfig, DEFAULT_LOAN_DURATION, DEFAULT_MAX_LOAN_TO_STAKE_RATIO, DEFAULT_MAX_VOUCHERS, DEFAULT_MIN_LOAN_AMOUNT, DEFAULT_SLASH_BPS, DEFAULT_YIELD_BPS, DEFAULT_MIN_VOUCH_AGE_SECS};
 use soroban_sdk::BytesN;
@@ -451,12 +451,18 @@ impl QuorumCreditContract {
         let token_client = token::Client::new(&env, &loan.token_address);
         let mut total_slashed: i128 = 0;
         for v in vouches.iter() {
-            let slash_amount = v.stake * cfg.slash_bps / 10_000;
-            let returned = v.stake - slash_amount;
-            if returned > 0 {
-                token_client.transfer(&env.current_contract_address(), &v.voucher, &returned);
+            if v.token == loan.token_address {
+                let slash_amount = v.stake * cfg.slash_bps / 10_000;
+                let returned = v.stake - slash_amount;
+                if returned > 0 {
+                    token_client.transfer(&env.current_contract_address(), &v.voucher, &returned);
+                }
+                total_slashed += slash_amount;
+            } else if !is_zero_address(&env, &v.token) {
+                // Non-matching token vouches are returned in full.
+                let other_token = soroban_sdk::token::Client::new(&env, &v.token);
+                other_token.transfer(&env.current_contract_address(), &v.voucher, &v.stake);
             }
-            total_slashed += slash_amount;
         }
 
         // Issue #882: Route portion of slashed funds to insurance pool
@@ -713,11 +719,17 @@ impl QuorumCreditContract {
         let token_client = token::Client::new(&env, &loan.token_address);
         let mut total_slash: i128 = 0;
         for v in vouches.iter() {
-            let slash_amount = v.stake * cfg.slash_bps / 10_000;
-            let returned = v.stake - slash_amount;
-            total_slash += slash_amount;
-            if returned > 0 {
-                token_client.transfer(&env.current_contract_address(), &v.voucher, &returned);
+            if v.token == loan.token_address {
+                let slash_amount = v.stake * cfg.slash_bps / 10_000;
+                let returned = v.stake - slash_amount;
+                total_slash += slash_amount;
+                if returned > 0 {
+                    token_client.transfer(&env.current_contract_address(), &v.voucher, &returned);
+                }
+            } else if !is_zero_address(&env, &v.token) {
+                // Non-matching token vouches are returned in full.
+                let other_token = soroban_sdk::token::Client::new(&env, &v.token);
+                other_token.transfer(&env.current_contract_address(), &v.voucher, &v.stake);
             }
         }
 
@@ -776,7 +788,13 @@ impl QuorumCreditContract {
 
         let token_client = token::Client::new(&env, &loan.token_address);
         for v in vouches.iter() {
-            token_client.transfer(&env.current_contract_address(), &v.voucher, &v.stake);
+            if v.token == loan.token_address {
+                token_client.transfer(&env.current_contract_address(), &v.voucher, &v.stake);
+            } else if !is_zero_address(&env, &v.token) {
+                // Non-matching token vouches are returned via their own token.
+                let other_token = soroban_sdk::token::Client::new(&env, &v.token);
+                other_token.transfer(&env.current_contract_address(), &v.voucher, &v.stake);
+            }
         }
 
         loan.defaulted = true;

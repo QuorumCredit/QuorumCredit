@@ -1,7 +1,7 @@
-﻿use crate::errors::ContractError;
+use crate::errors::ContractError;
 use crate::helpers::{
     add_slash_balance, config, get_active_loan_record, get_latest_loan_record, has_active_loan,
-    require_admin_approval, require_governance_participant, require_not_paused,
+    is_zero_address, require_admin_approval, require_governance_participant, require_not_paused,
 };
 use crate::types::{
     AppealStatus, DataKey, LoanStatus, PendingSlashRecord, SlashEscrowAppealRecord, SlashEscrow,
@@ -402,6 +402,11 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
     for v in vouches.iter() {
         if v.token != loan.token_address {
+            // Return non-matching-token vouches in full to their owner.
+            if !is_zero_address(env, &v.token) {
+                let other_token = soroban_sdk::token::Client::new(env, &v.token);
+                other_token.transfer(&env.current_contract_address(), &v.voucher, &v.stake);
+            }
             remaining_vouches.push_back(v);
             continue;
         }
