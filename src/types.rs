@@ -1168,6 +1168,34 @@ pub struct AmortizationEntry {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MilestoneStatus {
+    Pending,
+    Submitted,
+    Approved,
+    Rejected,
+    Expired,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct MilestoneRecord {
+    pub milestone_id: u32,
+    pub loan_id: u64,
+    pub tranche_id: u32,
+    pub status: MilestoneStatus,
+    pub deadline: u64,
+    pub description: soroban_sdk::String,
+    pub submitted_at: Option<u64>,
+    pub evidence_hash: Option<soroban_sdk::BytesN<32>>,
+    pub proof_uri: Option<soroban_sdk::String>,
+    pub approved_at: Option<u64>,
+    pub approvers: Vec<Address>,
+    pub rejection_reason: Option<soroban_sdk::String>,
+    pub tranche_released: bool,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct LoanRecord {
     pub id: u64,
@@ -1228,6 +1256,7 @@ pub struct LoanRecord {
     pub milestone_bonus_applied: bool,
     /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
+    pub milestones: Vec<MilestoneRecord>,
 }
 
 /// An archived loan record, stored separately to reduce active persistent storage.

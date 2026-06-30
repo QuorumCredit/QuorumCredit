@@ -509,6 +509,7 @@ pub fn request_syndication_loan(
         rate_type: crate::types::RateType::Fixed,
         index_reference: None,
         retry_count: 0,
+        milestones: Vec::new(&env),
     };
 
     // Store loan

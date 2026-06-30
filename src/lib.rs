@@ -37,6 +37,7 @@ pub mod collateral_pool;
 pub mod gradual_unstake;
 /// Issue #887: Loan Subordination and Cascading Debt Hierarchy
 pub mod subordination;
+pub mod milestone_tranches;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -130,6 +131,8 @@ mod refinance_test;
 mod incentives_verification_test;
 #[cfg(test)]
 mod regression_past_bugs_test;
+#[cfg(test)]
+mod milestone_disbursement_test;
 
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
@@ -398,6 +401,32 @@ impl QuorumCreditContract {
         token: Address,
     ) -> Result<(), ContractError> {
         loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
+    }
+
+    pub fn create_milestone_loan(
+        env: Env,
+        borrower: Address,
+        total_amount: i128,
+        milestones: Vec<MilestoneRecord>,
+    ) -> Result<u64, ContractError> {
+        milestone_tranches::create_milestone_loan_impl(env, borrower, total_amount, milestones)
+    }
+
+    pub fn verify_milestone(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        milestone_id: u32,
+        proof_uri: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        milestone_tranches::verify_milestone_impl(env, admin_signers, borrower, milestone_id, proof_uri)
+    }
+
+    pub fn disburse_next_tranche(
+        env: Env,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        milestone_tranches::disburse_next_tranche_impl(env, borrower)
     }
 
     pub fn dispute_vouch(
@@ -888,18 +917,34 @@ impl QuorumCreditContract {
                 &LoanRecord {
                     id: loan_id,
                     borrower: borrower.clone(),
+                    guarantor: None,
+                    buyback_price: 0,
+                    auto_repay_enabled: false,
+                    auto_repay_attempts: 0,
+                    escrow_status: EscrowStatus::None,
                     co_borrowers: Vec::new(&env),
                     amount,
                     amount_repaid: 0,
                     total_yield: amount * cfg.yield_bps / 10_000,
-                    repaid: false,
-                    defaulted: false,
+                    status: LoanStatus::Active,
                     created_at: now,
                     disbursement_timestamp: now,
                     repayment_timestamp: None,
                     deadline,
                     loan_purpose: soroban_sdk::String::from_str(&env, "pool"),
                     token_address: cfg.token.clone(),
+                    amortization_schedule: Vec::new(&env),
+                    reminder_sent: false,
+                    risk_score: 0,
+                    deferment_periods: 0,
+                    maturity_date: None,
+                    rate_type: crate::types::RateType::Fixed,
+                    index_reference: None,
+                    last_interest_calc: now,
+                    accrued_interest: 0,
+                    milestone_bonus_applied: false,
+                    retry_count: 0,
+                    milestones: Vec::new(&env),
                 },
             );
             env.storage()

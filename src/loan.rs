@@ -237,6 +237,7 @@ pub fn request_loan(
         rate_type: crate::types::RateType::Fixed,
         index_reference: None,
         retry_count: 0,
+        milestones: Vec::new(&env),
     };
 
     env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
@@ -860,6 +861,7 @@ pub fn refinance_loan(
         accrued_interest: 0,
         milestone_bonus_applied: false,
         retry_count: 0,
+        milestones: Vec::new(&env),
     };
 
     env.storage()
