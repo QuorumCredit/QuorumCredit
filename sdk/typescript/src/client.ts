@@ -276,6 +276,35 @@ export class QuorumCreditClient {
     return resultValue ? this.parseConfig(resultValue) : ({} as Config);
   }
 
+  /**
+   * Get the effective (dynamic) minimum stake required for a specific borrower.
+   *
+   * The dynamic minimum stake takes the admin-configured base min_stake and applies
+   * a reduction based on the borrower's credit tier. Borrowers with higher credit
+   * tiers (Good, VeryGood, Excellent) earn a discount on the minimum stake required.
+   *
+   * Returns 0 when no minimum stake is configured.
+   * Returns a value <= the base min_stake.
+   *
+   * @param borrower - The borrower address to calculate the dynamic min stake for
+   * @returns Effective minimum stake in stroops
+   */
+  async getDynamicMinStake(borrower: string): Promise<bigint> {
+    const result: any = await this.sorobanRpc.simulateTransaction(
+      this.buildReadTransaction(
+        'get_dynamic_min_stake',
+        nativeToScVal(borrower, { type: 'address' })
+      )
+    );
+
+    if (result.error) {
+      throw new Error('Failed to fetch dynamic min stake');
+    }
+
+    const resultValue = result.results?.[0]?.result.retval;
+    return resultValue ? BigInt(scValToNative(resultValue)) : 0n;
+  }
+
   private async submitTransaction(tx: any): Promise<string> {
     const signedTx = tx.sign(this.config.keypair);
     const result = await this.sorobanRpc.sendTransaction(signedTx);

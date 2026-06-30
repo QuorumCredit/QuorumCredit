@@ -107,6 +107,25 @@ class QuorumCreditClient:
     async def get_config(self) -> Config:
         return self._parse_config(await self._invoke("get_config", True))
 
+    async def get_dynamic_min_stake(self, borrower: str) -> int:
+        """Get the effective (dynamic) minimum stake required for a specific borrower.
+
+        The dynamic minimum stake takes the admin-configured base min_stake and applies
+        a reduction based on the borrower's credit tier. Borrowers with higher credit
+        tiers (Good, VeryGood, Excellent) earn a discount on the minimum stake required.
+
+        Returns 0 when no minimum stake is configured.
+        The returned value is always <= the base min_stake.
+
+        Args:
+            borrower: The borrower address to calculate the dynamic min stake for.
+
+        Returns:
+            Effective minimum stake in stroops (1 XLM = 10_000_000 stroops).
+        """
+        result = await self._invoke("get_dynamic_min_stake", True, borrower)
+        return int(self._native(result)) if result is not None else 0
+
     async def _invoke(self, name: str, readonly: bool, *args: object) -> Any:
         if readonly:
             tx = await self._build_transaction(name, *args)

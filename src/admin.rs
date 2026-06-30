@@ -719,6 +719,44 @@ pub fn get_min_stake(env: Env) -> i128 {
         .unwrap_or(0)
 }
 
+/// Calculate the effective (dynamic) minimum stake for a specific borrower.
+///
+/// The dynamic minimum stake takes the admin-configured base `min_stake` and
+/// reduces it based on the borrower's credit tier. Borrowers with higher credit
+/// tiers earn a discount on the minimum stake they must provide to receive a vouch.
+///
+/// Calculation:
+/// ```
+/// effective_min_stake = base_min_stake
+///     - (base_min_stake * tier.min_stake_reduction_bps / 10_000)
+/// ```
+///
+/// If credit scoring is disabled, no `CreditScore` record exists for the borrower,
+/// or the base min_stake is 0 (no minimum enforced), the base value is returned
+/// unchanged.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `borrower` - The borrower address to calculate the dynamic min stake for
+///
+/// # Returns
+/// Effective minimum stake in stroops. Returns 0 if no minimum is configured.
+pub fn get_dynamic_min_stake(env: Env, borrower: Address) -> i128 {
+    let base_min_stake: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::MinStake)
+        .unwrap_or(0);
+
+    // If no minimum is configured, nothing to adjust.
+    if base_min_stake == 0 {
+        return 0;
+    }
+
+    // Apply credit-tier reduction when credit scoring is enabled and a score exists.
+    crate::credit_score::apply_tier_rewards_to_min_stake(&env, &borrower, base_min_stake)
+}
+
 pub fn get_max_loan_amount(env: Env) -> i128 {
     env.storage()
         .instance()

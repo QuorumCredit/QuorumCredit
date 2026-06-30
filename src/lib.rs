@@ -21,22 +21,13 @@ pub mod partial_repayment;
 pub mod periodic_payments;
 pub mod rbac;
 pub mod reputation;
+pub mod subordination;
 pub mod syndication;
 pub mod types;
 pub mod versioning;
 pub mod vouch;
 pub mod vouch_groups;
 pub mod yield_stream;
-pub mod cache;
-pub mod error_response;
-pub mod versioning;
-pub mod cross_chain;
-/// Issue #867: Cross-Collateral Vouch Pools
-pub mod collateral_pool;
-/// Issue #868: Gradual Unstaking
-pub mod gradual_unstake;
-/// Issue #887: Loan Subordination and Cascading Debt Hierarchy
-pub mod subordination;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -130,6 +121,8 @@ mod refinance_test;
 mod incentives_verification_test;
 #[cfg(test)]
 mod regression_past_bugs_test;
+#[cfg(test)]
+mod dynamic_min_stake_test;
 
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
@@ -2094,7 +2087,6 @@ impl QuorumCreditContract {
     ) -> VouchPage {
         admin::get_vouches_paginated(env, borrower, cursor, page_size)
     }
-}
 
     // ── Issue #893: Multi-Tier Admin Approval ──────────────────────────────────
 
@@ -2115,5 +2107,23 @@ impl QuorumCreditContract {
         operation_type: AdminOperationType,
     ) -> u32 {
         admin::get_effective_approval_threshold(env, operation_type)
+    }
+
+    // ── Issue #1057: Dynamic Minimum Stake Calculation ────────────────────────
+
+    /// Calculate the effective minimum stake for a given borrower.
+    ///
+    /// The dynamic minimum stake takes the admin-configured base minimum stake and
+    /// applies any credit-tier discount that the borrower has earned. A borrower
+    /// with a higher credit tier (Good, VeryGood, Excellent) will have a lower
+    /// effective minimum stake requirement, incentivising good repayment behaviour.
+    ///
+    /// If credit scoring is disabled or the borrower has no credit score on record,
+    /// the base `min_stake` value is returned unchanged.
+    ///
+    /// # Returns
+    /// Effective minimum stake in stroops (0 means no minimum enforced).
+    pub fn get_dynamic_min_stake(env: Env, borrower: Address) -> i128 {
+        admin::get_dynamic_min_stake(env, borrower)
     }
 }
