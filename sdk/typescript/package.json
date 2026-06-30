@@ -45,5 +45,17 @@
   "bugs": {
     "url": "https://github.com/QuorumCredit/QuorumCredit/issues"
   },
-  "homepage": "https://github.com/QuorumCredit/QuorumCredit#readme"
+  "homepage": "https://github.com/QuorumCredit/QuorumCredit#readme",
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/*.test.ts"],
+    "transform": {
+      "^.+\\.tsx?$": ["ts-jest", { "tsconfig": "tsconfig.test.json" }]
+    },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(@noble|@scure|@stellar)/)"
+    ],
+    "extensionsToTreatAsEsm": []
+  }
 }
