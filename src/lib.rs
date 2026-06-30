@@ -8,6 +8,7 @@ pub mod cache;
 pub mod collateral_pool;
 pub mod credit_score;
 pub mod cross_chain;
+pub mod cross_chain_relay;
 pub mod errors;
 pub mod error_response;
 pub mod governance;
@@ -27,20 +28,13 @@ pub mod versioning;
 pub mod vouch;
 pub mod vouch_groups;
 pub mod yield_stream;
-pub mod cache;
-pub mod error_response;
-pub mod versioning;
-pub mod cross_chain;
-/// Issue #867: Cross-Collateral Vouch Pools
-pub mod collateral_pool;
-/// Issue #868: Gradual Unstaking
-pub mod gradual_unstake;
 /// Issue #887: Loan Subordination and Cascading Debt Hierarchy
 pub mod subordination;
 
 pub use errors::ContractError;
 pub use types::*;
 pub use cross_chain::{BridgeAttestation, BridgeAttestationPayload, CrossChainLoanMetadata, UnifiedReputation};
+pub use cross_chain_relay::{RelayAttestation, RelayEvent};
 
 #[cfg(test)]
 mod slash_threshold_voting_test;
@@ -1859,6 +1853,79 @@ impl QuorumCreditContract {
         cross_chain::is_bridge_nonce_used(env, origin_chain, nonce)
     }
 
+    // ── Issue #969 (#86): Cross-Chain Event Relay ─────────────────────────────
+
+    /// Configure or rotate the Ed25519 key used to verify events relayed from
+    /// `source_chain`.
+    pub fn set_relay_key(
+        env: Env,
+        admin_signers: Vec<Address>,
+        source_chain: u32,
+        public_key: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        cross_chain_relay::set_relay_key(env, admin_signers, source_chain, public_key)
+    }
+
+    /// Enqueue an outbound relay event for `dest_chain`, returning its sequence.
+    pub fn relay_emit(
+        env: Env,
+        admin_signers: Vec<Address>,
+        dest_chain: u32,
+        event_type: soroban_sdk::Symbol,
+        payload: soroban_sdk::Bytes,
+    ) -> Result<u64, ContractError> {
+        cross_chain_relay::relay_emit(env, admin_signers, dest_chain, event_type, payload)
+    }
+
+    /// Canonical bytes the source chain's relay key must sign for an event.
+    pub fn relay_attestation_message(
+        env: Env,
+        event: RelayEvent,
+        nonce: u64,
+        timestamp: u64,
+    ) -> soroban_sdk::Bytes {
+        cross_chain_relay::relay_attestation_message(&env, &event, nonce, timestamp)
+    }
+
+    /// Verify and consume an inbound relayed event (idempotent per source+seq).
+    pub fn relay_message(
+        env: Env,
+        event: RelayEvent,
+        attestation: RelayAttestation,
+    ) -> Result<(), ContractError> {
+        cross_chain_relay::relay_message(env, event, attestation)
+    }
+
+    /// Acknowledge outbound delivery up to `up_to_seq` for `dest_chain`.
+    pub fn acknowledge_relay(
+        env: Env,
+        admin_signers: Vec<Address>,
+        dest_chain: u32,
+        up_to_seq: u64,
+    ) -> Result<(), ContractError> {
+        cross_chain_relay::acknowledge_relay(env, admin_signers, dest_chain, up_to_seq)
+    }
+
+    pub fn get_outbound_relay_event(env: Env, dest_chain: u32, seq: u64) -> Option<RelayEvent> {
+        cross_chain_relay::get_outbound_event(env, dest_chain, seq)
+    }
+
+    pub fn latest_outbound_relay_seq(env: Env, dest_chain: u32) -> u64 {
+        cross_chain_relay::latest_outbound_seq(env, dest_chain)
+    }
+
+    pub fn last_acknowledged_relay_seq(env: Env, dest_chain: u32) -> u64 {
+        cross_chain_relay::last_acknowledged_seq(env, dest_chain)
+    }
+
+    pub fn is_relay_processed(env: Env, source_chain: u32, seq: u64) -> bool {
+        cross_chain_relay::is_relay_processed(env, source_chain, seq)
+    }
+
+    pub fn is_relay_nonce_used(env: Env, source_chain: u32, nonce: u64) -> bool {
+        cross_chain_relay::is_relay_nonce_used(env, source_chain, nonce)
+    }
+
     // ── Custom Attributes ────────────────────────────────────────────────────
 
     pub fn set_attribute(env: Env, caller: Address, key: soroban_sdk::String, value: soroban_sdk::String) -> Result<(), ContractError> {
@@ -2136,5 +2203,32 @@ impl QuorumCreditContract {
         operation_type: AdminOperationType,
     ) -> u32 {
         admin::get_effective_approval_threshold(env, operation_type)
+    }
+
+    // ── Cross-chain bridge management ─────────────────────────────────────────
+
+    /// Register a new cross-chain bridge so vouchers may stake wrapped tokens from that chain.
+    pub fn register_bridge(
+        env: Env,
+        admin_signers: Vec<Address>,
+        chain_id: u32,
+        chain_name: String,
+        bridge_address: Address,
+    ) -> Result<(), ContractError> {
+        vouch::register_bridge(env, admin_signers, chain_id, chain_name, bridge_address)
+    }
+
+    /// Deactivate a registered bridge; prevents new cross-chain vouches for that chain.
+    pub fn remove_bridge(
+        env: Env,
+        admin_signers: Vec<Address>,
+        chain_id: u32,
+    ) -> Result<(), ContractError> {
+        vouch::remove_bridge(env, admin_signers, chain_id)
+    }
+
+    /// Return all registered bridges (active and inactive).
+    pub fn get_bridges(env: Env) -> Vec<crate::types::BridgeRecord> {
+        vouch::get_bridges(env)
     }
 }

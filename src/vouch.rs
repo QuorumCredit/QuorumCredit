@@ -9,20 +9,91 @@ use crate::types::{
     BridgeRecord, DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord, VouchMerkleRoot,
     PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS, BPS_DENOMINATOR,
 };
-use soroban_sdk::{symbol_short, token, Address, Env, Vec};
-use soroban_sdk::BytesN;
+use soroban_sdk::{symbol_short, token, Address, Env, String, Vec};
 
 /// Verify that an active bridge is registered for `chain_id`.
-/// Returns `InvalidChain` if no active bridge record exists for this chain.
+/// Returns `InvalidChain` if no active bridge record exists.
 fn validate_bridge(env: &Env, chain_id: u32) -> Result<(), ContractError> {
-    let record: Option<crate::types::BridgeRecord> = env
+    let bridges: Vec<BridgeRecord> = env
         .storage()
         .persistent()
-        .get(&crate::types::DataKey::Bridge(chain_id));
-    match record {
-        Some(r) if r.active => Ok(()),
-        _ => Err(ContractError::InvalidChain),
+        .get(&DataKey::Bridges)
+        .unwrap_or_else(|| Vec::new(env));
+    for bridge in bridges.iter() {
+        if bridge.chain_id == chain_id && bridge.active {
+            return Ok(());
+        }
     }
+    Err(ContractError::InvalidChain)
+}
+
+/// Admin: register a new cross-chain bridge.
+pub fn register_bridge(
+    env: Env,
+    admin_signers: Vec<Address>,
+    chain_id: u32,
+    chain_name: String,
+    bridge_address: Address,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    let mut bridges: Vec<BridgeRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Bridges)
+        .unwrap_or_else(|| Vec::new(&env));
+
+    // Reject duplicates
+    for bridge in bridges.iter() {
+        if bridge.chain_id == chain_id {
+            return Err(ContractError::BridgeAlreadyRegistered);
+        }
+    }
+
+    bridges.push_back(BridgeRecord {
+        chain_id,
+        chain_name,
+        bridge_address,
+        active: true,
+    });
+
+    env.storage().persistent().set(&DataKey::Bridges, &bridges);
+    Ok(())
+}
+
+/// Admin: deactivate a registered bridge (prevents new cross-chain vouches for that chain).
+pub fn remove_bridge(
+    env: Env,
+    admin_signers: Vec<Address>,
+    chain_id: u32,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    let mut bridges: Vec<BridgeRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Bridges)
+        .unwrap_or_else(|| Vec::new(&env));
+
+    for i in 0..bridges.len() {
+        let mut bridge = bridges.get(i).unwrap();
+        if bridge.chain_id == chain_id {
+            bridge.active = false;
+            bridges.set(i, bridge);
+            env.storage().persistent().set(&DataKey::Bridges, &bridges);
+            return Ok(());
+        }
+    }
+
+    Err(ContractError::BridgeNotConfigured)
+}
+
+/// Return the list of all registered bridges (active and inactive).
+pub fn get_bridges(env: Env) -> Vec<BridgeRecord> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Bridges)
+        .unwrap_or_else(|| Vec::new(&env))
 }
 
 struct VouchConfig {
@@ -67,7 +138,7 @@ pub fn vouch(
     token: Address,
     chain_id: Option<u32>,
 ) -> Result<(), ContractError> {
-    vouch_with_chain(env, voucher, borrower, stake, token, chain_id)
+    vouch_with_chain(env, voucher, borrower, stake, token, chain_id.unwrap_or(0))
 }
 
 /// Vouch with cross-chain support. chain_id=0 means native Stellar.
@@ -95,8 +166,8 @@ fn vouch_with_chain(
     require_not_thawing(&env)?;
 
     // Bridge validation: non-native chain vouches require an active registered bridge
-    if let Some(cid) = chain_id {
-        validate_bridge(&env, cid)?;
+    if chain_id != 0 {
+        validate_bridge(&env, chain_id)?;
     }
 
     let cfg = VouchConfig::load(&env);

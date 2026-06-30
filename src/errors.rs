@@ -88,6 +88,10 @@ pub enum ContractError {
     ArithmeticError = 62,
     /// No rollback snapshot found for the requested deployment index (#744).
     RollbackSnapshotNotFound = 63,
+    /// The chain_id used in a cross-chain vouch is not registered or is inactive.
+    InvalidChain = 98,
+    /// A bridge for this chain_id has already been registered.
+    BridgeAlreadyRegistered = 99,
     /// No Ed25519 verification key is configured for the origin chain.
     BridgeNotConfigured = 100,
     /// The origin/destination chain combination is invalid.
@@ -174,10 +178,18 @@ MaxExtensionsReached = 139,
 LoanPrivacyRestricted = 140,
 /// Insurance pool is not connected to this loan.
 InsuranceNotLinked = 141,
-/// The specified chain ID is not registered or not active.
-InvalidChain = 143,
-/// A bridge for this chain ID is already registered.
-BridgeAlreadyRegistered = 144,
-/// Voucher has not been bridge-validated for this chain.
-BridgeNotValidated = 145,
+/// No relay verification key is configured for the source chain.
+RelayKeyNotConfigured = 142,
+/// Relay chain id is zero or otherwise invalid.
+InvalidRelayChain = 143,
+/// A relay attestation reused an already-consumed nonce.
+RelayReplayDetected = 144,
+/// The relay attestation is older than the freshness window allows.
+RelayEventExpired = 145,
+/// The relay attestation is timestamped too far in the future.
+RelayEventFromFuture = 146,
+/// A relay event with this (source chain, sequence) was already processed.
+RelayEventAlreadyProcessed = 147,
+/// A relay acknowledgement tried to move the cursor backwards.
+RelayAckRegression = 148,
 }
