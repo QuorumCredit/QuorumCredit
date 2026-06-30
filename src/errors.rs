@@ -76,6 +76,8 @@ pub enum ContractError {
     NoEscrowFound = 56,
     /// No slash record found for the given slash ID.
     SlashRecordNotFound = 142,
+    /// Refinancing was attempted without any outstanding balance to settle.
+    RefinanceNoOutstanding = 143,
     /// Slash has already been reversed and cannot be reversed again.
     SlashAlreadyReversed = 58,
     /// Caller has exceeded the configured rate limit.

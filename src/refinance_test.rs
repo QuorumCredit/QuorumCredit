@@ -4,7 +4,7 @@ mod refinance_tests {
         LoanStatus, RefinanceRecord, QuorumCreditContract,
         QuorumCreditContractClient,
     };
-    use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, Vec};
 
     fn setup_with_loan() -> (
         Env,
@@ -105,6 +105,42 @@ mod refinance_tests {
         let record: RefinanceRecord = record.unwrap().try_into().unwrap();
         assert_eq!(record.old_loan_id, old_loan.id);
         assert_eq!(record.new_loan_id, new_loan.id);
+        assert_eq!(record.new_amount, new_amount);
+    }
+
+    #[test]
+    fn test_cannot_refinance_when_loan_is_past_due() {
+        let (env, client, _admin1, token, borrower, _voucher) = setup_with_loan();
+
+        let old_loan = client.get_loan(&borrower).unwrap();
+        env.ledger().set_timestamp(old_loan.deadline + 1);
+
+        let result = client.try_refinance_loan(
+            &borrower,
+            &(old_loan.amount + old_loan.total_yield + 500_000),
+            &1_000_000,
+            &token,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_refinance_marks_old_loan_fully_repaid() {
+        let (_env, client, _admin1, token, borrower, _voucher) = setup_with_loan();
+
+        let old_loan = client.get_loan(&borrower).unwrap();
+        let new_amount = old_loan.amount + old_loan.total_yield + 500_000;
+
+        client
+            .refinance_loan(&borrower, &new_amount, &1_000_000, &token)
+            .unwrap();
+
+        let new_loan = client.get_loan(&borrower).unwrap();
+        assert_eq!(new_loan.amount_repaid, 0);
+        assert_eq!(new_loan.status, LoanStatus::Active);
+        let record = client.get_refinance_record(&new_loan.id).unwrap();
+        let record: RefinanceRecord = record.try_into().unwrap();
+        assert_eq!(record.old_amount, old_loan.amount);
         assert_eq!(record.new_amount, new_amount);
     }
 

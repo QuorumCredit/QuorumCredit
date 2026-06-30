@@ -317,6 +317,7 @@ pub enum DataKey {
     Loan(u64),                   // loan_id → LoanRecord
     ActiveLoan(Address),         // borrower → active loan_id
     LatestLoan(Address),         // borrower → latest loan_id
+    RefinanceRecord(u64),       // loan_id → RefinanceRecord
     Vouches(Address),            // borrower → Vec<VouchRecord>
     VoucherHistory(Address),     // voucher → Vec<Address> (borrowers backed)
     Config,                      // Config struct: all configurable protocol parameters
@@ -1414,6 +1415,19 @@ pub struct LoanRecord {
 /// An archived loan record, stored separately to reduce active persistent storage.
 /// Created when a loan reaches a terminal state (Repaid or Defaulted) and is moved
 /// from active storage to archive to preserve history while reducing bloat.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefinanceRecord {
+    pub old_loan_id: u64,
+    pub new_loan_id: u64,
+    pub borrower: Address,
+    pub old_amount: i128,
+    pub new_amount: i128,
+    pub old_rate_bps: i128,
+    pub new_rate_bps: i128,
+    pub refinanced_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct ArchivedLoanRecord {

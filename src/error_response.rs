@@ -120,6 +120,11 @@ pub fn error_to_response(env: &Env, error: ContractError) -> ErrorResponse {
             "Loan below minimum amount",
             Some("Requested loan amount is below the configured minimum"),
         ),
+        ContractError::RefinanceNoOutstanding => (
+            143,
+            "Refinance has no outstanding balance",
+            Some("The existing loan has no outstanding principal or yield to refinance"),
+        ),
         ContractError::QuorumNotMet => (
             35,
             "Quorum not met",

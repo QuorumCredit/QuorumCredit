@@ -792,6 +792,11 @@ pub fn refinance_loan(
 
     let mut old_loan = get_active_loan_record(&env, &borrower)?;
 
+    let now = env.ledger().timestamp();
+    if now >= old_loan.deadline {
+        return Err(ContractError::LoanPastDeadline);
+    }
+
     let total_owed = old_loan.amount
         .checked_add(old_loan.total_yield)
         .ok_or(ContractError::ArithmeticError)?;
@@ -833,9 +838,13 @@ pub fn refinance_loan(
         return Err(ContractError::InsufficientFunds);
     }
 
-    let now = env.ledger().timestamp();
-    let old_rate_bps = cfg.yield_bps;
+    let old_rate_bps = if old_loan.amount > 0 {
+        old_loan.total_yield * 10_000 / old_loan.amount
+    } else {
+        cfg.yield_bps
+    };
 
+    old_loan.amount_repaid = total_owed;
     old_loan.status = LoanStatus::Repaid;
     old_loan.repayment_timestamp = Some(now);
     env.storage()
@@ -916,7 +925,15 @@ pub fn refinance_loan(
 
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("refinance")),
-        (borrower, old_loan.id, new_loan_id, new_amount),
+        (
+            borrower,
+            old_loan.id,
+            old_loan.amount,
+            old_loan.total_yield,
+            new_loan_id,
+            new_amount,
+            new_yield_bps,
+        ),
     );
 
     Ok(())
