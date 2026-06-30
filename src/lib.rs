@@ -119,7 +119,10 @@ mod storage_compaction_test;
 mod vectorized_score_test;
 
 #[cfg(test)]
-mod query_pagination_test;#[cfg(test)]
+mod query_pagination_test;
+#[cfg(test)]
+mod chaos_test;
+#[cfg(test)]
 mod dynamic_rate_test;
 #[cfg(test)]
 mod forbearance_test;
@@ -2094,7 +2097,6 @@ impl QuorumCreditContract {
     ) -> VouchPage {
         admin::get_vouches_paginated(env, borrower, cursor, page_size)
     }
-}
 
     // ── Issue #893: Multi-Tier Admin Approval ──────────────────────────────────
 
