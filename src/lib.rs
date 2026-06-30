@@ -85,6 +85,8 @@ mod slash_vote_cancel_test;
 mod dynamic_quorum_adjustment_test;
 #[cfg(test)]
 mod conditional_vote_delegation_test;
+#[cfg(test)]
+mod vote_delegation_test;
 
 #[cfg(test)]
 mod risk_assessment_voting_test;
@@ -1156,6 +1158,27 @@ impl QuorumCreditContract {
 
     pub fn execute_pending_slash(env: Env, borrower: Address) -> Result<(), ContractError> {
         governance::execute_pending_slash(env, borrower)
+    }
+
+    // ── Issue #1069: Vote Delegation ─────────────────────────────────────────
+
+    pub fn delegate_vote(
+        env: Env,
+        voucher: Address,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        governance::delegate_vote(env, voucher, delegate)
+    }
+
+    pub fn revoke_vote_delegation(
+        env: Env,
+        voucher: Address,
+    ) -> Result<(), ContractError> {
+        governance::revoke_vote_delegation(env, voucher)
+    }
+
+    pub fn get_vote_delegate(env: Env, voucher: Address) -> Option<Address> {
+        governance::get_vote_delegate(env, voucher)
     }
 
     // ── Issue #680: slash threshold governance ────────────────────────────────

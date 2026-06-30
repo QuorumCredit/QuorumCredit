@@ -10,6 +10,65 @@ use crate::types::{
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
+/// Issue #1069: Resolve the effective voter for a voucher, following delegation chain.
+/// Returns the final delegate if one exists, otherwise the original voucher.
+pub fn resolve_vote_delegation(env: &Env, voucher: &Address) -> Address {
+    let mut current = voucher.clone();
+    let mut visited: Vec<Address> = Vec::new(env);
+    visited.push_back(current.clone());
+    
+    // Follow delegation chain (max 10 hops to prevent infinite loops)
+    for _ in 0..10 {
+        if let Some(delegate) = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoteDelegation(current.clone()))
+        {
+            // Check for circular delegation
+            if visited.iter().any(|a| a == &delegate) {
+                break;
+            }
+            current = delegate;
+            visited.push_back(current.clone());
+        } else {
+            break;
+        }
+    }
+    
+    current
+}
+
+/// Issue #1069: Get the effective stake for a voucher, considering delegation.
+/// If the voucher has delegated their vote, returns 0 (delegate votes with their own stake).
+/// Otherwise returns the voucher's actual stake.
+pub fn get_effective_vote_stake(
+    env: &Env,
+    voucher: &Address,
+    borrower: &Address,
+) -> Result<i128, ContractError> {
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(env));
+    
+    let vouch_rec = vouches
+        .iter()
+        .find(|v| v.voucher == *voucher)
+        .ok_or(ContractError::VoucherNotFound)?;
+    
+    // Check if this voucher has delegated their vote
+    let effective_voter = resolve_vote_delegation(env, voucher);
+    
+    // If the effective voter is different from this voucher, this voucher's stake
+    // is counted under the delegate's vote, not their own
+    if effective_voter != *voucher {
+        Ok(0)
+    } else {
+        Ok(vouch_rec.stake)
+    }
+}
+
 /// Default quorum: 50% of total vouched stake must approve.
 const DEFAULT_SLASH_VOTE_QUORUM_BPS: u32 = 5_000;
 
@@ -18,6 +77,96 @@ const DEFAULT_SLASH_VOTE_QUORUM_BPS: u32 = 5_000;
 /// - Only active vouchers (those with a stake in `Vouches(borrower)`) may vote.
 /// - Votes are weighted by the voucher's current stake.
 /// - When `approve_stake * BPS_DENOMINATOR / total_stake >= quorum_bps`, slash is auto-executed.
+/// Issue #1069: Delegate vote to another address for governance votes.
+/// The delegate can vote on behalf of the voucher with the voucher's stake.
+pub fn delegate_vote(
+    env: Env,
+    voucher: Address,
+    delegate: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    if voucher == delegate {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    // Check for circular delegation
+    let mut visited: Vec<Address> = Vec::new(&env);
+    visited.push_back(voucher.clone());
+    
+    let mut current = delegate.clone();
+    for _ in 0..10 {
+        if current == voucher {
+            return Err(ContractError::CircularDelegation);
+        }
+        
+        if let Some(next_delegate) = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoteDelegation(current.clone()))
+        {
+            if visited.iter().any(|a| a == &next_delegate) {
+                break;
+            }
+            visited.push_back(next_delegate.clone());
+            current = next_delegate;
+        } else {
+            break;
+        }
+    }
+
+    // Store the delegation
+    env.storage()
+        .persistent()
+        .set(&DataKey::VoteDelegation(voucher.clone()), &delegate);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("delegated")),
+        (voucher, delegate),
+    );
+
+    Ok(())
+}
+
+/// Issue #1069: Revoke a previously delegated vote.
+pub fn revoke_vote_delegation(
+    env: Env,
+    voucher: Address,
+) -> Result<(), ContractError> {
+    voucher.require_auth();
+    require_not_paused(&env)?;
+
+    // Check if delegation exists
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, Address>(&DataKey::VoteDelegation(voucher.clone()))
+        .is_none()
+    {
+        return Err(ContractError::DelegationNotFound);
+    }
+
+    // Remove the delegation
+    env.storage()
+        .persistent()
+        .remove(&DataKey::VoteDelegation(voucher.clone()));
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("revoked")),
+        (voucher,),
+    );
+
+    Ok(())
+}
+
+/// Issue #1069: Get the delegate for a voucher, if any.
+pub fn get_vote_delegate(env: Env, voucher: Address) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VoteDelegation(voucher))
+}
+
 pub fn vote_slash(
     env: Env,
     voucher: Address,
@@ -73,13 +222,41 @@ pub fn vote_slash(
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(&env));
 
+    // Issue #1069: Resolve delegation - if this voucher has delegated, the delegate votes with this stake
+    let effective_voter = resolve_vote_delegation(&env, &voucher);
+    let actual_voter = if effective_voter != voucher {
+        // This voucher's stake is counted under the delegate's vote
+        // The delegate should call vote_slash separately
+        return Ok(()); // Silently succeed - delegate will vote
+    } else {
+        voucher.clone()
+    };
+
     let voucher_stake = vouches
         .iter()
-        .find(|v| v.voucher == voucher)
+        .find(|v| v.voucher == actual_voter)
         .map(|v| v.stake)
         .ok_or(ContractError::VoucherNotFound)?;
 
-    let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+    // Issue #1069: Calculate total stake including delegated votes
+    // For each delegate, sum up their own stake plus all delegated stakes
+    let mut total_stake: i128 = 0;
+    let mut effective_stake: i128 = voucher_stake;
+    
+    for v in vouches.iter() {
+        let voter = resolve_vote_delegation(&env, &v.voucher);
+        if voter == v.voucher {
+            // This voucher votes for themselves
+            total_stake += v.stake;
+        } else if voter == actual_voter {
+            // This voucher's stake is delegated to the actual voter
+            effective_stake += v.stake;
+            total_stake += v.stake;
+        } else {
+            // Delegated to someone else, still counts in total
+            total_stake += v.stake;
+        }
+    }
 
     // Load or initialise the vote record.
     let mut vote: SlashVoteRecord = env
@@ -106,31 +283,31 @@ pub fn vote_slash(
         }
     }
 
-    // Prevent double-voting.
-    if vote.voters.iter().any(|v| v == voucher) {
+    // Prevent double-voting by the effective voter.
+    if vote.voters.iter().any(|v| resolve_vote_delegation(&env, v) == actual_voter) {
         return Err(ContractError::AlreadyVoted);
     }
 
     if approve {
-        vote.approve_stake = vote.approve_stake.checked_add(voucher_stake).ok_or(ContractError::ArithmeticError)?;
+        vote.approve_stake = vote.approve_stake.checked_add(effective_stake).ok_or(ContractError::ArithmeticError)?;
     } else {
-        vote.reject_stake = vote.reject_stake.checked_add(voucher_stake).ok_or(ContractError::ArithmeticError)?;
+        vote.reject_stake = vote.reject_stake.checked_add(effective_stake).ok_or(ContractError::ArithmeticError)?;
     }
-    vote.voters.push_back(voucher.clone());
+    vote.voters.push_back(actual_voter.clone());
 
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("voted")),
-        (voucher.clone(), borrower.clone(), approve, voucher_stake),
+        (actual_voter.clone(), borrower.clone(), approve, effective_stake),
     );
 
-    // Check quorum.
+    // Check quorum using the effective total stake.
     let quorum_bps: u32 = env
         .storage()
         .instance()
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS);
 
-    // Use ceiling division to prevent rounding down: (approve_stake * BPS_DENOMINATOR + total_stake - 1) / total_stake
+    // Use ceiling division to prevent rounding down
     let quorum_reached = total_stake > 0
         && (vote.approve_stake.checked_mul(BPS_DENOMINATOR).ok_or(ContractError::ArithmeticError)?
             .checked_add(total_stake).ok_or(ContractError::ArithmeticError)?

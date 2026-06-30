@@ -172,6 +172,12 @@ ExtensionAlreadyRequested = 138,
 MaxExtensionsReached = 139,
 /// Caller does not have permission to view this loan (privacy restriction).
 LoanPrivacyRestricted = 140,
-/// Insurance pool is not connected to this loan.
-InsuranceNotLinked = 141,
+    /// Insurance pool is not connected to this loan.
+    InsuranceNotLinked = 141,
+    /// Circular delegation detected.
+    CircularDelegation = 143,
+    /// Bridge validation required for cross-chain vouch.
+    BridgeNotValidated = 144,
+    /// Vote delegation not found.
+    DelegationNotFound = 145,
 }

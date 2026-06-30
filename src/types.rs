@@ -359,6 +359,8 @@ pub enum DataKey {
     InsuranceVoucherClaim(u64, Address), // (loan_id, voucher) → i128 amount already claimed
     VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
     VouchDelegation(Address, Address, Address), // (borrower, original_voucher, token) → Address (delegate)
+    /// Issue #1069: Vote delegation - voucher → delegate address for governance votes
+    VoteDelegation(Address),
     PendingSlashExecution(Address), // borrower → PendingSlashRecord
     YieldReserve,            // i128 balance of the yield reserve
     SlashEscrow(Address),    // borrower → (i128 amount, u64 release_timestamp)
