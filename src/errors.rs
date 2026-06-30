@@ -154,6 +154,14 @@ AppealQuorumNotMet = 129,
 EscrowExpired = 130,
 /// Emergency cooldown bypass is not authorised for this voucher.
 EmergencyBypassNotAuthorised = 131,
+/// Cooldown bypass request already exists for this (borrower, voucher) pair.
+CooldownBypassAlreadyRequested = 143,
+/// Cooldown bypass request not found.
+CooldownBypassNotFound = 144,
+/// Cooldown bypass has already been approved.
+CooldownBypassAlreadyApproved = 145,
+/// Insufficient admin approvals for cooldown bypass (need 2/3).
+CooldownBypassInsufficientApprovals = 146,
 /// Cross-collateral pool not found.
 CollateralPoolNotFound = 132,
 /// Cross-collateral pool is already active (has an assigned borrower).

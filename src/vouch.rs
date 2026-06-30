@@ -164,7 +164,10 @@ fn validate_vouch<'a>(
             .unwrap_or(0);
         let now = env.ledger().timestamp();
         if now < last + cfg.vouch_cooldown_secs {
-            return Err(ContractError::VouchCooldownActive);
+            // Check if there is an approved cooldown bypass for this (voucher, borrower)
+            if !crate::cooldown_bypass::has_cooldown_bypass(env, voucher, borrower) {
+                return Err(ContractError::VouchCooldownActive);
+            }
         }
     }
 

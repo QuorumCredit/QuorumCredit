@@ -7,6 +7,7 @@ pub mod batch_transfer;
 pub mod cache;
 pub mod collateral_pool;
 pub mod credit_score;
+pub mod cooldown_bypass;
 pub mod cross_chain;
 pub mod errors;
 pub mod error_response;
@@ -130,6 +131,8 @@ mod refinance_test;
 mod incentives_verification_test;
 #[cfg(test)]
 mod regression_past_bugs_test;
+#[cfg(test)]
+mod cooldown_bypass_test;
 
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, loan_status as helper_loan_status,
@@ -1370,6 +1373,48 @@ impl QuorumCreditContract {
 
     pub fn get_slash_vote_quorum(env: Env) -> u32 {
         governance::get_slash_vote_quorum(env)
+    }
+
+    // ── Issue #1056: Vouch Cooldown Bypass ─────────────────────────────────────
+
+    pub fn request_cooldown_bypass(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        reason: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::request_cooldown_bypass(env, voucher, borrower, reason)
+    }
+
+    pub fn vote_bypass(
+        env: Env,
+        approver: Address,
+        voucher: Address,
+        borrower: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::vote_bypass(env, approver, voucher, borrower, approve)
+    }
+
+    pub fn get_cooldown_bypass(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+    ) -> Option<CooldownBypassRequest> {
+        cooldown_bypass::get_cooldown_bypass(env, borrower, voucher)
+    }
+
+    pub fn clear_cooldown_bypass(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        voucher: Address,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::clear_cooldown_bypass(env, admin_signers, borrower, voucher)
+    }
+
+    pub fn has_cooldown_bypass(env: Env, voucher: Address, borrower: Address) -> bool {
+        cooldown_bypass::has_cooldown_bypass(&env, &voucher, &borrower)
     }
 
     // ── Views ─────────────────────────────────────────────────────────────────

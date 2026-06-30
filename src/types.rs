@@ -485,6 +485,8 @@ pub enum DataKey {
     // ── Issue #863: Vouch Cooldown Bypass ────────────────────────────────────
     /// Per-voucher emergency bypass flag: voucher → bool
     EmergencyCooldownBypass(Address),
+    /// Cooldown bypass request: (borrower, voucher) → CooldownBypassRequest
+    CooldownBypass(Address, Address),
     // ── Issue #867: Cross-Collateral Vouch Pools ─────────────────────────────
     CollateralPool(u64),
     CollateralPoolCounter,
@@ -1802,3 +1804,20 @@ pub struct WaterfallDistribution {
 /// `CascadingDefaultRecord(u64)` => senior_loan_id -> CascadingDefault
 pub const MAX_SUBORDINATION_DEPTH: u32 = 10; // Prevent deeply nested hierarchies
 pub const MAX_SUBORDINATES_PER_LOAN: u32 = 50; // Prevent excessive branching
+
+// ── Issue #1056: Vouch Cooldown Bypass ──────────────────────────────────────────
+
+/// Tracks a cooldown bypass request initiated by a voucher for emergency cases.
+/// Requires 2/3 admin approval to grant the bypass.
+#[contracttype]
+#[derive(Clone)]
+pub struct CooldownBypassRequest {
+    pub voucher: Address,
+    pub borrower: Address,
+    pub reason: soroban_sdk::String,
+    pub requested_at: u64,
+    /// Addresses of admins who have approved
+    pub approvers: soroban_sdk::Vec<Address>,
+    /// Whether the bypass has been granted (2/3 threshold met)
+    pub approved: bool,
+}
