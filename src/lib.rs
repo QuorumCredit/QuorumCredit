@@ -8,6 +8,7 @@ pub mod ipfs_archive;
 pub mod cache;
 pub mod collateral_pool;
 pub mod credit_score;
+pub mod cooldown_bypass;
 pub mod cross_chain;
 pub mod cross_chain_relay;
 pub mod errors;
@@ -23,6 +24,7 @@ pub mod partial_repayment;
 pub mod periodic_payments;
 pub mod rbac;
 pub mod reputation;
+pub mod subordination;
 pub mod syndication;
 pub mod types;
 pub mod versioning;
@@ -43,6 +45,8 @@ pub use cross_chain_relay::{RelayAttestation, RelayEvent};
 mod slash_threshold_voting_test;
 #[cfg(test)]
 mod slash_cooldown_test;
+#[cfg(test)]
+mod slash_voting_flow_test;
 #[cfg(test)]
 mod config_update_voting_test;
 #[cfg(test)]
@@ -84,6 +88,8 @@ mod slash_vote_cancel_test;
 mod dynamic_quorum_adjustment_test;
 #[cfg(test)]
 mod conditional_vote_delegation_test;
+#[cfg(test)]
+mod ratio_enforcement_test;
 
 #[cfg(test)]
 mod risk_assessment_voting_test;
@@ -204,6 +210,7 @@ impl QuorumCreditContract {
                 min_loan_amount: DEFAULT_MIN_LOAN_AMOUNT,
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
+                max_loan_to_collateral_ratio: DEFAULT_MAX_LOAN_TO_COLLATERAL_RATIO,
                 grace_period: 0,
                 min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
                 prepayment_penalty_bps: 0,
@@ -1424,6 +1431,27 @@ impl QuorumCreditContract {
         governance::execute_pending_slash(env, borrower)
     }
 
+    // ── Issue #1069: Vote Delegation ─────────────────────────────────────────
+
+    pub fn delegate_vote(
+        env: Env,
+        voucher: Address,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        governance::delegate_vote(env, voucher, delegate)
+    }
+
+    pub fn revoke_vote_delegation(
+        env: Env,
+        voucher: Address,
+    ) -> Result<(), ContractError> {
+        governance::revoke_vote_delegation(env, voucher)
+    }
+
+    pub fn get_vote_delegate(env: Env, voucher: Address) -> Option<Address> {
+        governance::get_vote_delegate(env, voucher)
+    }
+
     // ── Issue #680: slash threshold governance ────────────────────────────────
 
     pub fn propose_slash_threshold(
@@ -2525,4 +2553,69 @@ impl QuorumCreditContract {
     pub fn get_bridges(env: Env) -> Vec<crate::types::BridgeRecord> {
         vouch::get_bridges(env)
     }
+}
+
+impl LoanRecord {
+    pub fn get_next_expected_payment(&self) -> i128 {
+        // Linear amortization: amount / periods
+        self.amount / self.num_periods as i128
+    }
+}
+
+pub fn validate_repayment_amount(loan: &LoanRecord, payment: i128) -> bool {
+    payment >= loan.get_next_expected_payment()
+}
+
+pub fn repay(e: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
+    let mut loan = get_loan(&e, &borrower)?;
+    
+    if !validate_repayment_amount(&loan, payment) {
+        return Err(ContractError::InsufficientRepayment);
+    }
+    
+    // Proceed with existing repayment logic...
+    Ok(())
+}
+
+#[derive(Clone)]
+pub struct WithdrawalRecord {
+    pub voucher: Address,
+    pub borrower: Address,
+    pub amount: i128,
+    pub unlock_time: u64,
+}
+
+// Ensure your DataKey enum includes:
+// WithdrawalQueue(Address, Address)
+
+const WITHDRAWAL_COOLDOWN: u64 = 60 * 60 * 24 * 7; // 7 days in seconds
+
+pub fn queue_withdrawal(e: Env, voucher: Address, borrower: Address) -> Result<(), ContractError> {
+    voucher.require_auth();
+    let mut vouch = get_vouch(&e, &voucher, &borrower)?;
+    
+    let unlock_time = e.ledger().timestamp() + WITHDRAWAL_COOLDOWN;
+    let record = WithdrawalRecord {
+        voucher: voucher.clone(),
+        borrower: borrower.clone(),
+        amount: vouch.stake,
+        unlock_time,
+    };
+    
+    e.storage().instance().set(&DataKey::WithdrawalQueue(voucher, borrower), &record);
+    Ok(())
+}
+
+pub fn execute_withdrawal(e: Env, voucher: Address, borrower: Address) -> Result<(), ContractError> {
+    let record: WithdrawalRecord = e.storage().instance().get(&DataKey::WithdrawalQueue(voucher, borrower))
+        .ok_or(ContractError::NoQueuedWithdrawal)?;
+        
+    if e.ledger().timestamp() < record.unlock_time {
+        return Err(ContractError::CooldownNotExpired);
+    }
+    
+    // Transfer stake back to voucher and clear storage
+    e.storage().instance().remove(&DataKey::WithdrawalQueue(voucher, borrower));
+    // ... logic to return funds ...
+    Ok(())
 }

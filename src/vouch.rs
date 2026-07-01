@@ -217,7 +217,12 @@ fn validate_vouch<'a>(
     }
 
     if cfg.min_stake > 0 && stake < cfg.min_stake {
-        return Err(ContractError::MinStakeNotMet);
+        // Apply dynamic min stake: reduce based on borrower's credit tier.
+        let effective_min_stake =
+            crate::credit_score::apply_tier_rewards_to_min_stake(env, borrower, cfg.min_stake);
+        if stake < effective_min_stake {
+            return Err(ContractError::MinStakeNotMet);
+        }
     }
 
     if cfg.vouch_cooldown_secs > 0 {
@@ -228,7 +233,10 @@ fn validate_vouch<'a>(
             .unwrap_or(0);
         let now = env.ledger().timestamp();
         if now < last + cfg.vouch_cooldown_secs {
-            return Err(ContractError::VouchCooldownActive);
+            // Check if there is an approved cooldown bypass for this (voucher, borrower)
+            if !crate::cooldown_bypass::has_cooldown_bypass(env, voucher, borrower) {
+                return Err(ContractError::VouchCooldownActive);
+            }
         }
     }
 

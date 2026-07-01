@@ -87,49 +87,7 @@ pub const DEFAULT_EVIDENCE_GRACE_PERIOD_SECS: u64 = 3 * 24 * 60 * 60;
 
 // ── Data Types ─────────────────────────────────────────────────────────────
 
-/// Issue #891: Status of a milestone (maps to tranche release)
-#[contracttype]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MilestoneStatus {
-    /// Tranche not yet released; milestone work in progress
-    Pending,
-    /// Borrower submitted completion evidence
-    Submitted,
-    /// Milestone completed and verified; tranche released
-    Approved,
-    /// Milestone not met or evidence insufficient; tranche not released
-    Rejected,
-    /// Milestone deadline passed without submission
-    Expired,
-}
 
-/// Issue #891: Single milestone tied to a disbursement tranche
-#[contracttype]
-#[derive(Clone)]
-pub struct MilestoneRecord {
-    /// Unique milestone ID (1-indexed)
-    pub milestone_id: u32,
-    /// Associated loan ID
-    pub loan_id: u64,
-    /// Associated tranche ID
-    pub tranche_id: u32,
-    /// Current status of this milestone
-    pub status: MilestoneStatus,
-    /// Deadline for borrower to complete this milestone (ledger timestamp)
-    pub deadline: u64,
-    /// Description of what milestone must be completed (project objective)
-    pub description: SorobanString,
-    /// Ledger timestamp when borrower submitted completion evidence
-    pub submitted_at: Option<u64>,
-    /// Hash of evidence provided by borrower (project deliverables, receipts, etc.)
-    pub evidence_hash: Option<soroban_sdk::BytesN<32>>,
-    /// Ledger timestamp when milestone was approved
-    pub approved_at: Option<u64>,
-    /// Addresses that approved this milestone (for multi-sig verification)
-    pub approvers: Vec<Address>,
-    /// Reason for rejection if status is Rejected
-    pub rejection_reason: Option<SorobanString>,
-}
 
 /// Issue #891: Disbursement tranche for a milestone-based loan
 #[contracttype]
@@ -328,6 +286,277 @@ pub fn reject_milestone(
     reason: &str,
 ) -> SorobanString {
     SorobanString::from_slice(&Env::new(), reason.as_bytes())
+}
+
+pub fn create_milestone_loan_impl(
+    env: Env,
+    borrower: Address,
+    total_amount: i128,
+    milestones: Vec<MilestoneRecord>,
+) -> Result<u64, ContractError> {
+    borrower.require_auth();
+    crate::helpers::require_not_thawing(&env)?;
+    crate::helpers::check_rate_limit(&env, &borrower)?;
+    crate::helpers::check_permission(&env, &borrower, |p| p.can_request_loan)?;
+    crate::helpers::register_borrower_if_needed(&env, &borrower);
+
+    if crate::helpers::has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
+
+    let cfg = crate::helpers::config(&env);
+    if total_amount < cfg.min_loan_amount {
+        return Err(ContractError::LoanBelowMinAmount);
+    }
+
+    let num_tranches = milestones.len();
+    if num_tranches < MIN_TRANCHES || num_tranches > MAX_TRANCHES {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let now = env.ledger().timestamp();
+    let mut last_deadline = now;
+    for i in 0..num_tranches {
+        let m = milestones.get(i).unwrap();
+        if m.deadline <= last_deadline {
+            return Err(ContractError::InvalidAmount);
+        }
+        last_deadline = m.deadline;
+    }
+
+    let token_addr = cfg.token.clone();
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or(Vec::new(&env));
+
+    let total_stake: i128 = vouches
+        .iter()
+        .filter(|v| v.token == token_addr)
+        .map(|v| {
+            let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
+            v.stake * weight / BPS_DENOMINATOR
+        })
+        .sum();
+
+    if total_stake < total_amount {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    let loan_id = crate::helpers::next_loan_id(&env);
+
+    let tier_adjusted_yield_bps = crate::credit_score::apply_tier_rewards_to_yield(
+        &env, &borrower, cfg.yield_bps,
+    );
+
+    let mut yield_distribution: Vec<YieldDistributionEntry> = Vec::new(&env);
+    let mut total_yield: i128 = 0;
+    for v in vouches.iter() {
+        if v.token != token_addr {
+            continue;
+        }
+        let rate = crate::loan::vouch_yield_bps(&env, &v, &borrower, now);
+        let effective_rate = rate + (tier_adjusted_yield_bps - cfg.yield_bps);
+        let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
+        let weighted_stake = v.stake * weight / BPS_DENOMINATOR;
+        let vouch_yield = total_amount * weighted_stake / total_stake * effective_rate / 10_000;
+        total_yield += vouch_yield;
+        yield_distribution.push_back(YieldDistributionEntry {
+            voucher: v.voucher.clone(),
+            yield_amount: vouch_yield,
+        });
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::YieldDistribution(loan_id), &yield_distribution);
+
+    let mut finalized_milestones: Vec<MilestoneRecord> = Vec::new(&env);
+    for i in 0..num_tranches {
+        let mut m = milestones.get(i).unwrap();
+        m.loan_id = loan_id;
+        m.milestone_id = (i + 1) as u32;
+        m.tranche_id = (i + 1) as u32;
+        m.status = MilestoneStatus::Pending;
+        m.submitted_at = None;
+        m.evidence_hash = None;
+        m.proof_uri = None;
+        m.approved_at = None;
+        m.approvers = Vec::new(&env);
+        m.rejection_reason = None;
+        m.tranche_released = false;
+        finalized_milestones.push_back(m);
+    }
+
+    let first_tranche_amount = calculate_tranche_amount(total_amount, num_tranches, 1)?;
+    
+    let mut first_m = finalized_milestones.get(0).unwrap();
+    first_m.status = MilestoneStatus::Approved;
+    first_m.tranche_released = true;
+    first_m.approved_at = Some(now);
+    finalized_milestones.set(0, first_m);
+
+    let loan = LoanRecord {
+        id: loan_id,
+        borrower: borrower.clone(),
+        guarantor: None,
+        buyback_price: 0,
+        auto_repay_enabled: false,
+        auto_repay_attempts: 0,
+        escrow_status: EscrowStatus::None,
+        co_borrowers: Vec::new(&env),
+        amount: total_amount,
+        amount_repaid: 0,
+        total_yield,
+        status: LoanStatus::Active,
+        created_at: now,
+        disbursement_timestamp: now,
+        repayment_timestamp: None,
+        deadline: last_deadline,
+        loan_purpose: soroban_sdk::String::from_slice(&env, b"Milestone Loan"),
+        token_address: token_addr.clone(),
+        amortization_schedule: Vec::new(&env),
+        reminder_sent: false,
+        risk_score: 0,
+        deferment_periods: 0,
+        maturity_date: None,
+        rate_type: crate::types::RateType::Fixed,
+        index_reference: None,
+        last_interest_calc: now,
+        accrued_interest: 0,
+        milestone_bonus_applied: false,
+        retry_count: 0,
+        milestones: finalized_milestones,
+    };
+
+    env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveLoan(borrower.clone()), &loan_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::LatestLoan(borrower.clone()), &loan_id);
+
+    let token = crate::helpers::require_allowed_token(&env, &token_addr)?;
+    token.transfer(&env.current_contract_address(), &borrower, &first_tranche_amount);
+
+    crate::insurance::collect_loan_fee(&env, total_amount);
+    env.storage()
+        .persistent()
+        .set(&DataKey::InsuranceLinked(loan_id), &true);
+
+    env.events().publish(
+        (soroban_sdk::symbol_short!("loan"), soroban_sdk::symbol_short!("created")),
+        (borrower, total_amount),
+    );
+
+    Ok(loan_id)
+}
+
+pub fn verify_milestone_impl(
+    env: Env,
+    admin_signers: Vec<Address>,
+    borrower: Address,
+    milestone_id: u32,
+    proof_uri: soroban_sdk::String,
+) -> Result<(), ContractError> {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
+    crate::helpers::require_not_paused(&env)?;
+
+    let loan_id = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::ActiveLoan(borrower.clone()))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let mut loan: LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let mut milestones = loan.milestones.clone();
+    let mut found = false;
+    let now = env.ledger().timestamp();
+
+    for i in 0..milestones.len() {
+        let mut m = milestones.get(i).unwrap();
+        if m.milestone_id == milestone_id {
+            if m.status != MilestoneStatus::Pending && m.status != MilestoneStatus::Submitted {
+                return Err(ContractError::InvalidStateTransition);
+            }
+            m.status = MilestoneStatus::Approved;
+            m.proof_uri = Some(proof_uri.clone());
+            m.approved_at = Some(now);
+            milestones.set(i, m);
+            found = true;
+            break;
+        }
+    }
+
+    if !found {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    loan.milestones = milestones;
+    env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+
+    Ok(())
+}
+
+pub fn disburse_next_tranche_impl(
+    env: Env,
+    borrower: Address,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    crate::helpers::require_not_paused(&env)?;
+
+    let loan_id = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::ActiveLoan(borrower.clone()))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let mut loan: LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let mut milestones = loan.milestones.clone();
+    let mut disbursed_something = false;
+
+    for i in 0..milestones.len() {
+        let mut m = milestones.get(i).unwrap();
+        if m.status == MilestoneStatus::Approved && !m.tranche_released {
+            for prev_idx in 0..i {
+                let prev_m = milestones.get(prev_idx).unwrap();
+                if !prev_m.tranche_released {
+                    return Err(ContractError::InvalidStateTransition);
+                }
+            }
+
+            let amount = calculate_tranche_amount(loan.amount, milestones.len(), m.tranche_id)?;
+            m.tranche_released = true;
+            milestones.set(i, m);
+
+            let token = crate::helpers::require_allowed_token(&env, &loan.token_address)?;
+            token.transfer(&env.current_contract_address(), &borrower, &amount);
+
+            disbursed_something = true;
+            break;
+        }
+    }
+
+    if !disbursed_something {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    loan.milestones = milestones;
+    env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+
+    Ok(())
 }
 
 #[cfg(test)]

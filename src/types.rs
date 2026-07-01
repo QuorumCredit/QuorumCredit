@@ -46,6 +46,8 @@ pub const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
 pub const PAYMENT_GRACE_PERIOD: u64 = 3 * 24 * 60 * 60;
 /// Default maximum loan-to-stake ratio (150 = 150% — loan ≤ 1.5× total staked).
 pub const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
+/// Default maximum loan-to-collateral ratio (50_000 = 50% — loan ≤ 0.5× total stake).
+pub const DEFAULT_MAX_LOAN_TO_COLLATERAL_RATIO: u32 = 50_000;
 /// Minimum elapsed time between vouch calls from the same address, in seconds (24 hours).
 pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 /// Default maximum number of vouchers that may back a single borrower.
@@ -101,6 +103,14 @@ pub const DEFAULT_LOAN_SIZE_SLASH_MAX_BPS: i128 = 8_000;
 
 /// Default borrower repayment confirmation requirement (false = disabled by default).
 pub const DEFAULT_CONFIRMATION_REQUIRED: bool = false;
+
+/// Default quorum for voucher-based slash votes, in basis points (6667 ≈ 66.67%).
+/// Requires approximately 2/3 of total vouched stake to approve before a slash executes.
+pub const DEFAULT_SLASH_VOTE_QUORUM_BPS: u32 = 6_667;
+
+/// Minimum elapsed time between successive slash proposals for the same borrower, in seconds
+/// (7 days). Prevents spam proposals and gives borrowers time to resolve issues between rounds.
+pub const DEFAULT_SLASH_PROPOSAL_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Default rate limit: 10 calls per window.
 pub const DEFAULT_RATE_LIMIT_COUNT: u32 = 10;
@@ -363,6 +373,7 @@ pub enum DataKey {
     LoanPoolCounter, // u64: monotonically increasing pool ID counter
     PendingAdmin,    // Address of the pending admin (two-step transfer)
     RepaymentCount(Address), // borrower → u32 total successful repayments
+    RepaymentConfirmation(u64), // loan_id → bool confirmation flag
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
     ProtocolFeeBps,  // u32: protocol fee in basis points
@@ -389,6 +400,8 @@ pub enum DataKey {
     InsuranceVoucherClaim(u64, Address), // (loan_id, voucher) → i128 amount already claimed
     VouchHistory(Address, Address, Address), // (borrower, voucher, token) → Vec<VouchHistoryEntry>
     VouchDelegation(Address, Address, Address), // (borrower, original_voucher, token) → Address (delegate)
+    /// Issue #1069: Vote delegation - voucher → delegate address for governance votes
+    VoteDelegation(Address),
     PendingSlashExecution(Address), // borrower → PendingSlashRecord
     YieldReserve,            // i128 balance of the yield reserve
     SlashEscrow(Address),    // borrower → (i128 amount, u64 release_timestamp)
@@ -408,6 +421,9 @@ pub enum DataKey {
     SlashThresholdProposalCounter,
     /// Per-borrower timestamp of the last successful slash.
     LastSlashedAt(Address),
+    /// Per-borrower timestamp of the most recent slash proposal initiation.
+    /// Used to enforce the 7-day cooldown between successive slash proposals.
+    LastSlashProposalAt(Address),
     /// Cached total weighted stake per borrower per token: (borrower, token) → i128
     /// Used for O(1) eligibility checks; invalidated on vouch operations.
     TotalWeightedStakeCache(Address, Address),
@@ -519,6 +535,8 @@ pub enum DataKey {
     // ── Issue #863: Vouch Cooldown Bypass ────────────────────────────────────
     /// Per-voucher emergency bypass flag: voucher → bool
     EmergencyCooldownBypass(Address),
+    /// Cooldown bypass request: (borrower, voucher) → CooldownBypassRequest
+    CooldownBypass(Address, Address),
     // ── Issue #867: Cross-Collateral Vouch Pools ─────────────────────────────
     CollateralPool(u64),
     CollateralPoolCounter,
@@ -1323,6 +1341,7 @@ pub struct Config {
     /// Maximum ratio of loan amount to total staked collateral, expressed as a percentage
     /// (e.g. 150 means loan ≤ 1.5 × total stake in stroops).
     pub max_loan_to_stake_ratio: u32,
+    pub max_loan_to_collateral_ratio: u32,
     /// Grace period after loan deadline before the loan can be slashed, in seconds.
     pub grace_period: u64,
     /// Minimum age of a vouch before it can be used for loan eligibility, in seconds (default 24 hours).
@@ -1379,6 +1398,34 @@ pub struct AmortizationEntry {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MilestoneStatus {
+    Pending,
+    Submitted,
+    Approved,
+    Rejected,
+    Expired,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct MilestoneRecord {
+    pub milestone_id: u32,
+    pub loan_id: u64,
+    pub tranche_id: u32,
+    pub status: MilestoneStatus,
+    pub deadline: u64,
+    pub description: soroban_sdk::String,
+    pub submitted_at: Option<u64>,
+    pub evidence_hash: Option<soroban_sdk::BytesN<32>>,
+    pub proof_uri: Option<soroban_sdk::String>,
+    pub approved_at: Option<u64>,
+    pub approvers: Vec<Address>,
+    pub rejection_reason: Option<soroban_sdk::String>,
+    pub tranche_released: bool,
+}
+
+#[contracttype]
 #[derive(Clone)]
 pub struct LoanRecord {
     pub id: u64,
@@ -1402,7 +1449,9 @@ pub struct LoanRecord {
     /// Yield owed to vouchers, locked in at disbursement time, in stroops.
     /// Computed as `amount * yield_bps / 10_000`. 1 XLM = 10,000,000 stroops.
     pub total_yield: i128,
-    pub status: LoanStatus,
+        pub status: LoanStatus,
+    pub repaid: bool,
+    pub defaulted: bool,
     /// Ledger timestamp when the loan record was created.
     pub created_at: u64,
     /// Ledger timestamp when the loan was disbursed to the borrower.
