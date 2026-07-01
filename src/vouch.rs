@@ -1294,17 +1294,18 @@ pub fn revoke_delegation(
         .position(|v| v.voucher == voucher && v.token == token)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    vouches.remove(idx);
+    let mut vouch_rec = vouches.get(idx).unwrap();
+    vouch_rec.delegate = None;
+    vouches.set(idx, vouch_rec);
 
-    if vouches.is_empty() {
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Vouches(borrower));
-    } else {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Vouches(borrower), &vouches);
-    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("rev_del")),
+        (voucher, borrower),
+    );
 
     Ok(())
 }

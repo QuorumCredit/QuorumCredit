@@ -169,11 +169,11 @@ pub fn get_vote_delegate(env: Env, voucher: Address) -> Option<Address> {
 
 pub fn vote_slash(
     env: Env,
-    voucher: Address,
+    voter: Address,
     borrower: Address,
     approve: bool,
 ) -> Result<(), ContractError> {
-    voucher.require_auth();
+    voter.require_auth();
     require_not_paused(&env)?;
 
     // Check for an already-executed vote first (before the active-loan guard).
@@ -217,7 +217,7 @@ pub fn vote_slash(
         return Err(ContractError::NoActiveLoan);
     }
 
-    // Fetch vouches and find this voucher's stake.
+    // Fetch vouches and find all stakes the voter is eligible to cast (own stake + delegated stake).
     let vouches: Vec<VouchRecord> = env
         .storage()
         .persistent()
@@ -1496,11 +1496,11 @@ pub fn appeal_slash(
 /// Once 2/3 quorum is reached, appeal is automatically approved.
 pub fn vote_appeal(
     env: Env,
-    voucher: Address,
+    voter: Address,
     borrower: Address,
     approve: bool,
 ) -> Result<(), ContractError> {
-    voucher.require_auth();
+    voter.require_auth();
     require_not_paused(&env)?;
 
     let now = env.ledger().timestamp();
@@ -1528,12 +1528,6 @@ pub fn vote_appeal(
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(&env));
 
-    let voucher_stake = vouches
-        .iter()
-        .find(|v| v.voucher == voucher)
-        .map(|v| v.stake)
-        .ok_or(ContractError::VoucherNotFound)?;
-
     let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
 
     // Load appeal record
@@ -1543,29 +1537,44 @@ pub fn vote_appeal(
         .get(&DataKey::SlashEscrowAppeal(borrower.clone()))
         .ok_or(ContractError::AppealNotFound)?;
 
-    // Prevent double voting
-    if appeal.voters.iter().any(|v| v == voucher) {
-        return Err(ContractError::AppealAlreadyVoted);
+    let mut voting_stake = 0;
+    let mut newly_voted_vouches: Vec<Address> = Vec::new(&env);
+
+    for v in vouches.iter() {
+        // Voter can vote if they are the original voucher OR the designated delegate
+        if v.voucher == voter || v.delegate == Some(voter.clone()) {
+            // Prevent double voting
+            if !appeal.voters.iter().any(|already_voted| already_voted == v.voucher) {
+                voting_stake = voting_stake.checked_add(v.stake).ok_or(ContractError::ArithmeticError)?;
+                newly_voted_vouches.push_back(v.voucher.clone());
+            }
+        }
+    }
+
+    if voting_stake == 0 {
+        return Err(ContractError::VoucherNotFound);
     }
 
     // Record vote
     if approve {
         appeal.approve_stake = appeal
             .approve_stake
-            .checked_add(voucher_stake)
+            .checked_add(voting_stake)
             .ok_or(ContractError::ArithmeticError)?;
     } else {
         appeal.reject_stake = appeal
             .reject_stake
-            .checked_add(voucher_stake)
+            .checked_add(voting_stake)
             .ok_or(ContractError::ArithmeticError)?;
     }
 
-    appeal.voters.push_back(voucher.clone());
+    for v_addr in newly_voted_vouches {
+        appeal.voters.push_back(v_addr);
+    }
 
     env.events().publish(
         (symbol_short!("app"), symbol_short!("voted")),
-        (voucher.clone(), borrower.clone(), approve, voucher_stake),
+        (voter.clone(), borrower.clone(), approve, voting_stake),
     );
 
     // Check if 2/3 quorum is reached
