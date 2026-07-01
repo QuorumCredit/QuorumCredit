@@ -76,6 +76,8 @@ pub enum ContractError {
     NoEscrowFound = 56,
     /// No slash record found for the given slash ID.
     SlashRecordNotFound = 142,
+    /// Refinancing was attempted without any outstanding balance to settle.
+    RefinanceNoOutstanding = 143,
     /// Slash has already been reversed and cannot be reversed again.
     SlashAlreadyReversed = 58,
     /// Caller has exceeded the configured rate limit.
@@ -88,6 +90,10 @@ pub enum ContractError {
     ArithmeticError = 62,
     /// No rollback snapshot found for the requested deployment index (#744).
     RollbackSnapshotNotFound = 63,
+    /// The chain_id used in a cross-chain vouch is not registered or is inactive.
+    InvalidChain = 98,
+    /// A bridge for this chain_id has already been registered.
+    BridgeAlreadyRegistered = 99,
     /// No Ed25519 verification key is configured for the origin chain.
     BridgeNotConfigured = 100,
     /// The origin/destination chain combination is invalid.
@@ -172,12 +178,20 @@ ExtensionAlreadyRequested = 138,
 MaxExtensionsReached = 139,
 /// Caller does not have permission to view this loan (privacy restriction).
 LoanPrivacyRestricted = 140,
-    /// Insurance pool is not connected to this loan.
-    InsuranceNotLinked = 141,
-    /// Circular delegation detected.
-    CircularDelegation = 143,
-    /// Bridge validation required for cross-chain vouch.
-    BridgeNotValidated = 144,
-    /// Vote delegation not found.
-    DelegationNotFound = 145,
+/// Insurance pool is not connected to this loan.
+InsuranceNotLinked = 141,
+/// No relay verification key is configured for the source chain.
+RelayKeyNotConfigured = 142,
+/// Relay chain id is zero or otherwise invalid.
+InvalidRelayChain = 143,
+/// A relay attestation reused an already-consumed nonce.
+RelayReplayDetected = 144,
+/// The relay attestation is older than the freshness window allows.
+RelayEventExpired = 145,
+/// The relay attestation is timestamped too far in the future.
+RelayEventFromFuture = 146,
+/// A relay event with this (source chain, sequence) was already processed.
+RelayEventAlreadyProcessed = 147,
+/// A relay acknowledgement tried to move the cursor backwards.
+RelayAckRegression = 148,
 }

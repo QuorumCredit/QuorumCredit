@@ -34,7 +34,15 @@ pub fn remove_attribute(env: Env, caller: Address, key: soroban_sdk::String) -> 
     require_not_thawing(&env)?;
     let mut attrs: Vec<AttributeEntry> = env.storage().persistent().get(&DataKey::CustomAttributes(caller.clone())).unwrap_or(Vec::new(&env));
     let len_before = attrs.len();
-    attrs = attrs.iter().filter(|a| a.key != key).collect();
+    {
+        let mut new_attrs = Vec::new(&env);
+        for a in attrs.iter() {
+            if a.key != key {
+                new_attrs.push_back(a.clone());
+            }
+        }
+        attrs = new_attrs;
+    }
     if attrs.len() == len_before {
         return Err(ContractError::AttributeNotFound);
     }

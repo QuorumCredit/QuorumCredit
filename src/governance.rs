@@ -1,14 +1,17 @@
-﻿use crate::errors::ContractError;
+use crate::errors::ContractError;
 use crate::helpers::{
     add_slash_balance, config, get_active_loan_record, get_latest_loan_record, has_active_loan,
-    require_admin_approval, require_governance_participant, require_not_paused,
+    is_zero_address, require_admin_approval, require_governance_participant, require_not_paused,
 };
 use crate::types::{
-    AppealStatus, DataKey, LoanStatus, PendingSlashRecord, SlashEscrowAppealRecord, SlashEscrow,
-    SlashRecord, SlashThresholdProposal, SlashVoteRecord, TimelockAction, TimelockProposal,
-    VouchRecord, BPS_DENOMINATOR, APPEAL_OVERRIDE_QUORUM_BPS, SLASH_APPEAL_PERIOD,
+    AdminRemovalProposal, AppealStatus, DataKey, LoanStatus, PendingSlashRecord,
+    SlashAppealRecord, SlashEscrowAppealRecord, SlashEscrow,
+    SlashingReportRecord, SlashRecord, SlashThresholdProposal, SlashVoteRecord,
+    TimelockAction, TimelockProposal,
+    VouchRecord, BPS_DENOMINATOR, APPEAL_OVERRIDE_QUORUM_BPS, MONTHLY_PERIOD_SECS,
+    SLASH_APPEAL_PERIOD,
 };
-use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, String, Vec};
 
 /// Issue #1069: Resolve the effective voter for a voucher, following delegation chain.
 /// Returns the final delegate if one exists, otherwise the original voucher.
@@ -579,6 +582,11 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
     for v in vouches.iter() {
         if v.token != loan.token_address {
+            // Return non-matching-token vouches in full to their owner.
+            if !is_zero_address(env, &v.token) {
+                let other_token = soroban_sdk::token::Client::new(env, &v.token);
+                other_token.transfer(&env.current_contract_address(), &v.voucher, &v.stake);
+            }
             remaining_vouches.push_back(v);
             continue;
         }
@@ -689,7 +697,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 /// Queue a slash operation for deferred batch execution (Issue #937: Lazy Slash).
 /// This allows multiple slashes to be batched together, reducing gas costs.
 pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<(), ContractError> {
-    require_admin_approval(env.clone(), &env.current_contract_address(), &vec![env.current_contract_address()])?;
+    require_admin_approval(&env, &Vec::new(&env));
     
     // Calculate slash amount from existing vouch stake if not provided
     let actual_slash = if slash_amount > 0 {
@@ -709,7 +717,7 @@ pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<()
     crate::lazy_slash::queue_slash(&env, borrower.clone(), actual_slash)?;
     
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("slash_queued")),
+        (symbol_short!("gov"), symbol_short!("slashqd")),
         (borrower.clone(), actual_slash),
     );
     
@@ -719,12 +727,12 @@ pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<()
 /// Execute all queued slash operations in a single batch (Issue #937: Lazy Slash).
 /// Returns the number of slashes executed.
 pub fn execute_queued_slashes(env: Env) -> Result<u32, ContractError> {
-    require_admin_approval(env.clone(), &env.current_contract_address(), &vec![env.current_contract_address()])?;
+    require_admin_approval(&env, &Vec::new(&env));
     
     let executed = crate::lazy_slash::execute_queued_slashes(&env)?;
     
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("slash_queue_executed")),
+        (symbol_short!("gov"), symbol_short!("slashqexc")),
         (executed,),
     );
     
@@ -1526,7 +1534,7 @@ pub fn vote_appeal(
         .ok_or(ContractError::AppealNotFound)?;
 
     // Prevent double voting
-    if appeal.voters.iter().any(|v| v == &voucher) {
+    if appeal.voters.iter().any(|v| v == voucher) {
         return Err(ContractError::AppealAlreadyVoted);
     }
 
@@ -1983,7 +1991,7 @@ pub fn initiate_cross_chain_sync(
     source_chain: String,
     target_chains: Vec<String>,
     proposal_type: String,
-    proposal_data: Vec<u8>,
+    proposal_data: soroban_sdk::Bytes,
 ) -> Result<u64, ContractError> {
     proposer.require_auth();
     require_not_paused(&env)?;
@@ -2068,6 +2076,130 @@ pub fn vote_cross_chain_sync(
     env.events().publish(
         (symbol_short!("xchain"), symbol_short!("voted")),
         (sync_id, chain_id, approve),
+    );
+
+    Ok(())
+}
+
+pub fn propose_config_change(
+    env: Env,
+    proposer: Address,
+    new_config: crate::types::Config,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+    require_not_paused(&env)?;
+    let cfg = config(&env);
+    assert!(
+        cfg.admins.iter().any(|a| a == &proposer),
+        "only admins can propose config changes"
+    );
+
+    let proposal_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TimelockCounter)
+        .unwrap_or(0u64)
+        .checked_add(1)
+        .expect("proposal ID overflow");
+
+    let eta = env.ledger().timestamp() + crate::types::CONFIG_TIMELOCK_SECONDS;
+
+    let proposal = TimelockProposal {
+        id: proposal_id,
+        action: TimelockAction::SetConfig(new_config),
+        proposer: proposer.clone(),
+        eta,
+        executed: false,
+        cancelled: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::Timelock(proposal_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::TimelockCounter, &proposal_id);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("config_prop")),
+        (proposal_id, proposer, eta),
+    );
+
+    Ok(proposal_id)
+}
+
+pub fn execute_config_change(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    let mut proposal: TimelockProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::Timelock(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    if proposal.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        return Err(ContractError::ProposalNotFound);
+    }
+
+    if env.ledger().timestamp() < proposal.eta {
+        return Err(ContractError::ProposalNotFound);
+    }
+
+    const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+    if env.ledger().timestamp() > proposal.eta + TIMELOCK_EXPIRY {
+        return Err(ContractError::ProposalNotFound);
+    }
+
+    if let TimelockAction::SetConfig(new_config) = &proposal.action {
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::Timelock(proposal_id), &proposal);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Config, new_config);
+
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("config_exec")),
+            (proposal_id,),
+        );
+
+        Ok(())
+    } else {
+        Err(ContractError::ProposalNotFound)
+    }
+}
+
+pub fn cancel_config_change(
+    env: Env,
+    admin_signers: Vec<Address>,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+    crate::helpers::require_admin_approval(&env, &admin_signers);
+
+    let mut proposal: TimelockProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::Timelock(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    if proposal.executed || proposal.cancelled {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    proposal.cancelled = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::Timelock(proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("config_cancel")),
+        (proposal_id,),
     );
 
     Ok(())

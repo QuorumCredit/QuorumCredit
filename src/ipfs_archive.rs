@@ -78,7 +78,7 @@ pub fn increment_ipfs_archive_counter(env: &Env) -> Result<u64, crate::ContractE
         .storage()
         .persistent()
         .get(&DataKey::IpfsArchiveCounter)
-        .unwrap_or(0)
+        .unwrap_or(0u64)
         .checked_add(1)
         .ok_or(crate::ContractError::StakeOverflow)?;
 

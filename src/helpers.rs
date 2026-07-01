@@ -186,6 +186,21 @@ pub fn add_slash_balance(env: &Env, amount: i128) {
         .set(&DataKey::SlashTreasury, &(current + amount));
 }
 
+pub fn deduct_slash_balance(env: &Env, amount: i128) -> Result<(), crate::errors::ContractError> {
+    let current: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::SlashTreasury)
+        .unwrap_or(0);
+    if current < amount {
+        return Err(crate::errors::ContractError::PoolInsufficientFunds);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::SlashTreasury, &(current - amount));
+    Ok(())
+}
+
 pub fn is_zero_address(env: &Env, addr: &Address) -> bool {
     let zero_account = Address::from_string(&String::from_str(
         env,
@@ -309,7 +324,7 @@ pub fn require_admin_approval_for_operation(
     };
 
     assert!(
-        admin_signers.len() >= required_threshold as usize,
+        admin_signers.len() >= required_threshold,
         "insufficient admin approvals for this operation type"
     );
 

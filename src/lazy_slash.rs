@@ -91,9 +91,10 @@ fn execute_single_slash(env: &Env, borrower: &Address, slash_amount: i128) -> Re
                 .persistent()
                 .get::<DataKey, Vec<crate::types::VouchRecord>>(&DataKey::Vouches(borrower.clone()))
                 .unwrap_or(Vec::new(env));
-            for (i, existing) in updated_vouches.iter().enumerate() {
+            for i in 0..updated_vouches.len() {
+                let existing = updated_vouches.get(i).unwrap();
                 if existing.voucher == v.voucher {
-                    updated_vouches.set(i, updated);
+                    updated_vouches.set(i, updated.clone());
                     break;
                 }
             }

@@ -15,7 +15,7 @@
 //! to XLM. When accepting user input in XLM, multiply by `10_000_000`
 //! before passing to contract functions.
 
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -42,12 +42,18 @@ pub const DEFAULT_MAX_VOUCHERS: u32 = 100;
 pub const DEFAULT_MIN_LOAN_AMOUNT: i128 = 100_000;
 /// Default loan duration, in seconds (30 days).
 pub const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
+/// Default payment grace period after a suspension, in seconds (3 days).
+pub const PAYMENT_GRACE_PERIOD: u64 = 3 * 24 * 60 * 60;
 /// Default maximum loan-to-stake ratio (150 = 150% — loan ≤ 1.5× total staked).
 pub const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
+/// Default maximum loan-to-collateral ratio (50_000 = 50% — loan ≤ 0.5× total stake).
+pub const DEFAULT_MAX_LOAN_TO_COLLATERAL_RATIO: u32 = 50_000;
 /// Minimum elapsed time between vouch calls from the same address, in seconds (24 hours).
 pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 /// Default maximum number of vouchers that may back a single borrower.
 pub const DEFAULT_MAX_VOUCHERS_PER_BORROWER: u32 = 50;
+/// Default timelock delay for config changes, in seconds (7 days).
+pub const CONFIG_TIMELOCK_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Default governance voting period for slash-threshold proposals, in seconds (7 days).
 pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum delay before a timelocked governance action may be executed, in seconds (24 hours).
@@ -251,6 +257,31 @@ pub enum LoanStatus {
     ForgivenDefault,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LoanStatusEx {
+    None,
+    Active,
+    Suspended,
+    Repaid,
+    PartialDefault,
+    Defaulted,
+    ForgivenDefault,
+}
+
+impl From<LoanStatus> for LoanStatusEx {
+    fn from(status: LoanStatus) -> Self {
+        match status {
+            LoanStatus::None => LoanStatusEx::None,
+            LoanStatus::Active => LoanStatusEx::Active,
+            LoanStatus::Repaid => LoanStatusEx::Repaid,
+            LoanStatus::PartialDefault => LoanStatusEx::PartialDefault,
+            LoanStatus::Defaulted => LoanStatusEx::Defaulted,
+            LoanStatus::ForgivenDefault => LoanStatusEx::ForgivenDefault,
+        }
+    }
+}
+
 /// Interest rate type for a loan.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -315,6 +346,7 @@ pub enum DataKey {
     Loan(u64),                   // loan_id → LoanRecord
     ActiveLoan(Address),         // borrower → active loan_id
     LatestLoan(Address),         // borrower → latest loan_id
+    RefinanceRecord(u64),       // loan_id → RefinanceRecord
     Vouches(Address),            // borrower → Vec<VouchRecord>
     VoucherHistory(Address),     // voucher → Vec<Address> (borrowers backed)
     Config,                      // Config struct: all configurable protocol parameters
@@ -333,6 +365,7 @@ pub enum DataKey {
     LoanPoolCounter, // u64: monotonically increasing pool ID counter
     PendingAdmin,    // Address of the pending admin (two-step transfer)
     RepaymentCount(Address), // borrower → u32 total successful repayments
+    RepaymentConfirmation(u64), // loan_id → bool confirmation flag
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
     ProtocolFeeBps,  // u32: protocol fee in basis points
@@ -421,6 +454,8 @@ pub enum DataKey {
     StakingDerivative(Address, Address),
     // #637: Fraud Detection
     VoucherFraudScore(Address),
+    /// Issue #637: on-demand fraud detection configuration
+    FraudScoreConfig,
     /// Repayment dispute raised by a voucher: (borrower, voucher) -> DisputeRecord
     RepaymentDispute(Address, Address),
     // #667: Oracle address for repayment verification
@@ -436,6 +471,8 @@ pub enum DataKey {
     VoucherInsurance(Address, Address),
     /// Cross-chain bridge validation status: (voucher, chain_id) → bool.
     BridgeValidated(Address, u32),
+    /// Registered cross-chain bridges: Vec<BridgeRecord>
+    Bridges,
     /// Issue #687: admin removal proposal id → AdminRemovalProposal
     AdminRemovalProposal(u64),
     /// Issue #687: monotonically increasing admin removal proposal counter
@@ -513,6 +550,99 @@ pub enum DataKey {
     CascadingDefaultRecord(u64),
     /// Waterfall distribution configuration for a borrower
     WaterfallConfig(Address),
+    // ── Issue #934: Yield Calculation Caching ──────────────────────────────────
+    /// (borrower, voucher) → CachedYieldRecord
+    YieldCache(Address, Address),
+    // ── Cache infrastructure (Issue #724) ──────────────────────────────────────
+    /// LRU index counter for cache eviction
+    LruIndex,
+    /// Oldest loan cache entry ID for LRU eviction
+    LruOldestLoanId,
+    // ── Reentrancy Guard ──────────────────────────────────────────────────────
+    /// bool: true when a state-mutating operation is in progress
+    Locked,
+    // ── Nonce tracking (Issue #64) ────────────────────────────────────────────
+    /// Address → u64: last consumed nonce for replay protection
+    Nonce(Address),
+    // ── Oracle price (Issue #64) ──────────────────────────────────────────────
+    /// Symbol → OraclePriceRecord
+    OraclePrice(soroban_sdk::Symbol),
+    // ── Graduated threat level (Issue #65) ────────────────────────────────────
+    /// ThreatLevel enum value
+    ThreatLevelKey,
+    // ── Multi-tier admin thresholds (Issue #893) ──────────────────────────────
+    /// MultiTierAdminThresholds configuration (stored in instance storage)
+    MultiTierAdminThresholds,
+    // ── Risk threshold governance (Issue #903) ────────────────────────────────
+    /// proposal_id → RiskThresholdProposal
+    RiskThresholdProposal(u64),
+    /// monotonically increasing risk threshold proposal counter
+    RiskThresholdCounter,
+    /// (proposal_id, voter) → bool (has voted)
+    RiskThresholdVote(u64, Address),
+    // ── Fee structure governance (Issue #904) ─────────────────────────────────
+    /// proposal_id → FeeStructureProposal
+    FeeStructureProposal(u64),
+    /// monotonically increasing fee structure proposal counter
+    FeeStructureCounter,
+    /// (proposal_id, voter) → bool (has voted)
+    FeeStructureVote(u64, Address),
+    // ── Withdrawal timelock (Issue #905) ──────────────────────────────────────
+    /// (borrower, voucher) → withdrawal timelock record
+    WithdrawalTimelock(u64),
+    /// monotonically increasing withdrawal timelock counter
+    WithdrawalTimelockCounter,
+    // ── Cross-chain proposal sync (Issue #906) ─────────────────────────────────
+    /// proposal_id → CrossChainProposalSync
+    CrossChainProposalSync(u64),
+    /// monotonically increasing cross-chain proposal sync counter
+    CrossChainSyncCounter,
+    // ── Yield stream (Issue #907) ──────────────────────────────────────────────
+    /// loan_id → YieldStreamState
+    YieldStreamState(u64),
+    /// (loan_id, voucher) → VoucherYieldClaim
+    VoucherYieldClaim(u64, Address),
+    // ── Periodic payments (Issue #908) ────────────────────────────────────────
+    /// loan_id → PeriodicPaymentConfig
+    PeriodicPaymentConfig(u64),
+    /// loan_id → PeriodicPaymentStatus
+    PeriodicPaymentStatus(u64),
+    // ── Vouch groups (Issue #909) ──────────────────────────────────────────────
+    /// group_id → VouchGroup
+    VouchGroup(u64),
+    /// monotonically increasing vouch group counter
+    VouchGroupCounter,
+    /// voucher → Vec<u64> group IDs the voucher belongs to
+    VoucherGroupIds(Address),
+    // ── Vouch merkle root (Issue #910) ────────────────────────────────────────
+    /// borrower → BytesN<32> merkle root of vouch set
+    VouchMerkleRoot(Address),
+    // ── Batch transfers (Issue #935) ──────────────────────────────────────────
+    /// Vec<BatchTransfer> pending transfer queue
+    PendingTransfers,
+    // ── Lazy slash queue (Issue #937) ─────────────────────────────────────────
+    /// Vec<LazySlashEntry> queued slash operations
+    LazySlashQueue,
+    // ── Custom attributes ────────────────────────────────────────────────────
+    /// Address → Vec<AttributeEntry>
+    CustomAttributes(Address),
+    // ── Forbearance (Issue #878) ──────────────────────────────────────────────
+    /// loan_id → ForbearanceRecord
+    Forbearance(u64),
+    // ── Refinance record (Issue #877) ─────────────────────────────────────────
+    /// loan_id → RefinanceRecord
+    RefinanceRecord(u64),
+    // ── Dynamic rate (Issue #881) ──────────────────────────────────────────────
+    /// DynamicRateConfig (global config)
+    DynamicRateConfig,
+    /// borrower → BorrowerDynamicRate
+    BorrowerDynamicRate(Address),
+    // ── API versioning ─────────────────────────────────────────────────────────
+    /// Current API version string
+    ApiVersion,
+    // ── Repayment confirmation ─────────────────────────────────────────────────
+    /// loan_id → bool (repayment confirmed by oracle)
+    RepaymentConfirmation(u64),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -523,6 +653,8 @@ pub struct CollateralPool {
     pub members: Vec<Address>,
     /// Stake per member (parallel to `members`), in stroops.
     pub stakes: Vec<i128>,
+    /// Origin chain per member (parallel to `members`). `0` is the native chain.
+    pub chain_ids: Vec<u32>,
     pub token: Address,
     pub borrower: Option<Address>,
     pub active: bool,
@@ -858,6 +990,72 @@ pub struct CreditScore {
     pub avg_repayment_time: i64,
 }
 
+// ── zk-SNARK Confidentiality Types ─────────────────────────────────────────────
+
+/// A zk-SNARK proof for confidential operations
+#[contracttype]
+#[derive(Clone)]
+pub struct ZkProof {
+    /// Proof points (compressed representation)
+    pub proof_bytes: soroban_sdk::Bytes,
+    /// Public inputs for the proof
+    pub public_inputs: soroban_sdk::Vec<soroban_sdk::BytesN<32>>,
+    /// Proof type identifier
+    pub proof_type: u32,
+}
+
+/// A commitment to a confidential value using hash-based commitment
+#[contracttype]
+#[derive(Clone)]
+pub struct ConfidentialCommitment {
+    /// The commitment value (hash of blinded amount)
+    pub commitment: soroban_sdk::BytesN<32>,
+    /// The blinding factor (revealed only to trusted parties)
+    pub blinding: soroban_sdk::BytesN<32>,
+}
+
+/// Public parameters for the zk-SNARK system
+#[contracttype]
+#[derive(Clone)]
+pub struct ZkPublicParams {
+    /// Verifying key hash (for on-chain verification)
+    pub vk_hash: soroban_sdk::BytesN<32>,
+    /// Circuit identifier
+    pub circuit_id: u32,
+}
+
+/// Audit record for a zk-SNARK proof
+#[contracttype]
+#[derive(Clone)]
+pub struct ZkProofRecord {
+    /// Unique proof ID
+    pub proof_id: u64,
+    /// The proof that was verified
+    pub proof: ZkProof,
+    /// Operation type (vouch, loan_request, repayment)
+    pub operation_type: u32,
+    /// Address that submitted the proof
+    pub submitter: Address,
+    /// Whether verification succeeded
+    pub verified: bool,
+    /// Ledger timestamp when proof was submitted
+    pub submitted_at: u64,
+}
+
+/// Proof types for different operations
+pub const PROOF_TYPE_VOUCH: u32 = 1;
+pub const PROOF_TYPE_LOAN_REQUEST: u32 = 2;
+pub const PROOF_TYPE_REPAYMENT: u32 = 3;
+
+/// Error for invalid proof type
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ZkError {
+    InvalidProofType,
+    ProofVerificationFailed,
+    InvalidCommitment,
+}
+
 /// Reputation NFT badge record for borrowers reaching Excellent tier.
 #[contracttype]
 #[derive(Clone)]
@@ -1130,6 +1328,7 @@ pub struct Config {
     /// Maximum ratio of loan amount to total staked collateral, expressed as a percentage
     /// (e.g. 150 means loan ≤ 1.5 × total stake in stroops).
     pub max_loan_to_stake_ratio: u32,
+    pub max_loan_to_collateral_ratio: u32,
     /// Grace period after loan deadline before the loan can be slashed, in seconds.
     pub grace_period: u64,
     /// Minimum age of a vouch before it can be used for loan eligibility, in seconds (default 24 hours).
@@ -1158,6 +1357,22 @@ pub struct Config {
     /// Issue #893: Multi-tier admin approval thresholds for different operation types.
     /// If not set, falls back to single admin_threshold for all operations.
     pub multi_tier_thresholds: Option<MultiTierAdminThresholds>,
+    /// Recovery percentage for defaulted loans (in basis points, e.g. 5000 = 50%).
+    pub recovery_percentage: u32,
+    /// When true, the slash threshold is calculated dynamically based on pool health.
+    pub dynamic_slash_threshold: bool,
+    /// When true, loan size affects the maximum slash basis points.
+    pub loan_size_slash_enabled: bool,
+    /// Maximum slash in basis points when loan size slash is enabled (e.g. 8000 = 80%).
+    pub loan_size_slash_max_bps: i128,
+    /// When true, loans require admin confirmation before being executed.
+    pub confirmation_required: bool,
+    /// Admin compensation rate in basis points (e.g. 100 = 1%).
+    pub admin_compensation_bps: u32,
+    /// Minimum votes required to remove an admin via governance (0 = disabled).
+    pub removal_vote_threshold: u32,
+    /// Insurance premium rate in basis points collected at loan disbursement (e.g. 100 = 1%).
+    pub insurance_premium_bps: u32,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -1167,6 +1382,34 @@ pub struct Config {
 pub struct AmortizationEntry {
     pub due_date: u64,
     pub payment_due: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MilestoneStatus {
+    Pending,
+    Submitted,
+    Approved,
+    Rejected,
+    Expired,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct MilestoneRecord {
+    pub milestone_id: u32,
+    pub loan_id: u64,
+    pub tranche_id: u32,
+    pub status: MilestoneStatus,
+    pub deadline: u64,
+    pub description: soroban_sdk::String,
+    pub submitted_at: Option<u64>,
+    pub evidence_hash: Option<soroban_sdk::BytesN<32>>,
+    pub proof_uri: Option<soroban_sdk::String>,
+    pub approved_at: Option<u64>,
+    pub approvers: Vec<Address>,
+    pub rejection_reason: Option<soroban_sdk::String>,
+    pub tranche_released: bool,
 }
 
 #[contracttype]
@@ -1193,7 +1436,9 @@ pub struct LoanRecord {
     /// Yield owed to vouchers, locked in at disbursement time, in stroops.
     /// Computed as `amount * yield_bps / 10_000`. 1 XLM = 10,000,000 stroops.
     pub total_yield: i128,
-    pub status: LoanStatus,
+        pub status: LoanStatus,
+    pub repaid: bool,
+    pub defaulted: bool,
     /// Ledger timestamp when the loan record was created.
     pub created_at: u64,
     /// Ledger timestamp when the loan was disbursed to the borrower.
@@ -1230,11 +1475,28 @@ pub struct LoanRecord {
     pub milestone_bonus_applied: bool,
     /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
+    /// Timestamp when the loan was suspended due to missed payment.
+    pub suspension_timestamp: Option<u64>,
+    /// Amount repaid when the loan entered suspension.
+    pub suspension_amount_repaid: i128,
 }
 
 /// An archived loan record, stored separately to reduce active persistent storage.
 /// Created when a loan reaches a terminal state (Repaid or Defaulted) and is moved
 /// from active storage to archive to preserve history while reducing bloat.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefinanceRecord {
+    pub old_loan_id: u64,
+    pub new_loan_id: u64,
+    pub borrower: Address,
+    pub old_amount: i128,
+    pub new_amount: i128,
+    pub old_rate_bps: i128,
+    pub new_rate_bps: i128,
+    pub refinanced_at: u64,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct ArchivedLoanRecord {
@@ -1478,6 +1740,25 @@ pub struct VoucherStats {
     pub total_slashed: i128,
 }
 
+/// Maximum number of loan entries to keep in the LRU cache.
+pub const CACHE_LRU_MAX_ENTRIES: u32 = 100;
+/// TTL for general cached records, in seconds (5 minutes).
+pub const CACHE_TTL_SECS: u64 = 5 * 60;
+/// TTL for cached yield-bps values, in seconds (5 minutes).
+pub const YIELD_CACHE_TTL_SECS: u64 = 5 * 60;
+
+/// Cached per-vouch yield rate for a (borrower, voucher) pair.
+#[contracttype]
+#[derive(Clone)]
+pub struct CachedYieldRecord {
+    /// The cached yield rate in basis points.
+    pub yield_bps: i128,
+    /// Ledger timestamp when this value was cached.
+    pub cached_at: u64,
+    /// The base yield_bps from config at cache time (for stale-config detection).
+    pub base_yield_bps: i128,
+}
+
 /// Current API version of the contract.
 pub const API_VERSION: u32 = 1;
 
@@ -1662,7 +1943,7 @@ pub struct CrossChainProposalSync {
     pub source_chain: String,
     pub target_chains: Vec<String>,
     pub proposal_type: String,  // "risk", "fee", "timelock"
-    pub proposal_data: Vec<u8>,
+    pub proposal_data: soroban_sdk::Bytes,
     pub votes_required: u32,
     pub votes_received: u32,
     pub status: GovernanceProposalStatus,
@@ -1804,3 +2085,18 @@ pub struct WaterfallDistribution {
 /// `CascadingDefaultRecord(u64)` => senior_loan_id -> CascadingDefault
 pub const MAX_SUBORDINATION_DEPTH: u32 = 10; // Prevent deeply nested hierarchies
 pub const MAX_SUBORDINATES_PER_LOAN: u32 = 50; // Prevent excessive branching
+
+/// Result for a single entry in `batch_vouch` with selective rollback semantics (Issue #1055).
+/// Successful entries are committed; failed entries are skipped with an error code.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchVouchResult {
+    /// The borrower address for this entry.
+    pub borrower: Address,
+    /// The stake amount attempted for this entry.
+    pub stake: i128,
+    /// `true` if the vouch was committed successfully; `false` if it was skipped.
+    pub success: bool,
+    /// Error code if `success == false`; `None` when successful.
+    pub error_code: Option<u32>,
+}

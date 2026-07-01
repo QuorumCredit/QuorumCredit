@@ -1,8 +1,8 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Provider, useSelector } from "react-redux";
 import { store, RootState } from "./store";
 import { useLoanSocket } from "./useLoanSocket";
-import LoanCard from "./LoanCard";
+import LoanCard, { type AccessibilitySettings } from "./LoanCard";
 
 // ---------------------------------------------------------------------------
 // Inner component — must be inside Provider
@@ -17,6 +17,22 @@ interface DashboardInnerProps {
 const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey }) => {
   useLoanSocket({ url: wsUrl, borrower, apiKey });
 
+  const [accessibility, setAccessibility] = useState<AccessibilitySettings>(() => {
+    if (typeof window === "undefined") return { colorblindFriendly: false, highContrast: false };
+    try {
+      const stored = window.localStorage.getItem("quorum-dashboard-accessibility");
+      return stored ? JSON.parse(stored) : { colorblindFriendly: false, highContrast: false };
+    } catch {
+      return { colorblindFriendly: false, highContrast: false };
+    }
+  });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("quorum-dashboard-accessibility", JSON.stringify(accessibility));
+    }
+  }, [accessibility]);
+
   const { loans, reputation, connected, lastUpdated } = useSelector(
     (state: RootState) => state.loans
   );
@@ -24,14 +40,43 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
   const activeLoans = loans.filter((l) => l.status === "Active");
   const closedLoans = loans.filter((l) => l.status !== "Active");
 
+  const toggleButtonStyle = (active: boolean) => ({
+    border: active ? "2px solid #2563eb" : "1px solid #cbd5e1",
+    background: accessibility.highContrast ? "#000000" : active ? "#eff6ff" : "#ffffff",
+    color: accessibility.highContrast ? "#ffffff" : active ? "#1d4ed8" : "#334155",
+    borderRadius: 999,
+    padding: "6px 12px",
+    fontWeight: 600,
+    cursor: "pointer",
+  });
+
   return (
     <div
       aria-label="Loan Status Dashboard"
-      style={{ fontFamily: "system-ui", padding: 24, maxWidth: 900, margin: "0 auto" }}
+      style={{ fontFamily: "system-ui", padding: 24, maxWidth: 900, margin: "0 auto", background: accessibility.highContrast ? "#000000" : "#ffffff", color: accessibility.highContrast ? "#ffffff" : "#0f172a" }}
     >
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <button
+          type="button"
+          aria-pressed={Boolean(accessibility.colorblindFriendly)}
+          onClick={() => setAccessibility((prev) => ({ ...prev, colorblindFriendly: !prev.colorblindFriendly }))}
+          style={toggleButtonStyle(Boolean(accessibility.colorblindFriendly))}
+        >
+          Colorblind-friendly mode
+        </button>
+        <button
+          type="button"
+          aria-pressed={Boolean(accessibility.highContrast)}
+          onClick={() => setAccessibility((prev) => ({ ...prev, highContrast: !prev.highContrast }))}
+          style={toggleButtonStyle(Boolean(accessibility.highContrast))}
+        >
+          High contrast
+        </button>
+      </div>
+
       {/* Header */}
       <header style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
-        <h1 style={{ margin: 0, fontSize: 22, color: "#0f172a" }}>Loan Status Dashboard</h1>
+        <h1 style={{ margin: 0, fontSize: 22, color: accessibility.highContrast ? "#ffffff" : "#0f172a" }}>Loan Status Dashboard</h1>
         <span
           aria-label={connected ? "WebSocket connected" : "WebSocket disconnected"}
           style={{
@@ -55,8 +100,8 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
         <section
           aria-label="Reputation"
           style={{
-            background: "#f8fafc",
-            border: "1px solid #e2e8f0",
+            background: accessibility.highContrast ? "#111827" : "#f8fafc",
+            border: accessibility.highContrast ? "1px solid #ffffff" : "1px solid #e2e8f0",
             borderRadius: 10,
             padding: "12px 20px",
             marginBottom: 20,
@@ -66,11 +111,11 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
           }}
         >
           <div>
-            <div style={{ fontSize: 11, color: "#64748b" }}>Reputation Tier</div>
-            <div style={{ fontWeight: 700, fontSize: 18, color: "#6366f1" }}>{reputation.tier}</div>
+            <div style={{ fontSize: 11, color: accessibility.highContrast ? "#cbd5e1" : "#64748b" }}>Reputation Tier</div>
+            <div style={{ fontWeight: 700, fontSize: 18, color: accessibility.highContrast ? "#fbbf24" : "#6366f1" }}>{reputation.tier}</div>
           </div>
           <div>
-            <div style={{ fontSize: 11, color: "#64748b" }}>Score</div>
+            <div style={{ fontSize: 11, color: accessibility.highContrast ? "#cbd5e1" : "#64748b" }}>Score</div>
             <div style={{ fontWeight: 700, fontSize: 18 }}>{reputation.score}</div>
           </div>
         </section>
@@ -78,15 +123,15 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
 
       {/* Active Loans */}
       <section aria-label="Active Loans" style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 16, color: "#1d4ed8", marginBottom: 12 }}>
+        <h2 style={{ fontSize: 16, color: accessibility.highContrast ? "#fbbf24" : "#1d4ed8", marginBottom: 12 }}>
           Active Loans ({activeLoans.length})
         </h2>
         {activeLoans.length === 0 ? (
-          <p style={{ color: "#94a3b8", fontSize: 14 }}>No active loans.</p>
+          <p style={{ color: accessibility.highContrast ? "#e2e8f0" : "#94a3b8", fontSize: 14 }}>No active loans.</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {activeLoans.map((loan) => (
-              <LoanCard key={loan.id} loan={loan} />
+              <LoanCard key={loan.id} loan={loan} accessibility={accessibility} />
             ))}
           </div>
         )}
@@ -100,7 +145,7 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
           </h2>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {closedLoans.map((loan) => (
-              <LoanCard key={loan.id} loan={loan} />
+              <LoanCard key={loan.id} loan={loan} accessibility={accessibility} />
             ))}
           </div>
         </section>

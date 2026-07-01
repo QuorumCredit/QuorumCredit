@@ -1,5 +1,5 @@
 use crate::types::{ArchivedLoanRecord, DataKey, LoanRecord, LoanStatus, VouchHistoryEntry};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 
 /// Archive a completed or slashed loan to reduce persistent storage bloat.
 /// The loan is copied to archive storage and removed from active storage.
@@ -14,7 +14,7 @@ pub fn archive_loan(env: &Env, loan: &LoanRecord) -> Result<u64, crate::Contract
         .storage()
         .persistent()
         .get(&DataKey::ArchiveCounter)
-        .unwrap_or(0)
+        .unwrap_or(0u64)
         .checked_add(1)
         .ok_or(crate::ContractError::StakeOverflow)?;
 
@@ -77,17 +77,17 @@ pub fn archive_vouch_history(
         ))
         .unwrap_or(Vec::new(env));
 
-    if history.len() <= max_active_entries as usize {
+    if history.len() <= max_active_entries {
         return Ok(()); // No need to archive
     }
 
     // Calculate how many entries to archive
-    let entries_to_archive = history.len() - (max_active_entries as usize / 2);
+    let entries_to_archive = history.len().saturating_sub(max_active_entries / 2);
 
     // Create archive batch
     let mut archived_entries = Vec::new(env);
     for i in 0..entries_to_archive {
-        archived_entries.push_back(history.get(i as u32).unwrap());
+        archived_entries.push_back(history.get(i).unwrap());
     }
 
     // Get next batch ID for this history
@@ -117,7 +117,7 @@ pub fn archive_vouch_history(
     // Keep only recent entries in active storage
     let mut recent_entries = Vec::new(env);
     for i in entries_to_archive..history.len() {
-        recent_entries.push_back(history.get(i as u32).unwrap());
+        recent_entries.push_back(history.get(i).unwrap());
     }
 
     env.storage().persistent().set(

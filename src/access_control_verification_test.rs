@@ -1,304 +1,169 @@
+//! Issue #952 ([#106] Security Test Automation)
+//!
+//! `access_control_verification_test.rs` (added in #913) claimed to verify
+//! access control across the contract's functions, but every test in it only
+//! asserted trivial facts about the `Config` struct (e.g. `cfg.slash_bps > 0`)
+//! without ever calling the functions named in their own doc comments, and
+//! without ever exercising `require_auth()`, `require_admin_approval()`, or
+//! `require_admin_permission()`. None of it would catch a real auth
+//! regression. It also referenced `Config` fields (`min_stake`,
+//! `protocol_fee_bps`, `max_allowed_tokens`, `min_vouchers`,
+//! `vouch_cooldown_secs`, `thaw_duration_secs`) that don't exist anywhere
+//! else in the crate.
+//!
+//! This file replaces it with tests that actually invoke the relevant
+//! functions and assert on real success/failure outcomes:
+//!   - calls below the admin multisig threshold panic
+//!   - signers who aren't registered admins are rejected outright
+//!   - self-removal-by-signer protection (Issue #372) actually holds
+//!   - read-only functions remain callable without any auth
+
 #[cfg(test)]
 mod tests {
-    use crate::types::{DataKey, Config, AdminRole, AdminPermission};
-    use crate::helpers::{config};
-    use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+    use crate::admin;
+    use crate::types::{Config, DataKey, RateLimitConfig};
+    use soroban_sdk::{testutils::Address as _, vec, Address, Env};
 
-    fn setup_env() -> (Env, Address, Vec<Address>, Address) {
+    /// Builds a real, fully-populated Config matching `initialize()`'s literal
+    /// in lib.rs, with two registered admins and threshold = 2.
+    fn setup_env_with_admins() -> (Env, Address, Address, Address) {
         let env = Env::default();
-        let admin = Address::random(&env);
-        let admins = soroban_sdk::vec![&env, admin.clone()];
-        let token = Address::random(&env);
 
-        let cfg = Config {
-            admins: admins.clone(),
-            admin_threshold: 1,
-            admin_whitelist: soroban_sdk::vec![&env],
-            admin_blacklist: soroban_sdk::vec![&env],
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let token = Address::generate(&env);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+
+        let config = Config {
+            admins: vec![&env, admin1.clone(), admin2.clone()],
+            admin_threshold: 2,
+            admin_whitelist: vec![&env],
+            admin_blacklist: vec![&env],
             token: token.clone(),
-            allowed_tokens: soroban_sdk::vec![&env, token.clone()],
+            allowed_tokens: vec![&env],
             yield_bps: 200,
             slash_bps: 5000,
-            max_vouchers: 50,
+            max_vouchers: 100,
             min_loan_amount: 100_000,
-            loan_duration: 86400,
-            max_loan_to_stake_ratio: 100,
-            grace_period: 3600,
-            min_stake: 50,
+            loan_duration: 30 * 24 * 60 * 60,
+            max_loan_to_stake_ratio: 150,
+            grace_period: 0,
+            min_vouch_age_secs: 24 * 60 * 60,
+            prepayment_penalty_bps: 0,
+            liquidity_mining_rate_bps: 0,
+            voting_period_seconds: 14 * 24 * 60 * 60,
+            slash_cooldown_seconds: 0,
             emergency_pause_enabled: false,
-            protocol_fee_bps: 100,
-            max_allowed_tokens: 10,
-            min_vouchers: 1,
-            vouch_cooldown_secs: 0,
-            min_vouch_age_secs: 0,
-            thaw_duration_secs: 3600,
+            early_repayment_discount_bps: 0,
+            oracle_address: None,
+            slash_delay_seconds: 0,
+            successor_admin: None,
+            rate_limit_config: RateLimitConfig {
+                window_secs: 3600,
+                max_calls: 1000,
+                enabled: false,
+            },
+            multi_tier_thresholds: None,
         };
 
-        env.storage().instance().set(&DataKey::Config, &cfg);
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&DataKey::Config, &config);
+        });
 
-        (env, admin, admins, token)
+        (env, admin1, admin2, token)
     }
 
+    // ── Multisig threshold is genuinely enforced ────────────────────────────────
+
+    /// A single admin signer cannot pass `require_admin_approval` when the
+    /// threshold is 2 — this should panic on the "insufficient admin
+    /// approvals" assertion, proving the threshold check is live, not
+    /// decorative.
     #[test]
-    fn test_initialize_requires_deployer_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        // Initialize should require deployer signature
-        let cfg = config(&env);
-        
-        // Verify admin threshold is set
-        assert!(cfg.admin_threshold > 0);
+    #[should_panic(expected = "insufficient admin approvals")]
+    fn set_protocol_fee_rejects_below_threshold_signers() {
+        let (env, admin1, _admin2, _token) = setup_env_with_admins();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+
+        env.as_contract(&contract_id, || {
+            admin::set_protocol_fee(env.clone(), vec![&env, admin1], 250);
+        });
     }
 
+    /// Meeting the threshold with two genuine registered admins succeeds.
+    /// Mirrors the previous test but proves the positive path also works,
+    /// not just that everything panics.
     #[test]
-    fn test_vouch_requires_voucher_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let voucher = Address::random(&env);
-        let borrower = Address::random(&env);
-        
-        // vouch() should require voucher.require_auth()
-        // Only voucher address can stake their tokens
-        
-        let cfg = config(&env);
-        assert!(cfg.min_stake > 0);
+    fn set_protocol_fee_accepts_threshold_met_by_registered_admins() {
+        let (env, admin1, admin2, _token) = setup_env_with_admins();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+
+        env.as_contract(&contract_id, || {
+            admin::set_protocol_fee(env.clone(), vec![&env, admin1, admin2], 250);
+        });
     }
 
+    /// An address that is NOT in `cfg.admins` cannot be used to satisfy the
+    /// multisig requirement, even if enough total signers are supplied to
+    /// meet the numeric threshold.
     #[test]
-    fn test_request_loan_requires_borrower_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let borrower = Address::random(&env);
-        
-        // request_loan should require borrower.require_auth()
-        let cfg = config(&env);
-        assert!(cfg.min_loan_amount > 0);
+    #[should_panic(expected = "signer is not a registered admin")]
+    fn set_protocol_fee_rejects_non_admin_signer() {
+        let (env, admin1, _admin2, _token) = setup_env_with_admins();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let outsider = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            admin::set_protocol_fee(env.clone(), vec![&env, admin1, outsider], 250);
+        });
     }
 
-    #[test]
-    fn test_repay_requires_borrower_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let borrower = Address::random(&env);
-        
-        // repay should require borrower.require_auth()
-        let cfg = config(&env);
-        assert!(cfg.token.clone() != Address::random(&env));
-    }
+    // ── add_admin / remove_admin enforce the same multisig gate ─────────────────
 
     #[test]
-    fn test_slash_requires_admin_auth() {
-        let (env, admin, admins, _token) = setup_env();
-        
-        let borrower = Address::random(&env);
-        
-        // slash should require admin signatures
-        let cfg = config(&env);
-        
-        // Verify admin is in config
-        let mut found = false;
-        for i in 0..cfg.admins.len() {
-            if cfg.admins.get_unchecked(i) == admin {
-                found = true;
-                break;
-            }
-        }
-        assert!(found);
+    #[should_panic(expected = "insufficient admin approvals")]
+    fn add_admin_rejects_below_threshold_signers() {
+        let (env, admin1, _admin2, _token) = setup_env_with_admins();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let new_admin = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            admin::add_admin(env.clone(), vec![&env, admin1], new_admin);
+        });
     }
 
+    /// An admin cannot be used as a signer to remove themselves — this is
+    /// the Issue #372 protection already noted in admin.rs; we assert it
+    /// still holds rather than assuming the comment is accurate.
     #[test]
-    fn test_pause_requires_admin_multisig() {
-        let (env, admin, admins, _token) = setup_env();
-        
-        // pause should require admin_threshold signatures
-        let cfg = config(&env);
-        
-        assert_eq!(cfg.admin_threshold, 1);
-        assert!(cfg.admins.len() >= 1);
+    #[should_panic]
+    fn remove_admin_rejects_self_removal_by_signer() {
+        let (env, admin1, admin2, _token) = setup_env_with_admins();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+
+        env.as_contract(&contract_id, || {
+            // admin1 is both a signer and the target of removal.
+            admin::remove_admin(env.clone(), vec![&env, admin1.clone(), admin2], admin1);
+        });
     }
 
-    #[test]
-    fn test_unpause_requires_admin_multisig() {
-        let (env, admin, admins, _token) = setup_env();
-        
-        let cfg = config(&env);
-        
-        assert_eq!(cfg.admin_threshold, 1);
-        assert!(cfg.admins.len() >= 1);
-    }
+    // ── Read functions remain unauthenticated (sanity, not a vacuous check) ─────
 
+    /// get_governance_proposal is a read-only query and must not require any
+    /// signature. We call it directly (no mock_all_auths, no signers) and
+    /// confirm it simply returns None rather than panicking on auth.
     #[test]
-    fn test_update_config_requires_admin_multisig() {
-        let (env, admin, admins, _token) = setup_env();
-        
-        let cfg = config(&env);
-        
-        // update_config requires admin_threshold admins
-        assert!(cfg.admin_threshold <= cfg.admins.len() as u32);
-    }
+    fn get_governance_proposal_requires_no_auth() {
+        let (env, _admin1, _admin2, _token) = setup_env_with_admins();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
 
-    #[test]
-    fn test_withdraw_vouch_requires_voucher_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let voucher = Address::random(&env);
-        let borrower = Address::random(&env);
-        
-        // withdraw_vouch should require voucher.require_auth()
-        let cfg = config(&env);
-        assert!(cfg.allowed_tokens.len() >= 1);
-    }
+        let result = env.as_contract(&contract_id, || {
+            admin::get_governance_proposal(env.clone(), 999)
+        });
 
-    #[test]
-    fn test_increase_stake_requires_voucher_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let voucher = Address::random(&env);
-        let borrower = Address::random(&env);
-        
-        // increase_stake should require voucher.require_auth()
-        let cfg = config(&env);
-        assert!(cfg.min_stake > 0);
-    }
-
-    #[test]
-    fn test_decrease_stake_requires_voucher_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let voucher = Address::random(&env);
-        let borrower = Address::random(&env);
-        
-        // decrease_stake should require voucher.require_auth()
-        let cfg = config(&env);
-        assert!(cfg.min_stake > 0);
-    }
-
-    #[test]
-    fn test_batch_vouch_requires_voucher_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let voucher = Address::random(&env);
-        
-        // batch_vouch should require voucher.require_auth()
-        let cfg = config(&env);
-        assert!(cfg.min_stake > 0);
-    }
-
-    #[test]
-    fn test_vote_slash_requires_voucher_auth() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let voucher = Address::random(&env);
-        let borrower = Address::random(&env);
-        
-        // vote_slash should require voucher.require_auth()
-        let cfg = config(&env);
-        assert!(cfg.slash_bps > 0);
-    }
-
-    #[test]
-    fn test_execute_slash_vote_accessible_to_anyone() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let borrower = Address::random(&env);
-        
-        // execute_slash_vote can be called by anyone (public)
-        // But requires vote quorum to be met (check happens in logic)
-        let cfg = config(&env);
-        assert!(cfg.min_vouchers >= 1);
-    }
-
-    #[test]
-    fn test_admin_threshold_enforcement() {
-        let (env, admin, admins, _token) = setup_env();
-        
-        let cfg = config(&env);
-        
-        // admin_threshold should not exceed total admins
-        assert!(cfg.admin_threshold <= cfg.admins.len() as u32);
-        
-        // admin_threshold should be at least 1
-        assert!(cfg.admin_threshold >= 1);
-    }
-
-    #[test]
-    fn test_blacklist_prevents_borrower_action() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let blacklisted_borrower = Address::random(&env);
-        
-        // Blacklisted borrowers cannot request loans
-        let cfg = config(&env);
-        
-        // Check if borrower is in blacklist
-        let mut is_blacklisted = false;
-        for i in 0..cfg.admin_blacklist.len() {
-            if cfg.admin_blacklist.get_unchecked(i) == blacklisted_borrower {
-                is_blacklisted = true;
-                break;
-            }
-        }
-        
-        assert!(!is_blacklisted, "New address should not be blacklisted by default");
-    }
-
-    #[test]
-    fn test_whitelist_restricts_vouchers() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let voucher = Address::random(&env);
-        
-        // If whitelist is enabled, only whitelisted vouchers can vouch
-        let cfg = config(&env);
-        
-        // Verify whitelist exists (may be empty)
-        assert!(cfg.admin_whitelist.len() >= 0);
-    }
-
-    #[test]
-    fn test_all_functions_protected() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        let cfg = config(&env);
-        
-        // Core functions:
-        // - initialize: requires deployer auth ✓
-        // - vouch: requires voucher auth ✓
-        // - request_loan: requires borrower auth ✓
-        // - repay: requires borrower auth ✓
-        // - slash: requires admin multisig ✓
-        // - pause/unpause: requires admin multisig ✓
-        // - update_config: requires admin multisig ✓
-        
-        assert!(cfg.admin_threshold > 0);
-    }
-
-    #[test]
-    fn test_read_functions_no_auth_required() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        // Read-only functions should be callable by anyone:
-        // - get_loan
-        // - get_vouches
-        // - is_eligible
-        // - total_vouched
-        // - get_config
-        // - loan_status
-        
-        let cfg = config(&env);
-        assert!(cfg.admins.len() > 0);
-    }
-
-    #[test]
-    fn test_role_based_access_control() {
-        let (env, _admin, _admins, _token) = setup_env();
-        
-        // Verify RBAC structure exists
-        // - SuperAdmin: all permissions
-        // - Treasurer: config + fee updates
-        // - Monitor: read analytics
-        
-        let cfg = config(&env);
-        assert!(cfg.protocol_fee_bps <= 10000);
+        assert!(result.is_none());
     }
 }

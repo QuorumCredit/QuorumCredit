@@ -9,6 +9,14 @@
 //!   (while no active loan exists).
 //! - **Single-threshold eligibility** — the borrower checks the pool's total
 //!   stake rather than individual vouch records.
+//!
+//! ## Issue #966: Cross-Chain Collateral Pools
+//!
+//! Pool members may also join from another chain via [`join_pool_cross_chain`],
+//! provided they are already bridge-validated for that chain (the same
+//! `BridgeValidated` flag used by cross-chain vouching). Each member's
+//! contributing chain is tracked alongside their stake so pool composition
+//! across chains can be queried with [`get_pool_chain_stake`].
 
 use crate::errors::ContractError;
 use crate::helpers::{require_admin_approval, require_not_paused, require_not_thawing};
@@ -86,10 +94,14 @@ pub fn create_pool(
     let mut stakes: Vec<i128> = Vec::new(&env);
     stakes.push_back(initial_stake);
 
+    let mut chain_ids: Vec<u32> = Vec::new(&env);
+    chain_ids.push_back(0);
+
     let pool = CollateralPool {
         pool_id,
         members,
         stakes,
+        chain_ids,
         token: token.clone(),
         borrower: None,
         active: false,
@@ -113,6 +125,41 @@ pub fn join_pool(
     voucher: Address,
     pool_id: u64,
     stake: i128,
+) -> Result<(), ContractError> {
+    join_pool_on_chain(env, voucher, pool_id, stake, 0)
+}
+
+/// Join an existing pool from another chain, contributing `stake` stroops.
+/// The voucher must already be bridge-validated for `chain_id` (see
+/// [`crate::vouch::set_bridge_validated`]), mirroring how cross-chain vouches
+/// are gated.
+pub fn join_pool_cross_chain(
+    env: Env,
+    voucher: Address,
+    pool_id: u64,
+    stake: i128,
+    chain_id: u32,
+) -> Result<(), ContractError> {
+    if chain_id == 0 {
+        return Err(ContractError::InvalidBridgeChain);
+    }
+    let validated: bool = env
+        .storage()
+        .persistent()
+        .get(&DataKey::BridgeValidated(voucher.clone(), chain_id))
+        .unwrap_or(false);
+    if !validated {
+        return Err(ContractError::PoolChainNotValidated);
+    }
+    join_pool_on_chain(env, voucher, pool_id, stake, chain_id)
+}
+
+fn join_pool_on_chain(
+    env: Env,
+    voucher: Address,
+    pool_id: u64,
+    stake: i128,
+    chain_id: u32,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_thawing(&env)?;
@@ -149,11 +196,12 @@ pub fn join_pool(
 
     pool.members.push_back(voucher.clone());
     pool.stakes.push_back(stake);
+    pool.chain_ids.push_back(chain_id);
     save_pool(&env, &pool);
 
     env.events().publish(
         (symbol_short!("pool"), symbol_short!("join")),
-        (voucher, pool_id, stake),
+        (voucher, pool_id, stake, chain_id),
     );
 
     Ok(())
@@ -181,6 +229,7 @@ pub fn leave_pool(env: Env, voucher: Address, pool_id: u64) -> Result<(), Contra
 
     pool.members.remove(idx);
     pool.stakes.remove(idx);
+    pool.chain_ids.remove(idx);
     save_pool(&env, &pool);
 
     let token_client = crate::helpers::require_allowed_token(&env, &pool.token)?;
@@ -232,6 +281,19 @@ pub fn assign_pool_to_borrower(
 pub fn get_pool_total_stake(env: Env, pool_id: u64) -> Result<i128, ContractError> {
     let pool = load_pool(&env, pool_id)?;
     let total: i128 = pool.stakes.iter().sum();
+    Ok(total)
+}
+
+/// Return the total stake contributed to a pool from a specific chain
+/// (`0` is the native chain), in stroops.
+pub fn get_pool_chain_stake(env: Env, pool_id: u64, chain_id: u32) -> Result<i128, ContractError> {
+    let pool = load_pool(&env, pool_id)?;
+    let mut total: i128 = 0;
+    for i in 0..pool.chain_ids.len() {
+        if pool.chain_ids.get(i).unwrap() == chain_id {
+            total = total.saturating_add(pool.stakes.get(i).unwrap());
+        }
+    }
     Ok(total)
 }
 

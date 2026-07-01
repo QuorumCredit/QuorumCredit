@@ -157,4 +157,58 @@ mod cross_chain_vouch_tests {
         assert_eq!(vouches.len(), 1);
         assert_eq!(vouches.get(0).unwrap().chain_id, None);
     }
+
+    /// Mutation target: min_stake boundary uses `<` not `<=` (exact minimum must pass).
+    #[test]
+    fn test_vouch_at_exact_min_stake_succeeds() {
+        let s = setup();
+        let min_stake: i128 = 500_000;
+        s.client.set_min_stake(
+            &Vec::from_array(&s.env, [s.admin.clone()]),
+            &min_stake,
+        );
+
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &min_stake);
+
+        s.client
+            .vouch(&voucher, &borrower, &min_stake, &s.token, &None);
+
+        let vouches = s.client.get_vouches(&borrower);
+        assert_eq!(vouches.len(), 1);
+        assert_eq!(vouches.get(0).unwrap().stake, min_stake);
+    }
+
+    /// Mutation target: vouch cooldown guard blocks rapid successive vouches.
+    #[test]
+    fn test_vouch_cooldown_blocks_second_vouch() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower1 = Address::generate(&s.env);
+        let borrower2 = Address::generate(&s.env);
+        StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &2_000_000);
+
+        s.client
+            .vouch(&voucher, &borrower1, &1_000_000, &s.token, &None);
+
+        let result = s
+            .client
+            .try_vouch(&voucher, &borrower2, &1_000_000, &s.token, &None);
+        assert_eq!(result, Err(Ok(ContractError::VouchCooldownActive)));
+    }
+
+    /// Mutation target: require_positive_amount rejects zero stake.
+    #[test]
+    fn test_zero_stake_vouch_rejected() {
+        let s = setup();
+        let voucher = Address::generate(&s.env);
+        let borrower = Address::generate(&s.env);
+        StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &1_000_000);
+
+        let result = s
+            .client
+            .try_vouch(&voucher, &borrower, &0, &s.token, &None);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
+    }
 }

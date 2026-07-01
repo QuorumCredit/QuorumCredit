@@ -82,7 +82,7 @@ mod anti_dust_attack_tests {
         
         // Setup vouching
         StellarAssetClient::new(&setup.env, &setup.token).mint(&voucher, &200_000_000);
-        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token);
+        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token, &None);
         setup.env.ledger().with_mut(|l| l.timestamp += 61);
         
         // Attempt to request loan with zero amount
@@ -110,7 +110,7 @@ mod anti_dust_attack_tests {
         let borrower = Address::generate(&setup.env);
         
         StellarAssetClient::new(&setup.env, &setup.token).mint(&voucher, &200_000_000);
-        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token);
+        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token, &None);
         setup.env.ledger().with_mut(|l| l.timestamp += 61);
         
         let result = setup.client.try_request_loan(
@@ -138,7 +138,7 @@ mod anti_dust_attack_tests {
         StellarAssetClient::new(&setup.env, &setup.token).mint(&voucher, &200_000_000);
         StellarAssetClient::new(&setup.env, &setup.token).mint(&borrower, &100_000_000);
         
-        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token);
+        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token, &None);
         setup.env.ledger().with_mut(|l| l.timestamp += 61);
         
         setup.client.request_loan(
@@ -208,14 +208,12 @@ mod anti_dust_attack_tests {
         let borrowers = Vec::from_array(&setup.env, [borrower1, borrower2]);
         let stakes = Vec::from_array(&setup.env, [100_000_000, 0]);
         
-        // Should reject entire batch due to invalid amount
-        let result = setup.client.try_batch_vouch(&voucher, &borrowers, &stakes, &setup.token);
-        
-        if let Err(e) = result {
-            assert_eq!(e.unwrap_err(), ContractError::InvalidAmount);
-        } else {
-            panic!("Expected batch_vouch to reject zero amount");
-        }
+        // With selective rollback: zero amount entry is skipped, valid entry is committed
+        let results = setup.client.batch_vouch(&voucher, &borrowers, &stakes, &setup.token, &None);
+        assert_eq!(results.len(), 2);
+        assert!(results.get(0).unwrap().success);
+        assert!(!results.get(1).unwrap().success);
+        assert!(results.get(1).unwrap().error_code.is_some());
     }
 
     /// Test that decrease_stake cannot go below minimum
@@ -226,7 +224,7 @@ mod anti_dust_attack_tests {
         let borrower = Address::generate(&setup.env);
         
         StellarAssetClient::new(&setup.env, &setup.token).mint(&voucher, &200_000_000);
-        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token);
+        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token, &None);
         
         // Attempt to decrease to below minimum (50 stroops)
         let result = setup.client.try_decrease_stake(&voucher, &borrower, &30, &setup.token);
@@ -247,7 +245,7 @@ mod anti_dust_attack_tests {
         let borrower = Address::generate(&setup.env);
         
         StellarAssetClient::new(&setup.env, &setup.token).mint(&voucher, &200_000_000);
-        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token);
+        setup.client.vouch(&voucher, &borrower, &100_000_000, &setup.token, &None);
         setup.env.ledger().with_mut(|l| l.timestamp += 61);
         
         // Attempt loan with zero threshold

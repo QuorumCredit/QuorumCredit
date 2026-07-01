@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useDispatch } from "react-redux";
-import { io, Socket } from "socket.io-client";
+import io from "socket.io-client";
 import { AppDispatch } from "./store";
 import { setConnected, upsertLoan, setLoans, setReputation } from "./loanSlice";
 import type { LoanRecord, ReputationInfo } from "./loanSlice";
@@ -25,7 +25,7 @@ export interface UseLoanSocketOptions {
  */
 export function useLoanSocket({ url, borrower, apiKey }: UseLoanSocketOptions): void {
   const dispatch = useDispatch<AppDispatch>();
-  const socketRef = useRef<Socket | null>(null);
+  const socketRef = useRef<ReturnType<typeof io> | null>(null);
 
   useEffect(() => {
     const socket = io(url, {

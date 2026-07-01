@@ -7,7 +7,8 @@
 /// - Prevents deadline extension
 
 use soroban_sdk::{panic_with_error, Env, Address};
-use crate::types::{LoanRecord, ContractError, DataKey};
+use crate::errors::ContractError;
+use crate::types::{LoanRecord, DataKey};
 use crate::helpers::require_allowed_token;
 
 const DAYS_IN_YEAR: u64 = 365;

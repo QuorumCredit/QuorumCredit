@@ -1,5 +1,5 @@
 # QuorumCredit — Proof of Trust (PoT) Microlending
-
+................
 > Trustless microlending powered by your social trust graph — built on Stellar Soroban.
 
 Platform: Stellar Soroban | Language: Rust | License: MIT
