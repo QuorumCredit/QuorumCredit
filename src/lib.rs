@@ -23,6 +23,7 @@ pub mod partial_repayment;
 pub mod periodic_payments;
 pub mod rbac;
 pub mod reputation;
+pub mod subordination;
 pub mod syndication;
 pub mod types;
 pub mod versioning;

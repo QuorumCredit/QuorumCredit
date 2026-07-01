@@ -217,7 +217,12 @@ fn validate_vouch<'a>(
     }
 
     if cfg.min_stake > 0 && stake < cfg.min_stake {
-        return Err(ContractError::MinStakeNotMet);
+        // Apply dynamic min stake: reduce based on borrower's credit tier.
+        let effective_min_stake =
+            crate::credit_score::apply_tier_rewards_to_min_stake(env, borrower, cfg.min_stake);
+        if stake < effective_min_stake {
+            return Err(ContractError::MinStakeNotMet);
+        }
     }
 
     if cfg.vouch_cooldown_secs > 0 {
