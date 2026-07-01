@@ -24,6 +24,7 @@ app.use(limiter.middleware());
 ## Behaviour
 
 - If the request includes an `x-api-key` header, that key is used as the rate limit identifier.
+- If the request also includes an `x-chain-id` header, rate limiting is scoped by that chain ID too.
 - Otherwise, the client IP (`req.ip`) is used.
 - Exceeded requests receive HTTP **429** with a `Retry-After` header (seconds until window resets).
 
@@ -41,4 +42,7 @@ app.use((req, res, next) => {
   const mw = req.headers['x-api-key'] ? keyLimiter.middleware() : ipLimiter.middleware();
   mw(req, res, next);
 });
+
+// For bridge traffic, include x-chain-id to isolate limits per chain.
+// Example: x-chain-id: ethereum-mainnet
 ```

@@ -160,9 +160,18 @@ Logs are output in JSON format with the following fields:
 1. **JWT Secret**: Use a strong, randomly generated secret in production
 2. **HTTPS**: Always use HTTPS in production
 3. **Rate Limiting**: Consider implementing rate limiting for production use
-4. **Webhook Validation**: Validate webhook signatures in production
-5. **Log Retention**: Implement log rotation and retention policies
+4. **Chain-aware rate limiting**: Use `RATE_LIMIT_CHAIN_OVERRIDES` to apply chain-scoped limits for bridge traffic.
+5. **Webhook Validation**: Validate webhook signatures in production
+6. **Log Retention**: Implement log rotation and retention policies
+### Chain-aware Rate Limiting
 
+Set `RATE_LIMIT_CHAIN_OVERRIDES` with comma-separated chain-specific override rules using the format:
+
+```bash
+RATE_LIMIT_CHAIN_OVERRIDES="chainA|/bridge|5|2,chainB|/bridge|10|4"
+```
+
+Each override entry is `chain_id|endpoint|requests_per_minute|burst`.
 ## Future Enhancements
 
 - Database persistence for logs and webhooks

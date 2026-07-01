@@ -54,11 +54,12 @@ pub struct EndpointLimit {
 pub struct RateLimitConfig {
     pub tier: Tier,
     pub endpoint_overrides: HashMap<String, EndpointLimit>,
+    pub per_chain_overrides: HashMap<String, HashMap<String, EndpointLimit>>,
 }
 
 impl RateLimitConfig {
     pub fn new(tier: Tier) -> Self {
-        Self { tier, endpoint_overrides: HashMap::new() }
+        Self { tier, endpoint_overrides: HashMap::new(), per_chain_overrides: HashMap::new() }
     }
 
     pub fn with_endpoint_override(mut self, path: &str, limit: EndpointLimit) -> Self {
@@ -73,6 +74,26 @@ impl RateLimitConfig {
         } else {
             (self.tier.requests_per_minute(), self.tier.burst())
         }
+    }
+
+    /// Returns (requests_per_minute, burst) for the given endpoint path and optional chain id.
+    /// Chain-specific overrides take precedence over global endpoint overrides.
+    pub fn limits_for_chain(&self, path: &str, chain_id: Option<&str>) -> (u64, u64) {
+        if let Some(chain) = chain_id {
+            if let Some(chain_map) = self.per_chain_overrides.get(chain) {
+                if let Some(ov) = chain_map.get(path) {
+                    return (ov.requests_per_minute, ov.burst);
+                }
+            }
+        }
+
+        self.limits_for(path)
+    }
+
+    pub fn with_per_chain_override(mut self, chain: &str, path: &str, limit: EndpointLimit) -> Self {
+        let entry = self.per_chain_overrides.entry(chain.to_string()).or_insert_with(HashMap::new);
+        entry.insert(path.to_string(), limit);
+        self
     }
 }
 
@@ -260,8 +281,16 @@ impl RateLimiter {
     }
 
     pub async fn check_rate_limit(&self, api_key: &str, endpoint: &str) -> RateLimitResult {
-        let (rpm, burst) = self.config.limits_for(endpoint);
-        let key = format!("rl:{}:{}", api_key, endpoint);
+        self.check_rate_limit_with_chain(api_key, endpoint, None).await
+    }
+
+    /// Chain-aware rate limit check. Pass `Some(chain_id)` to scope limits per-chain.
+    pub async fn check_rate_limit_with_chain(&self, api_key: &str, endpoint: &str, chain_id: Option<&str>) -> RateLimitResult {
+        let (rpm, burst) = self.config.limits_for_chain(endpoint, chain_id);
+        let key = match chain_id {
+            Some(chain) => format!("rl:{}:{}:{}", api_key, endpoint, chain),
+            None => format!("rl:{}:{}", api_key, endpoint),
+        };
 
         match self.store.check_token_bucket(&key, burst, rpm).await {
             Ok(result) => result,
@@ -297,7 +326,13 @@ pub async fn rate_limit_middleware(
 
     let endpoint = req.uri().path().to_string();
 
-    let result = rl.0.check_rate_limit(&api_key, &endpoint).await;
+    // Optional chain scoping header. If present, rate limits are applied per-chain.
+    let chain_id = req
+        .headers()
+        .get("x-chain-id")
+        .and_then(|v| v.to_str().ok());
+
+    let result = rl.0.check_rate_limit_with_chain(&api_key, &endpoint, chain_id).await;
 
     if !result.allowed {
         let mut resp = (StatusCode::TOO_MANY_REQUESTS, "Too Many Requests").into_response();
@@ -534,5 +569,35 @@ mod tests {
         }
         let r = rl.check_rate_limit("pro_user2", "/api").await;
         assert!(!r.allowed, "51st rapid request should be denied (pro burst=50)");
+    }
+
+    // --- Per-chain overrides ---------------------------------------------
+
+    #[tokio::test]
+    async fn test_per_chain_override_applies() {
+        let config = free_config().with_per_chain_override(
+            "chainA",
+            "/bridge",
+            EndpointLimit { requests_per_minute: 5, burst: 2 },
+        );
+        let rl = limiter(config);
+
+        // Two rapid requests on chainA should succeed
+        let r1 = rl.check_rate_limit_with_chain("key_c", "/bridge", Some("chainA")).await;
+        assert!(r1.allowed);
+        let r2 = rl.check_rate_limit_with_chain("key_c", "/bridge", Some("chainA")).await;
+        assert!(r2.allowed);
+
+        // Third rapid request on chainA should be denied (burst=2)
+        let r3 = rl.check_rate_limit_with_chain("key_c", "/bridge", Some("chainA")).await;
+        assert!(!r3.allowed, "3rd rapid request on chainA should be denied");
+
+        // Requests on a different chain should be independent
+        let r_other = rl.check_rate_limit_with_chain("key_c", "/bridge", Some("chainB")).await;
+        assert!(r_other.allowed, "chainB bucket should be independent of chainA");
+
+        // Requests without a chain header should use global limits (free tier burst=10)
+        let r_global = rl.check_rate_limit("key_c", "/bridge").await;
+        assert!(r_global.allowed, "global bucket should be independent and allow requests");
     }
 }

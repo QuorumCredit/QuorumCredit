@@ -360,7 +360,7 @@ impl LoanImpactReport {
                 defaulted_loans: defaulted,
                 success_rate,
                 total_value,
-                average_loan_amount,
+                average_loan_amount: avg_loan_amount,
                 average_repayment_days: avg_repayment_days,
             });
         }

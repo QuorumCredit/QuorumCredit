@@ -14,16 +14,17 @@ class RateLimiter {
   }
 
   /** Returns true if the key is within the rate limit, false if exceeded. */
-  check(key) {
+  check(key, chainId) {
     const now = Date.now();
     const cutoff = now - this.windowMs;
-    const timestamps = (this._store.get(key) || []).filter(t => t > cutoff);
+    const bucketKey = chainId ? `${key}:${chainId}` : key;
+    const timestamps = (this._store.get(bucketKey) || []).filter(t => t > cutoff);
     if (timestamps.length >= this.maxRequests) {
-      this._store.set(key, timestamps);
+      this._store.set(bucketKey, timestamps);
       return false;
     }
     timestamps.push(now);
-    this._store.set(key, timestamps);
+    this._store.set(bucketKey, timestamps);
     return true;
   }
 
@@ -34,7 +35,8 @@ class RateLimiter {
   middleware() {
     return (req, res, next) => {
       const key = req.headers['x-api-key'] || req.ip || req.socket.remoteAddress;
-      if (!this.check(key)) {
+      const chainId = req.headers['x-chain-id'];
+      if (!this.check(key, chainId)) {
         res.setHeader('Retry-After', Math.ceil(this.windowMs / 1000));
         return res.status(429).json({ error: 'Too Many Requests' });
       }

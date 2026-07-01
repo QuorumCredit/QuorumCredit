@@ -15,6 +15,7 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::trace::TraceLayer;
@@ -23,7 +24,7 @@ use tracing_subscriber;
 use auth::JwtAuth;
 use logging::RequestLogger;
 use rate_limiter::{
-    InMemoryStore, RateLimitConfig, RateLimiter, RateLimiterState, Tier,
+    EndpointLimit, InMemoryStore, RateLimitConfig, RateLimiter, RateLimiterState, Tier,
     rate_limit_middleware,
 };
 use webhook::{WebhookManager, WebhookEvent};
@@ -296,6 +297,32 @@ async fn ready_check(State(state): State<AppState>) -> Result<Json<serde_json::V
     Ok(Json(resp))
 }
 
+fn parse_chain_rate_limit_overrides(
+    value: &str,
+) -> HashMap<String, HashMap<String, EndpointLimit>> {
+    let mut overrides: HashMap<String, HashMap<String, EndpointLimit>> = HashMap::new();
+
+    for entry in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let parts: Vec<&str> = entry.split('|').map(str::trim).collect();
+        if parts.len() != 4 {
+            continue;
+        }
+        let chain = parts[0];
+        let endpoint = parts[1];
+        if let (Ok(rpm), Ok(burst)) = (parts[2].parse::<u64>(), parts[3].parse::<u64>()) {
+            overrides
+                .entry(chain.to_string())
+                .or_default()
+                .insert(
+                    endpoint.to_string(),
+                    EndpointLimit { requests_per_minute: rpm, burst },
+                );
+        }
+    }
+
+    overrides
+}
+
 pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     // try_init instead of init so multiple test invocations don't panic when
     // the subscriber is already registered in the same process.
@@ -335,7 +362,17 @@ pub async fn run_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(InMemoryStore::new())
         };
 
-    let rl = RateLimiterState(Arc::new(RateLimiter::new(RateLimitConfig::new(tier), rl_store)));
+    let mut rate_limit_config = RateLimitConfig::new(tier);
+    if let Ok(overrides_var) = std::env::var("RATE_LIMIT_CHAIN_OVERRIDES") {
+        let chain_overrides = parse_chain_rate_limit_overrides(&overrides_var);
+        for (chain, endpoint_map) in chain_overrides {
+            for (endpoint, limit) in endpoint_map {
+                rate_limit_config = rate_limit_config.with_per_chain_override(&chain, &endpoint, limit);
+            }
+        }
+    }
+
+    let rl = RateLimiterState(Arc::new(RateLimiter::new(rate_limit_config, rl_store)));
 
     let state = AppState {
         jwt_auth: Arc::new(JwtAuth::new(jwt_secret)),
@@ -402,5 +439,15 @@ mod tests {
         };
 
         assert!(Arc::strong_count(&state.jwt_auth) >= 1);
+    }
+
+    #[test]
+    fn test_parse_chain_rate_limit_overrides() {
+        let parsed = parse_chain_rate_limit_overrides("chainA|/bridge|5|2,chainB|/bridge|10|4");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed["chainA"]["/bridge"].requests_per_minute, 5);
+        assert_eq!(parsed["chainA"]["/bridge"].burst, 2);
+        assert_eq!(parsed["chainB"]["/bridge"].requests_per_minute, 10);
+        assert_eq!(parsed["chainB"]["/bridge"].burst, 4);
     }
 }
