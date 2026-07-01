@@ -193,6 +193,10 @@ pub fn request_loan(
         panic_with_error!(&env, ContractError::InsufficientFunds);
     }
 
+    if amount > total_stake * (cfg.max_loan_to_collateral_ratio as i128) / 10_000 {
+        return Err(ContractError::LoanExceedsMaxRatio);
+    }
+
     let now = env.ledger().timestamp();
     let loan_id = next_loan_id(&env);
 

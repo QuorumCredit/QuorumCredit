@@ -46,6 +46,8 @@ pub const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
 pub const PAYMENT_GRACE_PERIOD: u64 = 3 * 24 * 60 * 60;
 /// Default maximum loan-to-stake ratio (150 = 150% — loan ≤ 1.5× total staked).
 pub const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
+/// Default maximum loan-to-collateral ratio (50_000 = 50% — loan ≤ 0.5× total stake).
+pub const DEFAULT_MAX_LOAN_TO_COLLATERAL_RATIO: u32 = 50_000;
 /// Minimum elapsed time between vouch calls from the same address, in seconds (24 hours).
 pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 /// Default maximum number of vouchers that may back a single borrower.
@@ -1323,6 +1325,7 @@ pub struct Config {
     /// Maximum ratio of loan amount to total staked collateral, expressed as a percentage
     /// (e.g. 150 means loan ≤ 1.5 × total stake in stroops).
     pub max_loan_to_stake_ratio: u32,
+    pub max_loan_to_collateral_ratio: u32,
     /// Grace period after loan deadline before the loan can be slashed, in seconds.
     pub grace_period: u64,
     /// Minimum age of a vouch before it can be used for loan eligibility, in seconds (default 24 hours).

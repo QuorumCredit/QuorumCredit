@@ -84,6 +84,8 @@ mod slash_vote_cancel_test;
 mod dynamic_quorum_adjustment_test;
 #[cfg(test)]
 mod conditional_vote_delegation_test;
+#[cfg(test)]
+mod ratio_enforcement_test;
 
 #[cfg(test)]
 mod risk_assessment_voting_test;
@@ -204,6 +206,7 @@ impl QuorumCreditContract {
                 min_loan_amount: DEFAULT_MIN_LOAN_AMOUNT,
                 loan_duration: DEFAULT_LOAN_DURATION,
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
+                max_loan_to_collateral_ratio: DEFAULT_MAX_LOAN_TO_COLLATERAL_RATIO,
                 grace_period: 0,
                 min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
                 prepayment_penalty_bps: 0,
