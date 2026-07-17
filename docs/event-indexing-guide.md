@@ -8,6 +8,8 @@ Guide for indexing and querying QuorumCredit contract events off-chain.
 
 QuorumCredit emits Soroban contract events for every state-changing operation. Off-chain systems (dashboards, notification services, analytics) can subscribe to these events via the Stellar RPC or Horizon API to track protocol state without querying contract storage directly.
 
+A **persistent indexer** lives at `tools/indexer/` — a Rust binary that polls Soroban RPC, stores events in SQLite, detects ledger reorgs, handles Soroban's bounded event-retention window, and exports Prometheus metrics over HTTP.
+
 ---
 
 ## Event Structure
@@ -150,157 +152,114 @@ Emitted when the contract is paused or unpaused.
 
 ---
 
-## Querying Events via Stellar RPC
+## Indexer: `tools/indexer/`
 
-### Using `getEvents` RPC Method
+A production-grade Rust indexer that durably tracks processed ledgers, survives restarts, detects and recovers from Soroban network reorgs, and handles Soroban RPC's bounded event-retention window.
 
-```typescript
-import { SorobanRpc } from '@stellar/stellar-sdk';
+### Architecture
 
-const server = new SorobanRpc.Server('https://soroban-testnet.stellar.org');
-
-const CONTRACT_ID = 'C...'; // your deployed contract address
-
-// Fetch all vouch/create events from ledger 1000000 onwards
-const response = await server.getEvents({
-  startLedger: 1000000,
-  filters: [
-    {
-      type: 'contract',
-      contractIds: [CONTRACT_ID],
-      topics: [
-        ['AAAADwAAAAV2b3VjaA==', 'AAAADwAAAAZjcmVhdGU='], // ["vouch", "create"] base64-encoded
-      ],
-    },
-  ],
-  limit: 100,
-});
-
-for (const event of response.events) {
-  console.log('txHash:', event.txHash);
-  console.log('ledger:', event.ledger);
-  // Decode value with XDR
-  const value = event.value.value();
-  console.log('payload:', value);
-}
+```
+┌──────────────────────────┐     ┌──────────────────────────┐
+│   Soroban RPC Client     │◄───►│   Core Indexer Loop      │
+│   (src/rpc.rs)           │     │   (src/indexer.rs)       │
+└──────────────────────────┘     └───────┬──────────────────┘
+                                         │
+                          ┌──────────────┼──────────────┐
+                          │              │              │
+                   ┌──────▼─────┐ ┌──────▼──────┐ ┌─────▼──────┐
+                   │   SQLite   │ │  Prometheus │ │  /metrics  │
+                   │  Store     │ │  Metrics    │ │  HTTP      │
+                   │ (src/db.rs)│ │ (src/metrics)│ │  Server   │
+                   └────────────┘ └─────────────┘ └────────────┘
 ```
 
-### Using Horizon API
+### Database Schema (SQLite)
 
-Horizon does not expose Soroban contract events directly. Use the Soroban RPC `getEvents` endpoint instead.
+- **`cursor`** — Key-value store for `last_ledger` (the durable cursor). Survives process restarts so the indexer always resumes from where it left off.
+- **`events`** — Every indexed event with typed `category`, `action` columns and a `value_json` JSON payload. A unique index on `(ledger, tx_hash, category, action)` provides deduplication.
+- **`ledger_hashes`** — Tracks `(sequence, hash)` pairs for reorg detection. On each poll the indexer compares the RPC's reported hash against the stored hash for the same sequence.
+- **`reorg_audit`** — Append-only log of every reorg event, recording the ledger, expected hash, and actual hash.
+- **`vouch_events` / `loan_events`** — SQL views that extract typed columns from `events.value_json` for ergonomic querying.
 
----
+### Crash Safety
 
-## Example Indexer Implementation
+`last_ledger` is written to the `cursor` table inside each poll cycle. SQLite uses WAL mode with `synchronous = NORMAL`. After an abrupt crash, the indexer reads `last_ledger` from the durable store on startup and resumes from that point. Metrics are rebuilt from the full event history.
 
-The following TypeScript indexer polls for new events and stores them in a local database.
+### Event-Retention Window Handling
 
-```typescript
-import { SorobanRpc, xdr, scValToNative } from '@stellar/stellar-sdk';
+Soroban RPC only retains events for ~17 280 ledgers (~24 h). If the indexer has been offline longer than the configured `--retention-window`, a gap is detected on startup. The indexer then enters **backfill mode**: it walks forward from the stored cursor in configurable chunk sizes (`--backfill-chunk-size`), re-indexing any events the RPC still serves. Events that have fallen out of the retention window cannot be recovered — operators must provide a deploy ledger or snapshot to backfill from.
 
-const RPC_URL = 'https://soroban-testnet.stellar.org';
-const CONTRACT_ID = 'C...';
-const POLL_INTERVAL_MS = 5000;
+### Ledger Reorg Handling
 
-const server = new SorobanRpc.Server(RPC_URL);
+On each poll, the indexer calls `getLatestLedger()` and stores the returned `(sequence, hash)`. If a subsequent call returns a different hash for a sequence we've already recorded, a reorg is detected:
 
-interface VouchEvent {
-  action: string;
-  voucher: string;
-  borrower: string;
-  stakeStroops: bigint;
-  token: string;
-  ledger: number;
-  txHash: string;
-}
+1. All events at `>= reorg_sequence` are deleted from the store.
+2. The cursor is rewound to `reorg_sequence - 1`.
+3. An entry is written to the `reorg_audit` table.
+4. In-memory metrics are rebuilt from the surviving events.
+5. The next poll will re-fetch events from the rewound position.
 
-interface LoanEvent {
-  action: string;
-  borrower: string;
-  amountStroops: bigint;
-  ledger: number;
-  txHash: string;
-}
+### Building and Running
 
-let lastLedger = 0; // persist this across restarts
+```bash
+# Build the indexer
+cargo build -p quorum-credit-indexer --release
 
-async function fetchEvents(startLedger: number): Promise<void> {
-  const response = await server.getEvents({
-    startLedger,
-    filters: [
-      {
-        type: 'contract',
-        contractIds: [CONTRACT_ID],
-      },
-    ],
-    limit: 200,
-  });
+# Run with defaults (testnet)
+cargo run -p quorum-credit-indexer --release -- \
+  --contract-id "C..." \
+  --rpc-url "https://soroban-testnet.stellar.org" \
+  --db-path "/data/indexer.db" \
+  --metrics-port 9090
 
-  for (const event of response.events) {
-    const [categoryVal, actionVal] = event.topic;
-    const category = scValToNative(categoryVal) as string;
-    const action = scValToNative(actionVal) as string;
-    const payload = scValToNative(event.value);
-
-    if (category === 'vouch') {
-      const [voucher, borrower, stake, token] = payload as [string, string, bigint, string];
-      const vouchEvent: VouchEvent = {
-        action,
-        voucher,
-        borrower,
-        stakeStroops: stake,
-        token,
-        ledger: event.ledger,
-        txHash: event.txHash,
-      };
-      await storeVouchEvent(vouchEvent);
-    } else if (category === 'loan') {
-      const [borrower, amount] = payload as [string, bigint];
-      const loanEvent: LoanEvent = {
-        action,
-        borrower,
-        amountStroops: amount,
-        ledger: event.ledger,
-        txHash: event.txHash,
-      };
-      await storeLoanEvent(loanEvent);
-    }
-
-    lastLedger = Math.max(lastLedger, event.ledger);
-  }
-}
-
-async function storeVouchEvent(event: VouchEvent): Promise<void> {
-  // Insert into your database here
-  console.log('[vouch]', event);
-}
-
-async function storeLoanEvent(event: LoanEvent): Promise<void> {
-  // Insert into your database here
-  console.log('[loan]', event);
-}
-
-async function runIndexer(): Promise<void> {
-  const { sequence } = await server.getLatestLedger();
-  if (lastLedger === 0) lastLedger = sequence - 1000; // start from ~1000 ledgers back
-
-  setInterval(async () => {
-    try {
-      await fetchEvents(lastLedger + 1);
-    } catch (err) {
-      console.error('Indexer error:', err);
-    }
-  }, POLL_INTERVAL_MS);
-}
-
-runIndexer();
+# Full options
+cargo run -p quorum-credit-indexer --release -- --help
 ```
+
+### CLI Options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--rpc-url` | `https://soroban-testnet.stellar.org` | Soroban RPC endpoint |
+| `--contract-id` | (required) | Deployed QuorumCredit contract ID |
+| `--db-path` | `indexer.db` | Path to SQLite database file |
+| `--metrics-port` | `9090` | Port for Prometheus `/metrics` endpoint |
+| `--poll-interval-ms` | `5000` | Milliseconds between poll cycles |
+| `--retention-window` | `15000` | Ledger gap threshold that triggers backfill |
+| `--deploy-ledger` | (none) | Deploy ledger sequence (for fresh starts) |
+
+### Metrics (served at `/metrics`)
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `qc_indexer_ledger_height` | Gauge | Last processed ledger sequence |
+| `qc_indexer_events_total` | Counter | Events indexed, by `category` / `action` |
+| `qc_indexer_gap_detected_total` | Counter | Retention-window gaps detected |
+| `qc_indexer_reorgs_detected_total` | Counter | Ledger reorgs detected |
+| `qc_indexer_errors_total` | Counter | Indexer-level errors by code |
+| `qc_indexer_backfill_events_total` | Counter | Events indexed during backfill |
+| `qc_loan_volume_total` | Counter | Total stroops loaned, by `token` |
+| `qc_loan_count_total` | Counter | Total loans created |
+| `qc_active_loans` | Gauge | Currently active (unrepaid) loans |
+| `qc_slash_events_total` | Counter | Total slash events |
+| `qc_slash_amount_total` | Counter | Total stroops slashed, by `token` |
+| `qc_vouch_count` | Gauge | Currently active vouches |
+
+### Running Tests
+
+```bash
+cargo test -p quorum-credit-indexer
+```
+
+The integration tests cover:
+- **Restart mid-backfill**: Indexer processes events, is dropped (simulated crash), restarts from the persisted cursor, and catches up.
+- **Reorg handling**: A ledger hash changes between polls; the indexer rolls back affected events and re-indexes.
+- **Gap detection**: A gap exceeding `--retention-window` triggers automatic backfill.
+- **Event deduplication**: Repeated polls return the same events; only one copy is stored.
 
 ---
 
 ## Querying Indexed Events
-
-Once events are stored in a database, you can query them to reconstruct protocol state.
 
 ### Example: Get all active vouches for a borrower
 
@@ -324,27 +283,10 @@ ORDER BY ledger ASC;
 
 ### Example: Get all vouchers who backed a specific borrower
 
-```typescript
-async function getVouchersForBorrower(borrower: string): Promise<string[]> {
-  const response = await server.getEvents({
-    startLedger: DEPLOY_LEDGER,
-    filters: [
-      {
-        type: 'contract',
-        contractIds: [CONTRACT_ID],
-        topics: [['vouch'], ['create']],
-      },
-    ],
-    limit: 500,
-  });
-
-  const vouchers = new Set<string>();
-  for (const event of response.events) {
-    const [voucher, eventBorrower] = scValToNative(event.value) as [string, string, bigint, string];
-    if (eventBorrower === borrower) vouchers.add(voucher);
-  }
-  return [...vouchers];
-}
+```sql
+SELECT DISTINCT voucher
+FROM vouch_events
+WHERE borrower = $1 AND action = 'create';
 ```
 
 ---
@@ -363,6 +305,7 @@ const xlmToStroops = (xlm: number): bigint => BigInt(Math.round(xlm * 10_000_000
 
 ## Notes
 
-- Events are only available for a limited number of ledgers via the RPC `getEvents` endpoint (typically ~17,280 ledgers / ~24 hours on testnet). For long-term storage, run a persistent indexer.
-- The `startLedger` parameter in `getEvents` must be within the node's event retention window. Store `lastLedger` persistently to avoid gaps.
+- Events are only available for a limited number of ledgers via the RPC `getEvents` endpoint (typically ~17 280 ledgers / ~24 hours on testnet). The indexer handles this with its backfill mechanism.
+- `last_ledger` is stored persistently in SQLite — the indexer resumes correctly after restarts.
 - On mainnet, use `https://rpc.mainnet.stellar.org` as the RPC URL.
+- For the full indexer implementation, see `tools/indexer/`.

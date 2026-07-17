@@ -2,11 +2,15 @@
 
 Comprehensive monitoring for QuorumCredit protocol operations.
 
-## Prometheus Metrics
+## Prerequisites
 
-### Contract Metrics
+This guide assumes the **QuorumCredit indexer** (`tools/indexer/`) is deployed and serving Prometheus metrics at `/metrics`. The indexer derives all metrics from actual on-chain events — no fabricated contract-state calls.
 
-Export metrics from contract events via Soroban RPC:
+See [tools/indexer/README.md](../tools/indexer/src/main.rs) or `cargo run -p quorum-credit-indexer -- --help` for deployment instructions.
+
+## Prometheus Configuration
+
+### Scrape the indexer's `/metrics` endpoint
 
 ```yaml
 # prometheus.yml
@@ -15,63 +19,36 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'quorum-credit'
+  - job_name: 'quorum-credit-indexer'
     static_configs:
       - targets: ['localhost:9090']
     metrics_path: '/metrics'
 ```
 
-### Key Metrics to Track
+### Available Metrics
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `qc_loan_volume_total` | Counter | Total loan amount disbursed (stroops) |
-| `qc_loan_count_total` | Counter | Total loans created |
-| `qc_active_loans` | Gauge | Current active loans |
-| `qc_yield_distributed_total` | Counter | Total yield paid to vouchers (stroops) |
-| `qc_slash_events_total` | Counter | Total slash events |
-| `qc_slash_amount_total` | Counter | Total amount slashed (stroops) |
-| `qc_vouch_count` | Gauge | Total active vouches |
-| `qc_yield_reserve_balance` | Gauge | Current yield reserve (stroops) |
-| `qc_contract_errors_total` | Counter | Errors by code |
-| `qc_transaction_latency_ms` | Histogram | Transaction confirmation time |
+The indexer exposes the following metrics sourced entirely from the Soroban event stream — no `get_contract_data` calls:
 
-### Metric Collection Script
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `qc_indexer_ledger_height` | Gauge | — | Last processed ledger sequence |
+| `qc_indexer_events_total` | Counter | `category`, `action` | Events indexed |
+| `qc_indexer_gap_detected_total` | Counter | — | Retention-window gaps detected |
+| `qc_indexer_reorgs_detected_total` | Counter | — | Ledger reorgs detected |
+| `qc_indexer_errors_total` | Counter | `error_code` | Indexer-level errors |
+| `qc_indexer_backfill_events_total` | Counter | — | Events indexed during backfill |
+| `qc_loan_volume_total` | Counter | `token` | Total stroops loaned |
+| `qc_loan_count_total` | Counter | — | Total loans created |
+| `qc_active_loans` | Gauge | — | Currently active (unrepaid) loans |
+| `qc_slash_events_total` | Counter | — | Total slash events |
+| `qc_slash_amount_total` | Counter | `token` | Total stroops slashed |
+| `qc_vouch_count` | Gauge | — | Currently active vouches |
 
-```python
-import time
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
-from stellar_sdk import SorobanServer
+### Metric Semantics
 
-# Initialize metrics
-loan_volume = Counter('qc_loan_volume_total', 'Total loan volume', ['token'])
-loan_count = Counter('qc_loan_count_total', 'Total loans created')
-active_loans = Gauge('qc_active_loans', 'Active loans')
-yield_distributed = Counter('qc_yield_distributed_total', 'Yield distributed', ['token'])
-slash_events = Counter('qc_slash_events_total', 'Slash events')
-slash_amount = Counter('qc_slash_amount_total', 'Amount slashed', ['token'])
-vouch_count = Gauge('qc_vouch_count', 'Active vouches')
-yield_reserve = Gauge('qc_yield_reserve_balance', 'Yield reserve balance', ['token'])
-contract_errors = Counter('qc_contract_errors_total', 'Contract errors', ['error_code'])
-tx_latency = Histogram('qc_transaction_latency_ms', 'Transaction latency')
-
-def collect_metrics(contract_id: str, token_address: str):
-    server = SorobanServer("https://soroban-testnet.stellar.org")
-    
-    # Query contract state
-    config = server.get_contract_data(contract_id, 'Config')
-    
-    # Update gauges
-    active_loans.set(config.get('active_loans', 0))
-    vouch_count.set(config.get('vouch_count', 0))
-    yield_reserve.set(config.get('yield_reserve', 0), {'token': token_address})
-
-if __name__ == '__main__':
-    start_http_server(8000)
-    while True:
-        collect_metrics(CONTRACT_ID, TOKEN_ADDRESS)
-        time.sleep(60)
-```
+- **Counters** (`_total` suffix) are monotonic — they persist across indexer restarts via rebuild from the event store.
+- **Gauges** (`qc_active_loans`, `qc_vouch_count`, `qc_indexer_ledger_height`) are set from the event stream and reset on restart.
+- **Labels** (`token`, `category`, `action`) are fixed at metric creation time. The indexer records events with the appropriate label combinations as they arrive.
 
 ## Grafana Dashboards
 
@@ -99,18 +76,18 @@ if __name__ == '__main__':
         ]
       },
       {
-        "title": "Yield Distributed (XLM)",
+        "title": "Active Vouches",
         "targets": [
           {
-            "expr": "qc_yield_distributed_total / 10000000"
+            "expr": "qc_vouch_count"
           }
         ]
       },
       {
-        "title": "Yield Reserve Balance (XLM)",
+        "title": "Indexer Ledger Height",
         "targets": [
           {
-            "expr": "qc_yield_reserve_balance / 10000000"
+            "expr": "qc_indexer_ledger_height"
           }
         ]
       }
@@ -146,15 +123,43 @@ if __name__ == '__main__':
         "title": "Error Rate (5m)",
         "targets": [
           {
-            "expr": "rate(qc_contract_errors_total[5m])"
+            "expr": "rate(qc_indexer_errors_total[5m])"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Dashboard 3: Indexer Health
+
+```json
+{
+  "dashboard": {
+    "title": "Indexer Health",
+    "panels": [
+      {
+        "title": "Events per Minute",
+        "targets": [
+          {
+            "expr": "rate(qc_indexer_events_total[1m])"
           }
         ]
       },
       {
-        "title": "Yield Reserve Health",
+        "title": "Reorgs Detected",
         "targets": [
           {
-            "expr": "qc_yield_reserve_balance / (qc_loan_volume_total * 1.02)"
+            "expr": "rate(qc_indexer_reorgs_detected_total[1h])"
+          }
+        ]
+      },
+      {
+        "title": "Backfill Events",
+        "targets": [
+          {
+            "expr": "rate(qc_indexer_backfill_events_total[1h])"
           }
         ]
       }
@@ -173,21 +178,37 @@ groups:
   - name: quorum_credit
     interval: 30s
     rules:
-      # Yield reserve depletion
-      - alert: YieldReserveLow
-        expr: qc_yield_reserve_balance < (qc_loan_volume_total * 1.02)
-        for: 5m
+      # Indexer down
+      - alert: IndexerDown
+        expr: up{job="quorum-credit-indexer"} == 0
+        for: 1m
         annotations:
-          summary: "Yield reserve below required level"
-          description: "Reserve: {{ $value | humanize }} stroops"
+          summary: "QuorumCredit indexer is down"
+          description: "No metrics received for 1 minute"
 
-      # High error rate
-      - alert: HighErrorRate
-        expr: rate(qc_contract_errors_total[5m]) > 0.1
+      # Ledger height stalled
+      - alert: IndexerStalled
+        expr: qc_indexer_ledger_height == 0
         for: 5m
         annotations:
-          summary: "High contract error rate"
+          summary: "Indexer has not processed any ledgers"
+          description: "Ledger height is 0 for 5 minutes"
+
+      # Indexer errors
+      - alert: IndexerErrors
+        expr: rate(qc_indexer_errors_total[5m]) > 0.1
+        for: 5m
+        annotations:
+          summary: "Indexer error rate elevated"
           description: "Error rate: {{ $value | humanizePercentage }}"
+
+      # Reorg detected
+      - alert: LedgerReorgDetected
+        expr: increase(qc_indexer_reorgs_detected_total[5m]) > 0
+        for: 1m
+        annotations:
+          summary: "Soroban ledger reorg detected"
+          description: "Indexer rolled back and re-indexed affected events"
 
       # Excessive slashing
       - alert: ExcessiveSlashing
@@ -197,111 +218,79 @@ groups:
           summary: "Excessive slash events in 1 hour"
           description: "Slash events: {{ $value }}"
 
-      # Transaction latency
-      - alert: HighTransactionLatency
-        expr: histogram_quantile(0.95, qc_transaction_latency_ms) > 5000
-        for: 10m
+      # High active loan ratio vs total
+      - alert: HighLoanUtilization
+        expr: qc_active_loans > (qc_loan_count_total - qc_active_loans) * 5
+        for: 5m
         annotations:
-          summary: "High transaction latency"
-          description: "P95 latency: {{ $value }}ms"
-
-      # Contract paused
-      - alert: ContractPaused
-        expr: qc_contract_paused == 1
-        for: 1m
-        annotations:
-          summary: "QuorumCredit contract is paused"
-          description: "Contract paused at {{ $timestamp }}"
+          summary: "Unusually high active-to-repaid loan ratio"
+          description: "Active: {{ $value }} loans"
 ```
 
 ## Runbook for Common Alerts
 
-### Alert: YieldReserveLow
+### Alert: IndexerDown / IndexerStalled
 
 **Severity:** Critical
 
 **Symptoms:**
-- Yield reserve balance < required level
-- Repayment transactions failing with `InsufficientFunds`
+- No metrics from the indexer
+- Dashboard data frozen
 
 **Diagnosis:**
 ```bash
-# Check reserve balance
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn get_fee_treasury \
-  --network mainnet
+# Check process
+systemctl status quorum-credit-indexer
 
-# Check active loans
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn get_config \
-  --network mainnet
+# Check logs
+journalctl -u quorum-credit-indexer --since "5 min ago"
+
+# Check database
+du -sh /data/indexer.db
+sqlite3 /data/indexer.db "SELECT value FROM cursor WHERE key = 'last_ledger';"
 ```
 
 **Resolution:**
-1. Pause contract immediately
-2. Calculate required reserve: `max_loan_amount * max_concurrent_loans * 1.02`
-3. Transfer XLM to contract
-4. Verify reserve balance
-5. Unpause contract
+1. Restart the indexer: `systemctl restart quorum-credit-indexer`
+2. If the database is corrupted, restore from backup
+3. If the RPC endpoint is down, check network connectivity
 
-```bash
-# Pause
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn pause \
-  --network mainnet \
-  --source $ADMIN_1_SECRET_KEY \
-  -- \
-  --admin_signers '["'$ADMIN_1'","'$ADMIN_2'"]'
-
-# Transfer XLM (example: 1000 XLM)
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn transfer \
-  --network mainnet \
-  --source $ADMIN_SECRET_KEY \
-  -- \
-  --from $ADMIN_ADDRESS \
-  --to $CONTRACT_ID \
-  --amount 10000000000
-
-# Unpause
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn unpause \
-  --network mainnet \
-  --source $ADMIN_1_SECRET_KEY \
-  -- \
-  --admin_signers '["'$ADMIN_1'","'$ADMIN_2'"]'
-```
-
-### Alert: HighErrorRate
+### Alert: IndexerErrors
 
 **Severity:** High
 
 **Symptoms:**
-- Error rate > 10% for 5 minutes
-- Users reporting failed transactions
+- Error rate > 10%
 
 **Diagnosis:**
 ```bash
 # Check error distribution
-curl 'http://prometheus:9090/api/v1/query?query=qc_contract_errors_total'
+curl 'http://localhost:9090/metrics' | grep qc_indexer_errors_total
 
-# Check contract status
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn get_config \
-  --network mainnet
+# Check indexer logs
+journalctl -u quorum-credit-indexer --since "10 min ago" | grep ERROR
 ```
 
 **Resolution:**
-1. Identify error codes from metrics
-2. Check if contract is paused
-3. Review recent transactions
-4. If systematic issue, pause and investigate
+1. Check RPC endpoint health: `curl <rpc-url>/health`
+2. Verify network connectivity
+3. If persistent, consider rotating RPC endpoints
+
+### Alert: LedgerReorgDetected
+
+**Severity:** Medium
+
+**Symptoms:**
+- Spike in `qc_indexer_reorgs_detected_total`
+
+**Diagnosis:**
+```bash
+# Query reorg audit log
+sqlite3 /data/indexer.db "SELECT * FROM reorg_audit ORDER BY id DESC LIMIT 5;"
+```
+
+**Resolution:**
+This is informational — the indexer automatically recovers. If reorgs are frequent, the Soroban network may be experiencing instability.
 
 ### Alert: ExcessiveSlashing
 
@@ -309,15 +298,11 @@ stellar contract invoke \
 
 **Symptoms:**
 - > 10 slash events in 1 hour
-- Unusual default pattern
 
 **Diagnosis:**
 ```bash
-# Query recent slash events
-curl 'http://prometheus:9090/api/v1/query?query=increase(qc_slash_events_total[1h])'
-
-# Check for compromised borrowers
-# Review slash vote records
+# Query recent slash events from the event store
+sqlite3 /data/indexer.db "SELECT ledger, value_json FROM events WHERE category = 'loan' AND action = 'slash' ORDER BY ledger DESC LIMIT 20;"
 ```
 
 **Resolution:**
@@ -326,66 +311,29 @@ curl 'http://prometheus:9090/api/v1/query?query=increase(qc_slash_events_total[1
 3. Review voucher selection process
 4. Consider adjusting slash threshold if legitimate
 
-### Alert: HighTransactionLatency
+### Alert: HighLoanUtilization
 
 **Severity:** Medium
 
 **Symptoms:**
-- P95 latency > 5 seconds
-- Users experiencing slow confirmations
+- Active loans >> repaid loans
 
 **Diagnosis:**
 ```bash
-# Check Soroban RPC health
-curl https://soroban-testnet.stellar.org/health
-
-# Check network congestion
-# Review transaction queue
+# Check active vs total loan counts
+curl 'http://localhost:9090/metrics' | grep -E 'qc_active_loans|qc_loan_count_total'
 ```
 
 **Resolution:**
-1. Check Stellar network status
-2. Verify RPC endpoint availability
-3. Consider increasing transaction fee
-4. Contact Stellar support if persistent
-
-### Alert: ContractPaused
-
-**Severity:** Critical
-
-**Symptoms:**
-- All state-changing operations fail with `ContractPaused`
-- Users cannot vouch, request loans, or repay
-
-**Diagnosis:**
-```bash
-# Verify pause status
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn get_config \
-  --network mainnet | grep paused
-```
-
-**Resolution:**
-1. Determine why contract was paused
-2. Review admin logs
-3. If safe, unpause:
-
-```bash
-stellar contract invoke \
-  --id $CONTRACT_ID \
-  --fn unpause \
-  --network mainnet \
-  --source $ADMIN_1_SECRET_KEY \
-  -- \
-  --admin_signers '["'$ADMIN_1'","'$ADMIN_2'"]'
-```
+1. Check if borrowers are defaulting
+2. Review repayment rates
+3. Consider pausing new loans until existing ones are repaid
 
 ## Monitoring Setup Checklist
 
 - [ ] Prometheus installed and configured
-- [ ] Metrics collection script deployed
-- [ ] Grafana dashboards created
+- [ ] QuorumCredit indexer deployed and scraping
+- [ ] Grafana dashboards imported
 - [ ] Alert rules configured
 - [ ] Alert channels (Slack, PagerDuty) configured
 - [ ] On-call rotation established
@@ -394,41 +342,7 @@ stellar contract invoke \
 - [ ] Dashboards accessible to ops team
 - [ ] Metrics retention policy set (30 days minimum)
 
-## Synthetic Monitoring
+## References
 
-Test protocol health with periodic transactions:
-
-```python
-import schedule
-import time
-from stellar_sdk import Keypair
-
-def synthetic_test():
-    """Run synthetic vouch -> loan -> repay cycle"""
-    try:
-        # Create test accounts
-        voucher = Keypair.random()
-        borrower = Keypair.random()
-        
-        # Fund accounts (testnet only)
-        # ...
-        
-        # Vouch
-        vouch(CONTRACT_ID, voucher, borrower.public_key, 100 * 10_000_000, TOKEN_ADDRESS)
-        
-        # Request loan
-        request_loan(CONTRACT_ID, borrower, 50 * 10_000_000, 100 * 10_000_000, "Test", TOKEN_ADDRESS)
-        
-        # Repay
-        repay(CONTRACT_ID, borrower, 51 * 10_000_000)
-        
-        print("Synthetic test passed")
-    except Exception as e:
-        print(f"Synthetic test failed: {e}")
-
-schedule.every(1).hours.do(synthetic_test)
-
-while True:
-    schedule.run_pending()
-    time.sleep(60)
-```
+- [Event Indexing Guide](./event-indexing-guide.md) — full event schema and indexer documentation
+- [tools/indexer/](../tools/indexer/) — indexer source code and integration tests

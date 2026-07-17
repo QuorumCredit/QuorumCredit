@@ -1,4 +1,4 @@
-.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet
+.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -50,3 +50,11 @@ deploy-mainnet:
 		--wasm $(WASM_FILE) \
 		--network mainnet \
 		--source $(DEPLOYER_SECRET_KEY)
+
+## Build the event indexer binary
+indexer:
+	cargo build -p quorum-credit-indexer --release
+
+## Run the event indexer tests
+indexer-test:
+	cargo test -p quorum-credit-indexer
