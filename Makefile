@@ -10,7 +10,7 @@ WASM_FILE    := $(CONTRACT_DIR)/target/$(WASM_TARGET)/release/quorum_credit.wasm
 
 ## Compile the contract (native + WASM release build)
 build:
-	cd $(CONTRACT_DIR) && cargo build --target $(WASM_TARGET) --release
+	cd $(CONTRACT_DIR) && cargo build -p quorum_credit --target $(WASM_TARGET) --release
 
 ## Generate contract-parity SDK clients from the compiled WASM spec
 generate-sdk: build
