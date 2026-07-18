@@ -1,11 +1,17 @@
 #![no_std]
 
 pub mod admin;
+pub mod batch_transfer;
+pub mod cache;
+pub mod cooldown_bypass;
 pub mod credit_score;
 pub mod errors;
 pub mod governance;
 pub mod helpers;
+pub mod insurance;
+pub mod lazy_slash;
 pub mod loan;
+pub mod merkle_tree;
 pub mod rbac;
 pub mod reputation;
 pub mod types;
@@ -149,6 +155,18 @@ impl QuorumCreditContract {
     /// Issue #632: Query bridge validation status.
     pub fn is_bridge_validated(env: Env, voucher: Address, chain_id: u32) -> bool {
         vouch::is_bridge_validated(env, voucher, chain_id)
+    }
+
+    /// Sybil resistance: estimate the economic cost to attack a borrower's current
+    /// voucher configuration. Returns the minimum capital (in stroops) and minimum
+    /// lock time an attacker must commit to match the legitimate set's weighted stake.
+    ///
+    /// This is a read-only query function — it does not mutate state.
+    pub fn estimate_sybil_attack_cost(
+        env: Env,
+        borrower: Address,
+    ) -> crate::types::SybilAttackCostEstimate {
+        vouch::estimate_sybil_attack_cost(env, borrower)
     }
 
     /// Issue #867: Create a cross-collateral pool, seeded by the creator's stake.

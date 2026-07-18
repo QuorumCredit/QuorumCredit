@@ -347,6 +347,29 @@ pub enum ProposalStatus {
     Executed,
 }
 
+// ── Sybil Resistance ─────────────────────────────────────────────────────────
+
+/// Estimated cost (in stroops) for an attacker to Sybil-attack a borrower's
+/// voucher configuration and achieve the same credit-score / governance weight.
+///
+/// Returned by `estimate_sybil_attack_cost` in `vouch.rs`.
+#[contracttype]
+#[derive(Clone)]
+pub struct SybilAttackCostEstimate {
+    /// Minimum aggregate stake (in stroops) an attacker must commit to match
+    /// the total reputation-weighted stake of the real voucher set.
+    pub min_stake_stroops: i128,
+    /// Minimum time (in seconds) the attacker must hold that stake before the
+    /// vouches become age-eligible for reputation credit.
+    pub min_lock_secs: u64,
+    /// Number of vouches in the legitimate set (for reference).
+    pub voucher_count: u32,
+    /// Total reputation-weighted stake of the current legitimate set.
+    pub total_weighted_stake: i128,
+    /// Ledger timestamp when this estimate was computed.
+    pub computed_at: u64,
+}
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -642,9 +665,6 @@ pub enum DataKey {
     // ── Forbearance (Issue #878) ──────────────────────────────────────────────
     /// loan_id → ForbearanceRecord
     Forbearance(u64),
-    // ── Refinance record (Issue #877) ─────────────────────────────────────────
-    /// loan_id → RefinanceRecord
-    RefinanceRecord(u64),
     // ── Dynamic rate (Issue #881) ──────────────────────────────────────────────
     /// DynamicRateConfig (global config)
     DynamicRateConfig,
@@ -657,9 +677,11 @@ pub enum DataKey {
     /// Emergency admin revocation record — Address → bool (true = revoked).
     /// Revoked admins are excluded from admin approval checks.
     RevokedAdmin(Address),
-    // ── Repayment confirmation ─────────────────────────────────────────────────
-    /// loan_id → bool (repayment confirmed by oracle)
-    RepaymentConfirmation(u64),
+    // ── Sybil resistance (Issue #sybil) ─────────────────────────────────────
+    /// borrower → SybilAttackCostEstimate
+    /// Cached estimate of the cost (in stroops) to Sybil-attack a borrower's
+    /// voucher configuration. Invalidated when vouches change.
+    SybilAttackCost(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
