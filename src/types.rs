@@ -642,9 +642,6 @@ pub enum DataKey {
     // ── Forbearance (Issue #878) ──────────────────────────────────────────────
     /// loan_id → ForbearanceRecord
     Forbearance(u64),
-    // ── Refinance record (Issue #877) ─────────────────────────────────────────
-    /// loan_id → RefinanceRecord
-    RefinanceRecord(u64),
     // ── Dynamic rate (Issue #881) ──────────────────────────────────────────────
     /// DynamicRateConfig (global config)
     DynamicRateConfig,
@@ -657,9 +654,6 @@ pub enum DataKey {
     /// Emergency admin revocation record — Address → bool (true = revoked).
     /// Revoked admins are excluded from admin approval checks.
     RevokedAdmin(Address),
-    // ── Repayment confirmation ─────────────────────────────────────────────────
-    /// loan_id → bool (repayment confirmed by oracle)
-    RepaymentConfirmation(u64),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
