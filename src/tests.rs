@@ -64,6 +64,10 @@ mod input_validation_test;
 mod invariants_test;
 #[path = "regression_tests.rs"]
 mod regression_tests;
+#[path = "invariant_fuzz_test.rs"]
+mod invariant_fuzz_test;
+#[path = "negative_invariant_test.rs"]
+mod negative_invariant_test;
 #[path = "batch_stake_test.rs"]
 mod batch_stake_test;
 #[path = "operations_runbook_test.rs"]

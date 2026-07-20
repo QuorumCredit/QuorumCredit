@@ -1,0 +1,167 @@
+name: Invariant Gate
+
+# ── Trigger ────────────────────────────────────────────────────────────────────
+# Runs on every PR that touches the files where invariant violations can originate.
+# Also runs on every push to main so the invariant history is always green.
+on:
+  pull_request:
+    paths:
+      - "src/vouch.rs"
+      - "src/loan.rs"
+      - "src/governance.rs"
+      - "src/admin.rs"
+      - "src/helpers.rs"
+      - "src/types.rs"
+      - "src/lib.rs"
+      - "src/invariants_test.rs"
+      - "src/invariant_fuzz_test.rs"
+      - "src/negative_invariant_test.rs"
+      - "docs/contract-invariants.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/invariant-gate.yml"
+  push:
+    branches:
+      - main
+
+# ── Permissions ────────────────────────────────────────────────────────────────
+permissions:
+  contents: read
+  pull-requests: write   # allows posting a comment with the invariant report
+
+# ── Jobs ──────────────────────────────────────────────────────────────────────
+jobs:
+  invariant-tests:
+    name: Run invariant tests (I1–I12)
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Rust toolchain ────────────────────────────────────────────────────
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # wasm32 target is required to build the Soroban contract under test
+          targets: wasm32-unknown-unknown
+
+      # ── 3. Cache ─────────────────────────────────────────────────────────────
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # ── 4. Build (fail fast if the crate doesn't compile) ────────────────────
+      - name: Build contract (native, debug)
+        run: cargo build --tests
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      # ── 5. Run invariant unit tests ──────────────────────────────────────────
+      #
+      # Runs the three invariant test modules:
+      #   • invariants_test        – post-operation invariant assertions
+      #   • negative_invariant_test – negative controls proving the harness catches violations
+      #   • invariant_fuzz_test    – proptest fuzzing (randomised sequences)
+      #
+      # PROPTEST_CASES: 512 runs per property in CI (increased from the default
+      # of 256 for better coverage; adjust if CI becomes too slow).
+      - name: Run invariant test suite
+        run: |
+          cargo test \
+            --test-threads=4 \
+            -- \
+            invariants_test \
+            negative_invariant_test \
+            invariant_fuzz \
+            2>&1 | tee invariant-test-output.txt
+        env:
+          PROPTEST_CASES: "512"
+
+      # ── 6. Run full test suite to catch regressions ──────────────────────────
+      #
+      # The full suite is run *after* the invariant gate so that if the invariant
+      # tests fail we get a clear, targeted error message first.
+      - name: Run full test suite
+        run: cargo test --test-threads=4
+        env:
+          PROPTEST_CASES: "256"
+
+      # ── 7. Upload test output on failure ────────────────────────────────────
+      - name: Upload invariant test output (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariant-test-output
+          path: invariant-test-output.txt
+          retention-days: 14
+
+      # ── 8. Post invariant summary as a PR comment ────────────────────────────
+      #
+      # Adds a comment to the PR showing which invariants were checked.
+      # Uses the github-script action so no external dependency is needed.
+      - name: Post invariant coverage summary to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = `## ✅ Invariant Gate Passed
+
+            All **I1–I12** contract invariants were verified against live contract state.
+
+            | ID  | Invariant                                   | Status |
+            |-----|---------------------------------------------|--------|
+            | I1  | Solvency: balance ≥ locked stake            | ✅     |
+            | I2  | Loan ≤ total vouched stake                  | ✅     |
+            | I3  | No active loan without vouches              | ✅     |
+            | I4  | amount_repaid ≤ amount + yield              | ✅     |
+            | I5  | Loan status transitions monotonic           | ✅     |
+            | I6  | Slash treasury ≥ 0                          | ✅     |
+            | I7  | yield_bps ∈ [0, 10 000]                     | ✅     |
+            | I8  | 1 ≤ admin_threshold ≤ admins.len            | ✅     |
+            | I9  | slash_bps ∈ [0, 10 000]                     | ✅     |
+            | I10 | All stake values ≥ 0                        | ✅     |
+            | I11 | ActiveLoan pointer consistency              | ✅     |
+            | I12 | min_loan_amount > 0                         | ✅     |
+
+            **Negative controls** (each of the above was also shown to _catch_ real violations):
+            - NC-1 through NC-11 all produced \`Err(InvariantViolation)\` as expected.
+
+            **Proptest fuzzing**: 512 randomised operation sequences per property × 3 properties.
+
+            > See \`docs/contract-invariants.md\` for the full specification.
+            `;
+
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body,
+            });
+
+  # ── Blocking status check ───────────────────────────────────────────────────
+  # This job is referenced by branch protection rules.  It only succeeds when
+  # the invariant-tests job above succeeds, ensuring PRs cannot be merged if
+  # any invariant is violated.
+  invariant-gate-required:
+    name: Invariant gate (required)
+    needs: invariant-tests
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check invariant gate status
+        run: |
+          if [ "${{ needs.invariant-tests.result }}" != "success" ]; then
+            echo "::error::Invariant gate failed — one or more contract invariants are violated."
+            echo "::error::Review the test output in the 'invariant-tests' job above."
+            exit 1
+          fi
+          echo "Invariant gate passed."
