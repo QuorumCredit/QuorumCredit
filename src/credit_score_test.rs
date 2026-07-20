@@ -112,9 +112,10 @@ fn test_vouching_score() {
 
 #[test]
 fn test_different_repayment_histories_produce_different_scores() {
-    let env = Env::new();
+    let env = Env::default();
     env.mock_all_auths();
-
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {
     let borrower_early = Address::generate(&env);
     let borrower_late = Address::generate(&env);
 
@@ -148,7 +149,7 @@ fn test_different_repayment_histories_produce_different_scores() {
         disbursement_timestamp: now,
         repayment_timestamp: Some(now + 10_000), // Repaid 10k secs early (early)
         deadline,
-        loan_purpose: "test".into(),
+        loan_purpose: soroban_sdk::String::from_str(&env, "test"),
         token_address: Address::generate(&env),
         amortization_schedule: Vec::new(&env),
         reminder_sent: false,
@@ -186,7 +187,7 @@ fn test_different_repayment_histories_produce_different_scores() {
         disbursement_timestamp: now,
         repayment_timestamp: Some(deadline + 10_000), // Repaid 10k secs late (late)
         deadline,
-        loan_purpose: "test".into(),
+        loan_purpose: soroban_sdk::String::from_str(&env, "test"),
         token_address: Address::generate(&env),
         amortization_schedule: Vec::new(&env),
         reminder_sent: false,
@@ -268,13 +269,15 @@ fn test_different_repayment_histories_produce_different_scores() {
         "Late repayment avg_repayment_time ({}) should be negative",
         score_late.avg_repayment_time
     );
+    });
 }
 
 #[test]
 fn test_credit_score_total_borrowed() {
-    let env = Env::new();
+    let env = Env::default();
     env.mock_all_auths();
-
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {
     let borrower = Address::generate(&env);
     let now = env.ledger().timestamp();
 
@@ -303,7 +306,7 @@ fn test_credit_score_total_borrowed() {
         disbursement_timestamp: now,
         repayment_timestamp: Some(now + 50_000),
         deadline: now + 100_000,
-        loan_purpose: "test1".into(),
+        loan_purpose: soroban_sdk::String::from_str(&env, "test1"),
         token_address: Address::generate(&env),
         amortization_schedule: Vec::new(&env),
         reminder_sent: false,
@@ -339,7 +342,7 @@ fn test_credit_score_total_borrowed() {
         disbursement_timestamp: now,
         repayment_timestamp: Some(now + 50_000),
         deadline: now + 100_000,
-        loan_purpose: "test2".into(),
+        loan_purpose: soroban_sdk::String::from_str(&env, "test2"),
         token_address: Address::generate(&env),
         amortization_schedule: Vec::new(&env),
         reminder_sent: false,
@@ -382,13 +385,15 @@ fn test_credit_score_total_borrowed() {
         credit_score.total_borrowed, 800_000,
         "Total borrowed should be 800_000"
     );
+    });
 }
 
 #[test]
 fn test_credit_score_total_repaid() {
-    let env = Env::new();
+    let env = Env::default();
     env.mock_all_auths();
-
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {
     let borrower = Address::generate(&env);
     let now = env.ledger().timestamp();
 
@@ -417,7 +422,7 @@ fn test_credit_score_total_repaid() {
         disbursement_timestamp: now,
         repayment_timestamp: None,
         deadline: now + 100_000,
-        loan_purpose: "test".into(),
+        loan_purpose: soroban_sdk::String::from_str(&env, "test"),
         token_address: Address::generate(&env),
         amortization_schedule: Vec::new(&env),
         reminder_sent: false,
@@ -457,6 +462,7 @@ fn test_credit_score_total_repaid() {
         credit_score.total_repaid, 750_000,
         "Total repaid should be 750_000"
     );
+    });
 }
 
 #[test]

@@ -354,7 +354,6 @@ pub enum DataKey {
     Loan(u64),                   // loan_id → LoanRecord
     ActiveLoan(Address),         // borrower → active loan_id
     LatestLoan(Address),         // borrower → latest loan_id
-    RefinanceRecord(u64),       // loan_id → RefinanceRecord
     Vouches(Address),            // borrower → Vec<VouchRecord>
     VoucherHistory(Address),     // voucher → Vec<Address> (borrowers backed)
     Config,                      // Config struct: all configurable protocol parameters
@@ -373,7 +372,6 @@ pub enum DataKey {
     LoanPoolCounter, // u64: monotonically increasing pool ID counter
     PendingAdmin,    // Address of the pending admin (two-step transfer)
     RepaymentCount(Address), // borrower → u32 total successful repayments
-    RepaymentConfirmation(u64), // loan_id → bool confirmation flag
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
     ProtocolFeeBps,  // u32: protocol fee in basis points
@@ -484,6 +482,14 @@ pub enum DataKey {
     BridgeValidated(Address, u32),
     /// Registered cross-chain bridges: Vec<BridgeRecord>
     Bridges,
+    /// origin_chain → the Ed25519 public key trusted to sign attestations from it.
+    BridgePublicKey(u32),
+    /// (origin_chain, nonce) → true once an attestation with that nonce has been consumed.
+    BridgeNonceUsed(u32, u64),
+    /// (origin_chain, loan_id) → the mirrored CrossChainLoanMetadata for that origin loan.
+    MirroredLoan(u32, u64),
+    /// borrower → the latest cross-chain reputation snapshot mirrored in for them.
+    CrossChainReputation(Address),
     /// Issue #687: admin removal proposal id → AdminRemovalProposal
     AdminRemovalProposal(u64),
     /// Issue #687: monotonically increasing admin removal proposal counter
@@ -798,7 +804,7 @@ pub enum AdminOperationType {
 /// Issue #893: Multi-tier admin approval thresholds for different operation types.
 /// Allows different admin operations to require different numbers of approvals.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultiTierAdminThresholds {
     /// Approvals required for standard operations (default: same as admin_threshold)
     pub standard_threshold: u32,
@@ -1372,8 +1378,10 @@ pub struct Config {
     pub successor_admin: Option<Address>,
     pub rate_limit_config: RateLimitConfig,
     /// Issue #893: Multi-tier admin approval thresholds for different operation types.
-    /// If not set, falls back to single admin_threshold for all operations.
-    pub multi_tier_thresholds: Option<MultiTierAdminThresholds>,
+    /// Empty means "not set" -- falls back to single admin_threshold for all operations.
+    /// (0 or 1 elements; a `Vec` rather than `Option` because a custom struct nested in
+    /// an `Option` field of a `#[contracttype]` isn't XDR-derivable in this SDK version.)
+    pub multi_tier_thresholds: Vec<MultiTierAdminThresholds>,
     /// Recovery percentage for defaulted loans (in basis points, e.g. 5000 = 50%).
     pub recovery_percentage: u32,
     /// When true, the slash threshold is calculated dynamically based on pool health.
@@ -2120,4 +2128,167 @@ pub struct BatchVouchResult {
     pub success: bool,
     /// Error code if `success == false`; `None` when successful.
     pub error_code: Option<u32>,
+}
+
+// ── Issue #64: Oracle Price Staleness ─────────────────────────────────────────
+
+/// Staleness window for oracle price records, in seconds (1 hour).
+pub const ORACLE_PRICE_MAX_AGE_SECS: u64 = 60 * 60;
+
+/// An oracle price record with a value and timestamp.
+#[contracttype]
+#[derive(Clone)]
+pub struct OraclePriceRecord {
+    pub price: i128,
+    pub recorded_at: u64,
+}
+
+// ── Issue #65: Graduated Response / Tiered Lockdown ──────────────────────────
+
+/// Protocol threat level for graduated response.
+#[contracttype]
+#[derive(Clone, PartialEq)]
+pub enum ThreatLevel {
+    Normal,
+    Elevated,
+    Critical,
+    Lockdown,
+}
+
+// ── Issue #552 / #841: Slash Appeal ───────────────────────────────────────────
+
+/// A slash appeal record submitted by a voucher on behalf of a defaulted borrower.
+#[contracttype]
+#[derive(Clone)]
+pub struct SlashAppealRecord {
+    pub borrower: Address,
+    pub voucher: Address,
+    pub evidence_hash: soroban_sdk::BytesN<32>,
+    pub appeal_timestamp: u64,
+    pub approved: Option<bool>,
+    pub admin_votes: Vec<Address>,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminActionProposal {
+    pub id: u64,
+    pub action_type: soroban_sdk::String,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u64,
+    pub executed: bool,
+}
+
+// ── Issue #910: Vouch Merkle Root ─────────────────────────────────────────────
+
+/// Vouch Merkle root record stored per borrower.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchMerkleRoot {
+    pub root: BytesN<32>,
+    pub vouch_count: u32,
+    pub computed_at: u64,
+}
+
+// ── Issue #881: Dynamic Interest Rate based on Risk Score ───────────────────
+
+/// Default base interest rate in basis points (200 = 2%).
+pub const DEFAULT_DYNAMIC_BASE_RATE_BPS: u32 = 200;
+/// Maximum rate adjustment per risk point in basis points (50 = 0.5% per risk point).
+pub const DEFAULT_RISK_RATE_ADJUSTMENT_BPS: u32 = 50;
+/// Maximum dynamic rate cap in basis points (5000 = 50%).
+pub const DEFAULT_DYNAMIC_RATE_CAP_BPS: u32 = 5000;
+/// Minimum dynamic rate floor in basis points (50 = 0.5%).
+pub const DEFAULT_DYNAMIC_RATE_FLOOR_BPS: u32 = 50;
+
+/// Configuration for dynamic interest rate calculation.
+#[contracttype]
+#[derive(Clone)]
+pub struct DynamicRateConfig {
+    pub enabled: bool,
+    /// Base rate in basis points before risk adjustment.
+    pub base_rate_bps: u32,
+    /// Rate increase per risk score point (0-100 scale), in basis points.
+    pub risk_adjustment_bps: u32,
+    /// Maximum allowed rate in basis points.
+    pub rate_cap_bps: u32,
+    /// Minimum allowed rate in basis points.
+    pub rate_floor_bps: u32,
+    /// Oracle price key to consult as a risk input (e.g. the collateral token's
+    /// price feed). `None` disables oracle-informed pricing entirely.
+    pub oracle_price_symbol: Option<soroban_sdk::Symbol>,
+    /// If the fresh oracle price is below this level, `oracle_risk_premium_bps`
+    /// is added to the rate (the market has moved against the collateral).
+    pub oracle_risk_threshold: i128,
+    /// Risk premium applied when the oracle price is fresh but below threshold.
+    pub oracle_risk_premium_bps: u32,
+    /// Conservative premium applied when the oracle price is missing or stale
+    /// (past `ORACLE_PRICE_MAX_AGE_SECS`) — we can't confirm the market is safe,
+    /// so we price as if it were not.
+    pub oracle_stale_premium_bps: u32,
+}
+
+/// Default dynamic rate configuration.
+pub const DEFAULT_DYNAMIC_RATE_CONFIG: DynamicRateConfig = DynamicRateConfig {
+    enabled: false,
+    base_rate_bps: DEFAULT_DYNAMIC_BASE_RATE_BPS,
+    risk_adjustment_bps: DEFAULT_RISK_RATE_ADJUSTMENT_BPS,
+    rate_cap_bps: DEFAULT_DYNAMIC_RATE_CAP_BPS,
+    rate_floor_bps: DEFAULT_DYNAMIC_RATE_FLOOR_BPS,
+    oracle_price_symbol: None,
+    oracle_risk_threshold: 0,
+    oracle_risk_premium_bps: 0,
+    oracle_stale_premium_bps: 0,
+};
+
+/// Snapshot of the dynamic rate applied to a specific borrower's loan.
+#[contracttype]
+#[derive(Clone)]
+pub struct BorrowerDynamicRate {
+    pub borrower: Address,
+    pub loan_id: u64,
+    /// Computed rate in basis points at time of disbursement or recalculation.
+    pub effective_rate_bps: u32,
+    /// Risk score used for computation (0-100).
+    pub risk_score: u32,
+    /// Credit tier at time of computation.
+    pub credit_tier: CreditTier,
+    /// Ledger timestamp when rate was last computed.
+    pub computed_at: u64,
+}
+
+// ── Issue #878: Loan Forbearance ────────────────────────────────────────────
+
+/// Maximum number of forbearance periods allowed per loan.
+pub const MAX_FORBEARANCE_PERIODS: u32 = 2;
+/// Default forbearance duration in seconds (30 days).
+pub const DEFAULT_FORBEARANCE_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// Forbearance status.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ForbearanceStatus {
+    Active,
+    Ended,
+    Expired,
+}
+
+/// Record of a forbearance period on a loan.
+#[contracttype]
+#[derive(Clone)]
+pub struct ForbearanceRecord {
+    pub loan_id: u64,
+    pub borrower: Address,
+    /// Timestamp when forbearance was granted.
+    pub started_at: u64,
+    /// Duration of the forbearance in seconds.
+    pub duration_secs: u64,
+    /// Timestamp when forbearance ends.
+    pub ends_at: u64,
+    /// Original deadline before forbearance extension.
+    pub original_deadline: u64,
+    /// How many forbearance periods have been used on this loan (including this one).
+    pub period_number: u32,
+    pub status: ForbearanceStatus,
 }

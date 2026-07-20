@@ -75,9 +75,9 @@ pub enum ContractError {
     /// No escrow record found for this borrower (#666/#667).
     NoEscrowFound = 56,
     /// No slash record found for the given slash ID.
-    SlashRecordNotFound = 142,
+    SlashRecordNotFound = 149,
     /// Refinancing was attempted without any outstanding balance to settle.
-    RefinanceNoOutstanding = 143,
+    RefinanceNoOutstanding = 150,
     /// Slash has already been reversed and cannot be reversed again.
     SlashAlreadyReversed = 58,
     /// Caller has exceeded the configured rate limit.
@@ -172,14 +172,6 @@ AppealQuorumNotMet = 129,
 EscrowExpired = 130,
 /// Emergency cooldown bypass is not authorised for this voucher.
 EmergencyBypassNotAuthorised = 131,
-/// Cooldown bypass request already exists for this (borrower, voucher) pair.
-CooldownBypassAlreadyRequested = 143,
-/// Cooldown bypass request not found.
-CooldownBypassNotFound = 144,
-/// Cooldown bypass has already been approved.
-CooldownBypassAlreadyApproved = 145,
-/// Insufficient admin approvals for cooldown bypass (need 2/3).
-CooldownBypassInsufficientApprovals = 146,
 /// Cross-collateral pool not found.
 CollateralPoolNotFound = 132,
 /// Cross-collateral pool is already active (has an assigned borrower).
@@ -200,18 +192,30 @@ MaxExtensionsReached = 139,
 LoanPrivacyRestricted = 140,
 /// Insurance pool is not connected to this loan.
 InsuranceNotLinked = 141,
-/// No relay verification key is configured for the source chain.
-RelayKeyNotConfigured = 142,
-/// Relay chain id is zero or otherwise invalid.
-InvalidRelayChain = 143,
-/// A relay attestation reused an already-consumed nonce.
-RelayReplayDetected = 144,
-/// The relay attestation is older than the freshness window allows.
-RelayEventExpired = 145,
-/// The relay attestation is timestamped too far in the future.
-RelayEventFromFuture = 146,
-/// A relay event with this (source chain, sequence) was already processed.
-RelayEventAlreadyProcessed = 147,
-/// A relay acknowledgement tried to move the cursor backwards.
-RelayAckRegression = 148,
+/// Vote delegation would create a cycle (A delegates to B who delegates back to A).
+CircularDelegation = 151,
+/// Dynamic rate configuration is invalid (e.g. floor > cap).
+InvalidDynamicRateConfig = 152,
+/// A borrower cannot also be listed as their own co-borrower.
+SelfCoBorrowerNotAllowed = 153,
+/// Maximum number of forbearance periods has already been used for this loan.
+MaxForbearanceExceeded = 154,
+/// Maximum number of co-borrowers has already been reached for this loan.
+MaxCoBorrowersExceeded = 155,
+/// The requested action is not allowed while the loan is in forbearance.
+LoanInForbearance = 156,
+/// Requested loan amount exceeds the maximum loan-to-collateral ratio.
+LoanExceedsMaxRatio = 157,
+/// No forbearance record found for this loan.
+ForbearanceNotFound = 158,
+/// Forbearance record exists but is not currently active.
+ForbearanceNotActive = 159,
+/// No vote delegation found for this address.
+DelegationNotFound = 160,
+/// This co-borrower has already been added to the loan.
+CoBorrowerAlreadyAdded = 161,
+/// This loan has already been fully repaid.
+AlreadyRepaid = 162,
+/// The attestor claimed fewer origin-chain confirmations than the required minimum.
+InsufficientBridgeConfirmations = 163,
 }
