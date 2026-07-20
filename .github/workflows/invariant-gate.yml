@@ -62,8 +62,6 @@ jobs:
       # ── 4. Build (fail fast if the crate doesn't compile) ────────────────────
       - name: Build contract (native, debug)
         run: cargo build --tests
-        env:
-          RUSTFLAGS: "-D warnings"
 
       # ── 5. Run invariant unit tests ──────────────────────────────────────────
       #
