@@ -15,7 +15,7 @@
 //! to XLM. When accepting user input in XLM, multiply by `10_000_000`
 //! before passing to contract functions.
 
-use soroban_sdk::{contracttype, Address, BytesN, String, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -1454,9 +1454,6 @@ pub struct Config {
     /// when current admins are unavailable.
     pub successor_admin: Option<Address>,
     pub rate_limit_config: RateLimitConfig,
-    /// Issue #893: Multi-tier admin approval thresholds for different operation types.
-    /// If not set, falls back to single admin_threshold for all operations.
-    pub multi_tier_thresholds: Option<MultiTierAdminThresholds>,
     /// Recovery percentage for defaulted loans (in basis points, e.g. 5000 = 50%).
     pub recovery_percentage: u32,
     /// When true, the slash threshold is calculated dynamically based on pool health.
@@ -1521,15 +1518,10 @@ pub struct MilestoneRecord {
 pub struct LoanRecord {
     pub id: u64,
     pub borrower: Address,
-    /// #656: Third-party guarantor for this loan (None if no guarantor).
     pub guarantor: Option<Address>,
-    /// #657: Buyback price set by borrower for vouchers to buy back stake (0 = not available).
     pub buyback_price: i128,
-    /// #658: Whether automatic repayments are enabled for this loan.
     pub auto_repay_enabled: bool,
-    /// #658: Number of repayment attempts made (for tracking auto-repay retries).
     pub auto_repay_attempts: u32,
-    /// #666/#667: Escrow status for oracle-verified repayments.
     pub escrow_status: EscrowStatus,
     pub co_borrowers: Vec<Address>,
     pub amount: i128,        // total loan principal in stroops
@@ -1558,56 +1550,16 @@ pub struct LoanRecord {
     /// Bit 0 = 25 % milestone, bit 1 = 50 % milestone, bit 2 = 75 % milestone.
     /// Once a bit is set it is never cleared, ensuring each bonus fires at most once.
     pub milestone_bonus_applied: u32,
-    /// Total loan principal disbursed, in stroops. 1 XLM = 10,000,000 stroops.
-    pub amount: i128,
-    /// Cumulative repayments received so far (principal + yield), in stroops.
-    /// 1 XLM = 10,000,000 stroops.
-    pub amount_repaid: i128,
-    /// Yield owed to vouchers, locked in at disbursement time, in stroops.
-    /// Computed as `amount * yield_bps / 10_000`. 1 XLM = 10,000,000 stroops.
-    pub total_yield: i128,
-        pub status: LoanStatus,
-    pub repaid: bool,
-    pub defaulted: bool,
-    /// Ledger timestamp when the loan record was created.
-    pub created_at: u64,
-    /// Ledger timestamp when the loan was disbursed to the borrower.
-    pub disbursement_timestamp: u64,
-    /// Ledger timestamp when the loan was fully repaid; `None` if not yet repaid.
-    pub repayment_timestamp: Option<u64>,
-    /// Repayment deadline as a ledger timestamp.
-    pub deadline: u64,
-    /// Borrower-supplied description of the loan purpose.
-    pub loan_purpose: soroban_sdk::String,
-    /// Address of the token contract used for this loan.
-    pub token_address: Address,
-    /// Amortization schedule for partial repayments.
+    pub status: LoanStatus,
     pub amortization_schedule: Vec<AmortizationEntry>,
-    /// Whether a repayment reminder has been sent for this loan.
     pub reminder_sent: bool,
-    /// Risk score for the borrower (0-100), used for dynamic yield calculation.
     pub risk_score: u32,
-    /// Number of payment deferment periods used on this loan.
     pub deferment_periods: u32,
-    /// Optional custom maturity date (ledger timestamp). When set, overrides the
-    /// default `deadline` computed from `loan_duration`. `None` means use `deadline`.
     pub maturity_date: Option<u64>,
-    /// Interest rate type for this loan.
     pub rate_type: RateType,
-    /// For variable-rate loans: the oracle key or index name used to look up the
-    /// current rate (e.g. `"SOFR"`, `"PRIME"`). `None` for fixed-rate loans.
     pub index_reference: Option<soroban_sdk::String>,
-    /// Issue #838: Timestamp of last compound interest calculation (for daily compounding).
-    pub last_interest_calc: u64,
-    /// Issue #838: Accrued compound interest from partial repayments (in stroops).
-    pub accrued_interest: i128,
-    /// Issue #838: Milestone bonus applied (50% repaid threshold).
-    pub milestone_bonus_applied: bool,
-    /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
-    /// Timestamp when the loan was suspended due to missed payment.
     pub suspension_timestamp: Option<u64>,
-    /// Amount repaid when the loan entered suspension.
     pub suspension_amount_repaid: i128,
 }
 
@@ -2229,4 +2181,214 @@ pub struct BatchVouchResult {
     pub success: bool,
     /// Error code if `success == false`; `None` when successful.
     pub error_code: Option<u32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VoteSlashResult {
+    VoteCounted,
+    DelegateWillVote,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ForbearanceStatus {
+    Active,
+    Expired,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ForbearanceRecord {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub started_at: u64,
+    pub duration_secs: u64,
+    pub ends_at: u64,
+    pub original_deadline: u64,
+    pub period_number: u32,
+    pub status: ForbearanceStatus,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BorrowerDynamicRate {
+    pub borrower: Address,
+    pub loan_id: u64,
+    pub effective_rate_bps: u32,
+    pub risk_score: u32,
+    pub credit_tier: CreditTier,
+    pub computed_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DynamicRateConfig {
+    pub enabled: bool,
+    pub base_rate_bps: u32,
+    pub risk_adjustment_bps: u32,
+    pub rate_floor_bps: u32,
+    pub rate_cap_bps: u32,
+}
+
+pub const DEFAULT_DYNAMIC_RATE_CONFIG: DynamicRateConfig = DynamicRateConfig {
+    enabled: false,
+    base_rate_bps: 1000,
+    risk_adjustment_bps: 10,
+    rate_floor_bps: 500,
+    rate_cap_bps: 2000,
+};
+
+pub const DEFAULT_FORBEARANCE_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
+pub const MAX_FORBEARANCE_PERIODS: u32 = 3;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VouchMerkleRoot {
+    pub root: BytesN<32>,
+    pub vouch_count: u32,
+    pub computed_at: u64,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ThreatLevel {
+    Normal,
+    Elevated,
+    Lockdown,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OraclePriceRecord {
+    pub price: i128,
+    pub recorded_at: u64,
+}
+
+pub const ORACLE_PRICE_MAX_AGE_SECS: u64 = 3600;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminActionProposal {
+    pub id: u64,
+    pub action_type: soroban_sdk::String,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u64,
+    pub executed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlashAppealRecord {
+    pub borrower: Address,
+    pub voucher: Address,
+    pub evidence_hash: BytesN<32>,
+    pub appeal_timestamp: u64,
+    pub approved: Option<bool>,
+    pub admin_votes: Vec<Address>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FraudScoreConfig {
+    pub threshold: u32,
+    pub enabled: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrossChainLoanMetadata {
+    pub origin_chain: u32,
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BridgeAttestation {
+    pub signature: Bytes,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnifiedReputation {
+    pub score: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VouchGroup {
+    pub group_id: u64,
+    pub name: soroban_sdk::String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoucherYieldClaim {
+    pub claimed: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct YieldStreamState {
+    pub last_claim: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeriodicPaymentConfig {
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PeriodicPaymentStatus {
+    pub last_payment: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayEvent {
+    pub seq: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RelayAttestation {
+    pub signature: Bytes,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttributeEntry {
+    pub key: soroban_sdk::String,
+    pub value: soroban_sdk::String,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoucherFraudScore {
+    pub score: u32,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ConfigField {
+    Dummy,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigPatch {
+    pub field: ConfigField,
+    pub new_value: i128,
+    pub apply_after: u64,
+}
+
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ScheduleType {
+    Dummy,
 }

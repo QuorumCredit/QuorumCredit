@@ -172,46 +172,70 @@ AppealQuorumNotMet = 129,
 EscrowExpired = 130,
 /// Emergency cooldown bypass is not authorised for this voucher.
 EmergencyBypassNotAuthorised = 131,
-/// Cooldown bypass request already exists for this (borrower, voucher) pair.
-CooldownBypassAlreadyRequested = 143,
-/// Cooldown bypass request not found.
-CooldownBypassNotFound = 144,
-/// Cooldown bypass has already been approved.
-CooldownBypassAlreadyApproved = 145,
-/// Insufficient admin approvals for cooldown bypass (need 2/3).
-CooldownBypassInsufficientApprovals = 146,
-/// Cross-collateral pool not found.
-CollateralPoolNotFound = 132,
-/// Cross-collateral pool is already active (has an assigned borrower).
-CollateralPoolActive = 133,
-/// Caller is not a member of the specified collateral pool.
-NotPoolMember = 134,
-/// Gradual-unstake schedule not found for this voucher/borrower pair.
-GradualUnstakeNotFound = 135,
-/// A gradual-unstake schedule is already active for this pair.
-GradualUnstakeAlreadyActive = 136,
-/// The next instalment is not yet due.
-GradualUnstakeNotDue = 137,
-/// Loan extension request already pending for this borrower.
-ExtensionAlreadyRequested = 138,
-/// Maximum number of extensions per loan has been reached.
-MaxExtensionsReached = 139,
-/// Caller does not have permission to view this loan (privacy restriction).
-LoanPrivacyRestricted = 140,
-/// Insurance pool is not connected to this loan.
-InsuranceNotLinked = 141,
-/// No relay verification key is configured for the source chain.
-RelayKeyNotConfigured = 142,
-/// Relay chain id is zero or otherwise invalid.
-InvalidRelayChain = 143,
-/// A relay attestation reused an already-consumed nonce.
-RelayReplayDetected = 144,
-/// The relay attestation is older than the freshness window allows.
-RelayEventExpired = 145,
-/// The relay attestation is timestamped too far in the future.
-RelayEventFromFuture = 146,
-/// A relay event with this (source chain, sequence) was already processed.
-RelayEventAlreadyProcessed = 147,
-/// A relay acknowledgement tried to move the cursor backwards.
-RelayAckRegression = 148,
+    /// Cooldown bypass request already exists for this (borrower, voucher) pair.
+    CooldownBypassAlreadyRequested = 150,
+    /// Cooldown bypass request not found.
+    CooldownBypassNotFound = 151,
+    /// Cooldown bypass has already been approved.
+    CooldownBypassAlreadyApproved = 152,
+    /// Insufficient admin approvals for cooldown bypass (need 2/3).
+    CooldownBypassInsufficientApprovals = 153,
+    /// Cross-collateral pool not found.
+    CollateralPoolNotFound = 132,
+    /// Cross-collateral pool is already active (has an assigned borrower).
+    CollateralPoolActive = 133,
+    /// Caller is not a member of the specified collateral pool.
+    NotPoolMember = 134,
+    /// Gradual-unstake schedule not found for this voucher/borrower pair.
+    GradualUnstakeNotFound = 135,
+    /// A gradual-unstake schedule is already active for this pair.
+    GradualUnstakeAlreadyActive = 136,
+    /// The next instalment is not yet due.
+    GradualUnstakeNotDue = 137,
+    /// Loan extension request already pending for this borrower.
+    ExtensionAlreadyRequested = 138,
+    /// Maximum number of extensions per loan has been reached.
+    MaxExtensionsReached = 139,
+    /// Caller does not have permission to view this loan (privacy restriction).
+    LoanPrivacyRestricted = 140,
+    /// Insurance pool is not connected to this loan.
+    InsuranceNotLinked = 141,
+    /// No relay verification key is configured for the source chain.
+    RelayKeyNotConfigured = 154,
+    /// Relay chain id is zero or otherwise invalid.
+    InvalidRelayChain = 155,
+    /// A relay attestation reused an already-consumed nonce.
+    RelayReplayDetected = 156,
+    /// The relay attestation is older than the freshness window allows.
+    RelayEventExpired = 157,
+    /// The relay attestation is timestamped too far in the future.
+    RelayEventFromFuture = 158,
+    /// A relay event with this (source chain, sequence) was already processed.
+    RelayEventAlreadyProcessed = 159,
+    /// A relay acknowledgement tried to move the cursor backwards.
+    RelayAckRegression = 160,
+    /// Circular delegation chain detected in vote delegation.
+    CircularDelegation = 161,
+    /// Delegation not found.
+    DelegationNotFound = 162,
+    /// Loan has already been fully repaid.
+    AlreadyRepaid = 163,
+    /// Loan amount exceeds the maximum ratio allowed.
+    LoanExceedsMaxRatio = 164,
+    /// Self-co-borrowing is not allowed.
+    SelfCoBorrowerNotAllowed = 165,
+    /// Maximum number of co-borrowers exceeded.
+    MaxCoBorrowersExceeded = 166,
+    /// Co-borrower is already added to this loan.
+    CoBorrowerAlreadyAdded = 167,
+    /// Operation is not allowed on a loan in forbearance.
+    LoanInForbearance = 168,
+    /// No forbearance record found for this loan.
+    ForbearanceNotFound = 169,
+    /// Forbearance is not currently active.
+    ForbearanceNotActive = 170,
+    /// Maximum number of forbearance periods reached.
+    MaxForbearanceExceeded = 171,
+    /// Invalid configuration for dynamic interest rate.
+    InvalidDynamicRateConfig = 172,
 }

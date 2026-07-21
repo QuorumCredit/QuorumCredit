@@ -10,7 +10,8 @@
 mod interest_tests {
     use crate::helpers::{apply_milestone_bonus, calculate_daily_compound_interest};
     use crate::types::{
-        LoanRecord, MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75, SECS_PER_DAY,
+        EscrowStatus, LoanRecord, LoanStatus, RateType,
+        MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75, SECS_PER_DAY,
         COMPOUND_RATE_BPS,
     };
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
@@ -65,7 +66,7 @@ mod interest_tests {
     fn do_vouch(s: &Setup, borrower: &Address, stake: i128) -> Address {
         let voucher = Address::generate(&s.env);
         StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &stake);
-        s.client.vouch(&voucher, borrower, &stake, &s.token);
+        s.client.vouch(&voucher, borrower, &stake, &s.token, &None);
         voucher
     }
 
@@ -164,6 +165,11 @@ mod interest_tests {
         LoanRecord {
             id: 1,
             borrower: dummy.clone(),
+            guarantor: None,
+            buyback_price: 0,
+            auto_repay_enabled: false,
+            auto_repay_attempts: 0,
+            escrow_status: EscrowStatus::None,
             co_borrowers: Vec::new(env),
             amount,
             amount_repaid: 0,
@@ -179,6 +185,17 @@ mod interest_tests {
             last_interest_calc: 0,
             accrued_interest,
             milestone_bonus_applied,
+            status: LoanStatus::Active,
+            amortization_schedule: Vec::new(env),
+            reminder_sent: false,
+            risk_score: 0,
+            deferment_periods: 0,
+            maturity_date: None,
+            rate_type: RateType::Fixed,
+            index_reference: None,
+            retry_count: 0,
+            suspension_timestamp: None,
+            suspension_amount_repaid: 0,
         }
     }
 
@@ -290,8 +307,8 @@ mod interest_tests {
 
         let loan_before = s.client.get_loan(&borrower).unwrap();
         // No time advance — same ledger second.
-        let result = s.client.repay(&borrower, &1_000);
-        assert!(result.is_ok(), "same-day repayment should succeed");
+        s.client.repay(&borrower, &1_000);
+        // If repay panicked, the test would fail above.
 
         let loan_after = s.client.get_loan(&borrower).unwrap();
         // accrued_interest should still be 0 (0 whole days elapsed).
@@ -309,8 +326,8 @@ mod interest_tests {
         do_vouch(&s, &borrower, 2_000_000);
         do_loan(&s, &borrower, 100_000, 1_000_000);
 
-        s.client.repay(&borrower, &1_000).unwrap();
-        s.client.repay(&borrower, &1_000).unwrap();
+        s.client.repay(&borrower, &1_000);
+        s.client.repay(&borrower, &1_000);
 
         let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.accrued_interest, 0, "still same day — zero interest");
@@ -332,7 +349,7 @@ mod interest_tests {
         assert!(expected_interest > 0, "30-day interest must be positive");
 
         // Paying just 1 stroop triggers the accrual pipeline.
-        s.client.repay(&borrower, &1).unwrap();
+        s.client.repay(&borrower, &1);
         let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(
             loan.accrued_interest, expected_interest,
@@ -356,7 +373,7 @@ mod interest_tests {
         let annual_rate = 200_000_i128 * crate::types::COMPOUND_RATE_BPS / 10_000;
 
         // Trigger accrual.
-        s.client.repay(&borrower, &1).unwrap();
+        s.client.repay(&borrower, &1);
         let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.accrued_interest, expected);
         // Interest should be ≤ annual rate (integer truncation keeps it slightly under).
@@ -377,7 +394,7 @@ mod interest_tests {
         // Day 0 → advance 10 days → repay 30_000.
         advance_days(&s, 10);
         let interest_period_1 = calculate_daily_compound_interest(300_000, 10);
-        s.client.repay(&borrower, &30_000).unwrap();
+        s.client.repay(&borrower, &30_000);
         let loan_1 = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan_1.accrued_interest, interest_period_1);
 
@@ -387,7 +404,7 @@ mod interest_tests {
         // total_owed which includes interest; see loan.rs).
         let outstanding_2 = (300_000_i128 - 30_000).max(0);
         let interest_period_2 = calculate_daily_compound_interest(outstanding_2, 10);
-        s.client.repay(&borrower, &30_000).unwrap();
+        s.client.repay(&borrower, &30_000);
         let loan_2 = s.client.get_loan(&borrower).unwrap();
         // Accrued should include both periods' interest.
         assert!(
@@ -410,7 +427,7 @@ mod interest_tests {
             .ledger()
             .with_mut(|l| l.timestamp += SECS_PER_DAY + 43_200);
 
-        s.client.repay(&borrower, &1).unwrap();
+        s.client.repay(&borrower, &1);
         let loan = s.client.get_loan(&borrower).unwrap();
         // Should charge exactly 1 day, not 1.5.
         let expected = calculate_daily_compound_interest(100_000, 1);
@@ -441,7 +458,7 @@ mod interest_tests {
         // Pay just below the 25% threshold (24% of principal + static yield).
         // total_obligation = 200_000 + 200_000*200/10_000 = 200_000 + 4_000 = 204_000
         // 24% of 204_000 = 48_960 — pay 48_000 (below 25%).
-        s.client.repay(&borrower, &48_000).unwrap();
+        s.client.repay(&borrower, &48_000);
         let loan_a = s.client.get_loan(&borrower).unwrap();
         assert_eq!(
             loan_a.milestone_bonus_applied & crate::types::MILESTONE_FLAG_25,
@@ -452,7 +469,7 @@ mod interest_tests {
         let accrued_before_milestone = loan_a.accrued_interest;
 
         // Now push over 25% (total_repaid = 48_000 + 5_000 = 53_000 > 51_000).
-        s.client.repay(&borrower, &5_000).unwrap();
+        s.client.repay(&borrower, &5_000);
         let loan_b = s.client.get_loan(&borrower).unwrap();
         assert_ne!(
             loan_b.milestone_bonus_applied & crate::types::MILESTONE_FLAG_25,
@@ -468,7 +485,7 @@ mod interest_tests {
         // Make another payment — milestone must NOT fire again.
         let accrued_after_milestone = loan_b.accrued_interest;
         let flags_after_milestone = loan_b.milestone_bonus_applied;
-        s.client.repay(&borrower, &1_000).unwrap();
+        s.client.repay(&borrower, &1_000);
         let loan_c = s.client.get_loan(&borrower).unwrap();
         assert_eq!(
             loan_c.milestone_bonus_applied, flags_after_milestone,
@@ -495,7 +512,7 @@ mod interest_tests {
         // Cross the 50% mark in one payment.
         // total_obligation_for_milestone = principal + total_yield = 204_000
         // 50% = 102_000
-        s.client.repay(&borrower, &102_000).unwrap();
+        s.client.repay(&borrower, &102_000);
         let loan_50 = s.client.get_loan(&borrower).unwrap();
         assert_ne!(
             loan_50.milestone_bonus_applied & crate::types::MILESTONE_FLAG_50,
@@ -507,7 +524,7 @@ mod interest_tests {
 
         // Cross 75%: pay another 51_000 (total 153_000 = 75% of 204_000).
         advance_days(&s, 5);
-        s.client.repay(&borrower, &51_000).unwrap();
+        s.client.repay(&borrower, &51_000);
         let loan_75 = s.client.get_loan(&borrower).unwrap();
         assert_ne!(
             loan_75.milestone_bonus_applied & crate::types::MILESTONE_FLAG_75,
@@ -517,7 +534,7 @@ mod interest_tests {
 
         // Re-pay a small amount — no new milestone fires.
         let flags_at_75 = loan_75.milestone_bonus_applied;
-        s.client.repay(&borrower, &100).unwrap();
+        s.client.repay(&borrower, &100);
         let loan_after = s.client.get_loan(&borrower).unwrap();
         assert_eq!(
             loan_after.milestone_bonus_applied, flags_at_75,
@@ -542,7 +559,7 @@ mod interest_tests {
         let expected = calculate_daily_compound_interest(200_000, 730);
 
         // Trigger accrual with minimum payment.
-        s.client.repay(&borrower, &1).unwrap();
+        s.client.repay(&borrower, &1);
         let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.accrued_interest, expected);
         assert!(loan.accrued_interest >= 0, "must not overflow to negative");

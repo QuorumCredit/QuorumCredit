@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn test_superadmin_all_permissions() {
-        let permissions = vec![
+        let permissions = [
             AdminPermission::Slash,
             AdminPermission::Pause,
             AdminPermission::UpdateConfig,
