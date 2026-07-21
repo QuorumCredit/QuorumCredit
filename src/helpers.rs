@@ -7,7 +7,7 @@ use crate::types::{
     SECS_PER_DAY, MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
     BPS_DENOMINATOR,
 };
-use soroban_sdk::{token, Address, Env, String, Vec};
+use soroban_sdk::{token, Address, Env, String, Symbol, Vec};
 
 // ── Reentrancy Guard ──────────────────────────────────────────────────────────
 
@@ -689,6 +689,32 @@ pub fn get_fresh_price(
     Ok(record)
 }
 
+/// Called by the registered oracle (see `verify_repayment` for the same pattern)
+/// to publish a fresh price for `key`. Overwrites any previous record for that key.
+pub fn set_oracle_price(
+    env: &Env,
+    oracle: &Address,
+    key: Symbol,
+    price: i128,
+) -> Result<(), ContractError> {
+    oracle.require_auth();
+
+    let cfg = config(env);
+    let registered = cfg.oracle_address.ok_or(ContractError::OracleUnauthorized)?;
+    if *oracle != registered {
+        return Err(ContractError::OracleUnauthorized);
+    }
+
+    let record = crate::types::OraclePriceRecord {
+        price,
+        recorded_at: env.ledger().timestamp(),
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::OraclePrice(key), &record);
+    Ok(())
+}
+
 // ── Issue #65: Graduated Response / Tiered Lockdown ───────────────────────────
 
 /// Returns the current [`ThreatLevel`] (defaults to `Normal`).
@@ -731,6 +757,9 @@ pub fn require_graduated_response(
             }
         }
         crate::types::ThreatLevel::Lockdown => {
+            Err(ContractError::ContractPaused)
+        }
+        crate::types::ThreatLevel::Critical => {
             Err(ContractError::ContractPaused)
         }
     }

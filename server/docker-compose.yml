@@ -1,0 +1,36 @@
+# Local multi-instance dev/test stack: real Redis + two broadcast server replicas
+# behind no load balancer (connect to either port directly to see cross-instance
+# delivery for yourself). Not used by `npm test` — see README.md.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  broadcast-a:
+    build: .
+    environment:
+      PORT: 4000
+      REDIS_URL: redis://redis:6379
+      INDEXER_DB_PATH: /data/indexer.db
+      INSTANCE_ID: broadcast-a
+    volumes:
+      - ../tools/indexer:/data:ro
+    ports:
+      - "4000:4000"
+    depends_on:
+      - redis
+
+  broadcast-b:
+    build: .
+    environment:
+      PORT: 4000
+      REDIS_URL: redis://redis:6379
+      INDEXER_DB_PATH: /data/indexer.db
+      INSTANCE_ID: broadcast-b
+    volumes:
+      - ../tools/indexer:/data:ro
+    ports:
+      - "4001:4000"
+    depends_on:
+      - redis

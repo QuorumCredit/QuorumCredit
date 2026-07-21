@@ -116,13 +116,8 @@ fn test_different_repayment_histories_produce_different_scores() {
 
     let env = Env::default();
     env.mock_all_auths();
-
-    // Set timestamp > 30_000_000 so registration_time subtraction doesn't overflow
-    env.ledger().with_mut(|l| l.timestamp = 50_000_000);
-
-    let contract_id = env.register_contract(None, QuorumCreditContract);
-
-    let borrower_early = Address::generate(&env);
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {    let borrower_early = Address::generate(&env);
     let borrower_late = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
@@ -247,34 +242,27 @@ fn test_different_repayment_histories_produce_different_scores() {
             .persistent()
             .set(&DataKey::BorrowerRegistered(borrower_late.clone()), &registration_time);
 
-        // Calculate credit scores
-        let score_early = calculate_credit_score(&env, &borrower_early)
-            .expect("Failed to calculate early repayment score");
-        let score_late = calculate_credit_score(&env, &borrower_late)
-            .expect("Failed to calculate late repayment score");
-
-        // Early repayer should have higher score than late repayer
-        assert!(
-            score_early.score > score_late.score,
-            "Early repayment score ({}) should be > late repayment score ({})",
-            score_early.score,
-            score_late.score
-        );
-
-        // Early repayer should have positive avg_repayment_time
-        assert!(
-            score_early.avg_repayment_time > 0,
-            "Early repayment avg_repayment_time ({}) should be positive",
-            score_early.avg_repayment_time
-        );
-
-        // Late repayer should have negative avg_repayment_time
-        assert!(
-            score_late.avg_repayment_time < 0,
-            "Late repayment avg_repayment_time ({}) should be negative",
-            score_late.avg_repayment_time
-        );
-    });
+    // Early repayer should have higher score than late repayer
+    assert!(
+        score_early.score > score_late.score,
+        "Early repayment score ({}) should be > late repayment score ({})",
+        score_early.score,
+        score_late.score
+    );
+    
+    // Early repayer should have positive avg_repayment_time
+    assert!(
+        score_early.avg_repayment_time > 0,
+        "Early repayment avg_repayment_time ({}) should be positive",
+        score_early.avg_repayment_time
+    );
+    
+    // Late repayer should have negative avg_repayment_time
+    assert!(
+        score_late.avg_repayment_time < 0,
+        "Late repayment avg_repayment_time ({}) should be negative",
+        score_late.avg_repayment_time
+    );    });
 }
 
 #[test]
@@ -283,9 +271,8 @@ fn test_credit_score_total_borrowed() {
 
     let env = Env::default();
     env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, QuorumCreditContract);
-    let borrower = Address::generate(&env);
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {    let borrower = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         let now = env.ledger().timestamp();
@@ -386,15 +373,11 @@ fn test_credit_score_total_borrowed() {
             .persistent()
             .set(&DataKey::BorrowerRegistered(borrower.clone()), &now);
 
-        let credit_score = calculate_credit_score(&env, &borrower)
-            .expect("Failed to calculate credit score");
-
-        // Total borrowed should be 500_000 + 300_000 = 800_000
-        assert_eq!(
-            credit_score.total_borrowed, 800_000,
-            "Total borrowed should be 800_000"
-        );
-    });
+    // Total borrowed should be 500_000 + 300_000 = 800_000
+    assert_eq!(
+        credit_score.total_borrowed, 800_000,
+        "Total borrowed should be 800_000"
+    );    });
 }
 
 #[test]
@@ -403,9 +386,8 @@ fn test_credit_score_total_repaid() {
 
     let env = Env::default();
     env.mock_all_auths();
-
-    let contract_id = env.register_contract(None, QuorumCreditContract);
-    let borrower = Address::generate(&env);
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {    let borrower = Address::generate(&env);
 
     env.as_contract(&contract_id, || {
         let now = env.ledger().timestamp();
@@ -467,15 +449,11 @@ fn test_credit_score_total_repaid() {
             .persistent()
             .set(&DataKey::BorrowerRegistered(borrower.clone()), &now);
 
-        let credit_score = calculate_credit_score(&env, &borrower)
-            .expect("Failed to calculate credit score");
-
-        // Total repaid should be 750_000
-        assert_eq!(
-            credit_score.total_repaid, 750_000,
-            "Total repaid should be 750_000"
-        );
-    });
+    // Total repaid should be 750_000
+    assert_eq!(
+        credit_score.total_repaid, 750_000,
+        "Total repaid should be 750_000"
+    );    });
 }
 
 #[test]

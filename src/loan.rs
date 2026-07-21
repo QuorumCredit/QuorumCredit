@@ -22,22 +22,9 @@ const VOUCH_AGE_BONUS_PERIOD_SECS: u64 = 30 * 24 * 60 * 60; // 30 days per perio
 const VOUCH_AGE_BONUS_BPS_PER_PERIOD: i128 = 25;             // +25 bps per period
 const VOUCH_AGE_BONUS_MAX_BPS: i128 = 200;                   // cap at 200 bps
 
-/// Get or compute the yield rate for a single vouch with caching (Issue #934).
+/// Get or compute the yield rate for a single vouch (Issue #934).
 pub fn vouch_yield_bps(env: &Env, vouch: &VouchRecord, borrower: &Address, now: u64) -> i128 {
-    let cfg = config(env);
-    
-    // Try to get cached yield
-    if let Some(cached_yield) = crate::cache::get_cached_yield(env, borrower, &vouch.voucher, cfg.yield_bps) {
-        return cached_yield;
-    }
-    
-    // Compute yield if not cached
-    let yield_bps = vouch_yield_bps_uncached(env, vouch, borrower, now);
-    
-    // Cache the result
-    crate::cache::set_cached_yield(env, borrower, &vouch.voucher, yield_bps, cfg.yield_bps);
-    
-    yield_bps
+    vouch_yield_bps_uncached(env, vouch, borrower, now)
 }
 
 /// Compute the yield rate (in bps) for a single vouch, incorporating:
@@ -282,12 +269,6 @@ pub fn request_loan(
         .set(&DataKey::LatestLoan(borrower.clone()), &loan_id);
 
     token.transfer(&env.current_contract_address(), &borrower, &amount);
-
-    // Issue #882: Collect insurance fee at loan disbursement
-    crate::insurance::collect_loan_fee(&env, amount);
-    env.storage()
-        .persistent()
-        .set(&DataKey::InsuranceLinked(loan_id), &true);
 
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("created")),
@@ -569,9 +550,10 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             };
 
             let payout = v.stake + vouch_yield + penalty_share;
-            
-            // Issue #935: Queue transfer for batch processing
-            crate::batch_transfer::queue_transfer(&env, v.voucher.clone(), payout, loan.token_address.clone());
+
+            if payout > 0 {
+                token.transfer(&env.current_contract_address(), &v.voucher, &payout);
+            }
 
             let mut stats: crate::types::VoucherStats = env
                 .storage()
@@ -589,9 +571,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 .persistent()
                 .set(&DataKey::VoucherStats(v.voucher.clone()), &stats);
         }
-
-        // Issue #935: Flush all queued transfers in a single batch
-        crate::batch_transfer::flush_transfers(&env)?;
 
         // Increment borrower repayment count (feeds future reputation bonus).
         let prev_count: u32 = env
@@ -617,9 +596,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         if bonus > 0 {
             let contract_balance = token.balance(&env.current_contract_address());
             if contract_balance >= bonus {
-                // Issue #935: Queue bonus transfer for batch processing
-                crate::batch_transfer::queue_transfer(&env, borrower.clone(), bonus, loan.token_address.clone());
-                crate::batch_transfer::flush_transfers(&env)?;
+                token.transfer(&env.current_contract_address(), &borrower, &bonus);
                 env.events().publish(
                     (symbol_short!("loan"), symbol_short!("bonus")),
                     (borrower.clone(), bonus),
@@ -1882,9 +1859,25 @@ pub fn calculate_dynamic_rate(
     };
 
     let risk_adjustment = risk_score * rate_cfg.risk_adjustment_bps;
+
+    // Issue #64/#665: fold the oracle-tracked collateral price into the risk
+    // premium. Stale or missing data is treated conservatively (as if the
+    // market had moved against the collateral), never silently ignored.
+    let oracle_premium: u32 = match &rate_cfg.oracle_price_symbol {
+        Some(symbol) => match crate::helpers::get_fresh_price(env, symbol.clone()) {
+            Ok(record) if record.price < rate_cfg.oracle_risk_threshold => {
+                rate_cfg.oracle_risk_premium_bps
+            }
+            Ok(_) => 0,
+            Err(_) => rate_cfg.oracle_stale_premium_bps,
+        },
+        None => 0,
+    };
+
     let raw_rate = rate_cfg
         .base_rate_bps
         .saturating_add(risk_adjustment)
+        .saturating_add(oracle_premium)
         .saturating_sub(credit_tier_discount);
 
     raw_rate.max(rate_cfg.rate_floor_bps).min(rate_cfg.rate_cap_bps)

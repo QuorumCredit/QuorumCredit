@@ -75,9 +75,9 @@ pub enum ContractError {
     /// No escrow record found for this borrower (#666/#667).
     NoEscrowFound = 56,
     /// No slash record found for the given slash ID.
-    SlashRecordNotFound = 142,
+    SlashRecordNotFound = 149,
     /// Refinancing was attempted without any outstanding balance to settle.
-    RefinanceNoOutstanding = 143,
+    RefinanceNoOutstanding = 150,
     /// Slash has already been reversed and cannot be reversed again.
     SlashAlreadyReversed = 58,
     /// Caller has exceeded the configured rate limit.
@@ -173,13 +173,13 @@ EscrowExpired = 130,
 /// Emergency cooldown bypass is not authorised for this voucher.
 EmergencyBypassNotAuthorised = 131,
     /// Cooldown bypass request already exists for this (borrower, voucher) pair.
-    CooldownBypassAlreadyRequested = 150,
+    CooldownBypassAlreadyRequested = 174,
     /// Cooldown bypass request not found.
-    CooldownBypassNotFound = 151,
+    CooldownBypassNotFound = 175,
     /// Cooldown bypass has already been approved.
-    CooldownBypassAlreadyApproved = 152,
+    CooldownBypassAlreadyApproved = 176,
     /// Insufficient admin approvals for cooldown bypass (need 2/3).
-    CooldownBypassInsufficientApprovals = 153,
+    CooldownBypassInsufficientApprovals = 177,
     /// Cross-collateral pool not found.
     CollateralPoolNotFound = 132,
     /// Cross-collateral pool is already active (has an assigned borrower).
@@ -238,4 +238,6 @@ EmergencyBypassNotAuthorised = 131,
     MaxForbearanceExceeded = 171,
     /// Invalid configuration for dynamic interest rate.
     InvalidDynamicRateConfig = 172,
+    /// Attestor reported fewer origin-chain confirmations than the required minimum.
+    InsufficientBridgeConfirmations = 173,
 }

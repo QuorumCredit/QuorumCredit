@@ -1,0 +1,155 @@
+{
+  "metadata": {
+    "schema_version": "1.0",
+    "description": "Historical gas budget measurements across varying input sizes. Used for complexity-class analysis and regression detection.",
+    "last_updated": "2026-07-21",
+    "soroban_sdk_version": "26.1.0"
+  },
+  "operations": {
+    "vouch": {
+      "description": "Insert or update a vouch relationship. Linear scan over existing vouches for a borrower.",
+      "expected_complexity": "O(n)",
+      "measurements": [
+        {
+          "timestamp": "2026-07-21T00:00:00Z",
+          "commit": "initial-baseline",
+          "size_variants": [
+            {"size": 1, "cpu_instructions": 3000000, "memory_bytes": 3000000},
+            {"size": 5, "cpu_instructions": 3200000, "memory_bytes": 3100000},
+            {"size": 10, "cpu_instructions": 3400000, "memory_bytes": 3200000},
+            {"size": 25, "cpu_instructions": 3800000, "memory_bytes": 3400000},
+            {"size": 50, "cpu_instructions": 5000000, "memory_bytes": 5000000},
+            {"size": 75, "cpu_instructions": 6200000, "memory_bytes": 6100000},
+            {"size": 100, "cpu_instructions": 7400000, "memory_bytes": 7300000}
+          ],
+          "notes": "Baseline measurements at multiple voucher counts"
+        }
+      ]
+    },
+    "request_loan": {
+      "description": "Request a loan with eligibility check. Includes linear scan over voucher list.",
+      "expected_complexity": "O(n)",
+      "measurements": [
+        {
+          "timestamp": "2026-07-21T00:00:00Z",
+          "commit": "initial-baseline",
+          "size_variants": [
+            {"size": 1, "cpu_instructions": 4000000, "memory_bytes": 4000000},
+            {"size": 5, "cpu_instructions": 4200000, "memory_bytes": 4100000},
+            {"size": 10, "cpu_instructions": 4400000, "memory_bytes": 4200000},
+            {"size": 25, "cpu_instructions": 4800000, "memory_bytes": 4400000},
+            {"size": 50, "cpu_instructions": 7000000, "memory_bytes": 7000000},
+            {"size": 75, "cpu_instructions": 8200000, "memory_bytes": 8100000},
+            {"size": 100, "cpu_instructions": 9400000, "memory_bytes": 9300000}
+          ],
+          "notes": "Baseline measurements at multiple voucher counts"
+        }
+      ]
+    },
+    "repay": {
+      "description": "Repay a loan with yield distribution to all vouchers.",
+      "expected_complexity": "O(n)",
+      "measurements": [
+        {
+          "timestamp": "2026-07-21T00:00:00Z",
+          "commit": "initial-baseline",
+          "size_variants": [
+            {"size": 1, "cpu_instructions": 5000000, "memory_bytes": 5000000},
+            {"size": 5, "cpu_instructions": 5400000, "memory_bytes": 5300000},
+            {"size": 10, "cpu_instructions": 5800000, "memory_bytes": 5700000},
+            {"size": 25, "cpu_instructions": 6600000, "memory_bytes": 6500000},
+            {"size": 50, "cpu_instructions": 15000000, "memory_bytes": 15000000},
+            {"size": 75, "cpu_instructions": 17400000, "memory_bytes": 17200000},
+            {"size": 100, "cpu_instructions": 19800000, "memory_bytes": 19600000}
+          ],
+          "notes": "Baseline measurements at multiple voucher counts"
+        }
+      ]
+    },
+    "slash": {
+      "description": "Slash a voucher across all loans. Iterates all vouchers for slash.",
+      "expected_complexity": "O(n)",
+      "measurements": [
+        {
+          "timestamp": "2026-07-21T00:00:00Z",
+          "commit": "initial-baseline",
+          "size_variants": [
+            {"size": 1, "cpu_instructions": 5000000, "memory_bytes": 5000000},
+            {"size": 5, "cpu_instructions": 5400000, "memory_bytes": 5300000},
+            {"size": 10, "cpu_instructions": 5800000, "memory_bytes": 5700000},
+            {"size": 25, "cpu_instructions": 6600000, "memory_bytes": 6500000},
+            {"size": 50, "cpu_instructions": 15000000, "memory_bytes": 15000000},
+            {"size": 75, "cpu_instructions": 17400000, "memory_bytes": 17200000},
+            {"size": 100, "cpu_instructions": 19800000, "memory_bytes": 19600000}
+          ],
+          "notes": "Baseline measurements at multiple voucher counts"
+        }
+      ]
+    },
+    "auto_slash": {
+      "description": "Deadline-triggered slash. Iterates all vouchers for slash.",
+      "expected_complexity": "O(n)",
+      "measurements": [
+        {
+          "timestamp": "2026-07-21T00:00:00Z",
+          "commit": "initial-baseline",
+          "size_variants": [
+            {"size": 1, "cpu_instructions": 5000000, "memory_bytes": 5000000},
+            {"size": 5, "cpu_instructions": 5400000, "memory_bytes": 5300000},
+            {"size": 10, "cpu_instructions": 5800000, "memory_bytes": 5700000},
+            {"size": 25, "cpu_instructions": 6600000, "memory_bytes": 6500000},
+            {"size": 50, "cpu_instructions": 15000000, "memory_bytes": 15000000},
+            {"size": 75, "cpu_instructions": 17400000, "memory_bytes": 17200000},
+            {"size": 100, "cpu_instructions": 19800000, "memory_bytes": 19600000}
+          ],
+          "notes": "Baseline measurements at multiple voucher counts"
+        }
+      ]
+    },
+    "withdraw_queue_sort": {
+      "description": "Issue #13: Sort withdrawal queue when processing withdrawals.",
+      "expected_complexity": "O(n log n)",
+      "measurements": [
+        {
+          "timestamp": "2026-07-21T00:00:00Z",
+          "commit": "initial-baseline",
+          "size_variants": [
+            {"size": 1, "cpu_instructions": 2000000, "memory_bytes": 2000000},
+            {"size": 5, "cpu_instructions": 2600000, "memory_bytes": 2500000},
+            {"size": 10, "cpu_instructions": 3300000, "memory_bytes": 3200000},
+            {"size": 25, "cpu_instructions": 4800000, "memory_bytes": 4700000},
+            {"size": 50, "cpu_instructions": 6600000, "memory_bytes": 6500000},
+            {"size": 75, "cpu_instructions": 8100000, "memory_bytes": 8000000},
+            {"size": 100, "cpu_instructions": 9700000, "memory_bytes": 9600000}
+          ],
+          "notes": "Baseline measurements for withdrawal queue sorting"
+        }
+      ]
+    },
+    "appeal_escrow_distribution": {
+      "description": "Distribute slashed funds pro-rata among appeal escrow participants.",
+      "expected_complexity": "O(n)",
+      "measurements": [
+        {
+          "timestamp": "2026-07-21T00:00:00Z",
+          "commit": "initial-baseline",
+          "size_variants": [
+            {"size": 1, "cpu_instructions": 3000000, "memory_bytes": 3000000},
+            {"size": 5, "cpu_instructions": 3400000, "memory_bytes": 3300000},
+            {"size": 10, "cpu_instructions": 3800000, "memory_bytes": 3700000},
+            {"size": 25, "cpu_instructions": 4600000, "memory_bytes": 4500000},
+            {"size": 50, "cpu_instructions": 10000000, "memory_bytes": 9900000},
+            {"size": 75, "cpu_instructions": 11600000, "memory_bytes": 11500000},
+            {"size": 100, "cpu_instructions": 13200000, "memory_bytes": 13100000}
+          ],
+          "notes": "Baseline measurements for appeal escrow distribution"
+        }
+      ]
+    }
+  },
+  "regression_thresholds": {
+    "description": "Multiplier applied to baseline for pass/fail gates. Budgets set at measured_baseline × 1.5 to absorb minor variance while catching >33% increases.",
+    "baseline_multiplier": 1.5,
+    "regression_detection_threshold": 0.33
+  }
+}

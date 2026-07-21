@@ -135,6 +135,10 @@ pub const PARTIAL_WITHDRAWAL_PENALTY_BPS: i128 = 1_000;
 /// Yield stream period in seconds (7 days).
 pub const YIELD_STREAM_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// Maximum priority fee as a percentage of voucher stake, in basis points (1000 = 10%).
+/// Prevents uncapped front-running by capping the priority fee to a fraction of the voucher's own stake.
+pub const MAX_PRIORITY_FEE_BPS: i128 = 1_000;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RateLimitConfig {
@@ -429,7 +433,6 @@ pub enum DataKey {
     Loan(u64),                   // loan_id → LoanRecord
     ActiveLoan(Address),         // borrower → active loan_id
     LatestLoan(Address),         // borrower → latest loan_id
-    RefinanceRecord(u64),       // loan_id → RefinanceRecord
     Vouches(Address),            // borrower → Vec<VouchRecord>
     VoucherHistory(Address),     // voucher → Vec<Address> (borrowers backed)
     Config,                      // Config struct: all configurable protocol parameters
@@ -448,7 +451,6 @@ pub enum DataKey {
     LoanPoolCounter, // u64: monotonically increasing pool ID counter
     PendingAdmin,    // Address of the pending admin (two-step transfer)
     RepaymentCount(Address), // borrower → u32 total successful repayments
-    RepaymentConfirmation(u64), // loan_id → bool confirmation flag
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
     ProtocolFeeBps,  // u32: protocol fee in basis points
@@ -499,6 +501,10 @@ pub enum DataKey {
     /// Per-borrower timestamp of the most recent slash proposal initiation.
     /// Used to enforce the 7-day cooldown between successive slash proposals.
     LastSlashProposalAt(Address),
+    /// Refinance record for a loan: loan_id → RefinanceRecord
+    RefinanceRecord(u64),
+    /// Borrower repayment confirmation for oracle-gated repayment: loan_id → bool
+    RepaymentConfirmation(u64),
     /// Cached total weighted stake per borrower per token: (borrower, token) → i128
     /// Used for O(1) eligibility checks; invalidated on vouch operations.
     TotalWeightedStakeCache(Address, Address),
@@ -565,6 +571,14 @@ pub enum DataKey {
     BridgeValidated(Address, u32),
     /// Registered cross-chain bridges: Vec<BridgeRecord>
     Bridges,
+    /// origin_chain → the Ed25519 public key trusted to sign attestations from it.
+    BridgePublicKey(u32),
+    /// (origin_chain, nonce) → true once an attestation with that nonce has been consumed.
+    BridgeNonceUsed(u32, u64),
+    /// (origin_chain, loan_id) → the mirrored CrossChainLoanMetadata for that origin loan.
+    MirroredLoan(u32, u64),
+    /// borrower → the latest cross-chain reputation snapshot mirrored in for them.
+    CrossChainReputation(Address),
     /// Issue #687: admin removal proposal id → AdminRemovalProposal
     AdminRemovalProposal(u64),
     /// Issue #687: monotonically increasing admin removal proposal counter
@@ -878,7 +892,7 @@ pub enum AdminOperationType {
 /// Issue #893: Multi-tier admin approval thresholds for different operation types.
 /// Allows different admin operations to require different numbers of approvals.
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MultiTierAdminThresholds {
     /// Approvals required for standard operations (default: same as admin_threshold)
     pub standard_threshold: u32,
@@ -1454,7 +1468,11 @@ pub struct Config {
     /// when current admins are unavailable.
     pub successor_admin: Option<Address>,
     pub rate_limit_config: RateLimitConfig,
-    /// Recovery percentage for defaulted loans (in basis points, e.g. 5000 = 50%).
+    /// Issue #893: Multi-tier admin approval thresholds for different operation types.
+    /// Empty means "not set" -- falls back to single admin_threshold for all operations.
+    /// (0 or 1 elements; a `Vec` rather than `Option` because a custom struct nested in
+    /// an `Option` field of a `#[contracttype]` isn't XDR-derivable in this SDK version.)
+    pub multi_tier_thresholds: Vec<MultiTierAdminThresholds>,    /// Recovery percentage for defaulted loans (in basis points, e.g. 5000 = 50%).
     pub recovery_percentage: u32,
     /// When true, the slash threshold is calculated dynamically based on pool health.
     pub dynamic_slash_threshold: bool,
@@ -1524,40 +1542,48 @@ pub struct LoanRecord {
     pub auto_repay_attempts: u32,
     pub escrow_status: EscrowStatus,
     pub co_borrowers: Vec<Address>,
-    pub amount: i128,        // total loan principal in stroops
-    pub amount_repaid: i128, // cumulative repayments received so far (principal + yield + interest)
-    pub total_yield: i128,   // static yield owed to vouchers, locked in at disbursement
+    /// Total loan principal disbursed, in stroops. 1 XLM = 10,000,000 stroops.
+    pub amount: i128,
+    /// Cumulative repayments received so far (principal + yield + interest), in stroops.
+    pub amount_repaid: i128,
+    /// Yield owed to vouchers, locked in at disbursement time, in stroops.
+    /// Computed as `amount * yield_bps / 10_000`.
+    pub total_yield: i128,
+    pub status: LoanStatus,
     pub repaid: bool,
     pub defaulted: bool,
-    pub created_at: u64,                  // ledger timestamp
-    pub disbursement_timestamp: u64,      // ledger timestamp
-    pub repayment_timestamp: Option<u64>, // set once the loan is fully repaid
-    pub deadline: u64,                    // repayment deadline (ledger timestamp)
-    pub loan_purpose: soroban_sdk::String, // borrower-supplied purpose string
-    pub token_address: Address,           // token used for this loan
-
-    // ── Daily-compound interest fields ───────────────────────────────────────
-    /// Ledger timestamp of the last interest accrual.  Initialised to
-    /// `disbursement_timestamp` so the first `repay()` call charges interest
-    /// for however many whole days have elapsed since disbursement.
-    pub last_interest_calc: u64,
-    /// Total compound interest accrued so far but not yet repaid.
-    /// Updated on every `repay()` call before the payment is applied.
-    pub accrued_interest: i128,
-
-    // ── Milestone bonus field ─────────────────────────────────────────────────
-    /// Bitmask tracking which milestone bonuses have already been applied.
-    /// Bit 0 = 25 % milestone, bit 1 = 50 % milestone, bit 2 = 75 % milestone.
-    /// Once a bit is set it is never cleared, ensuring each bonus fires at most once.
-    pub milestone_bonus_applied: u32,
-    pub status: LoanStatus,
+    /// Ledger timestamp when the loan record was created.
+    pub created_at: u64,
+    /// Ledger timestamp when the loan was disbursed to the borrower.
+    pub disbursement_timestamp: u64,
+    /// Ledger timestamp when the loan was fully repaid; `None` if not yet repaid.
+    pub repayment_timestamp: Option<u64>,
+    /// Repayment deadline as a ledger timestamp.
+    pub deadline: u64,
+    /// Borrower-supplied description of the loan purpose.
+    pub loan_purpose: soroban_sdk::String,
+    /// Address of the token contract used for this loan.
+    pub token_address: Address,
+    /// Amortization schedule for partial repayments.
     pub amortization_schedule: Vec<AmortizationEntry>,
     pub reminder_sent: bool,
     pub risk_score: u32,
     pub deferment_periods: u32,
+    /// Optional custom maturity date (ledger timestamp).
     pub maturity_date: Option<u64>,
     pub rate_type: RateType,
+    /// For variable-rate loans: the oracle key or index name.
     pub index_reference: Option<soroban_sdk::String>,
+    // ── Daily-compound interest fields ───────────────────────────────────────
+    /// Ledger timestamp of the last interest accrual.
+    pub last_interest_calc: u64,
+    /// Total compound interest accrued so far but not yet repaid.
+    pub accrued_interest: i128,
+    // ── Milestone bonus field ─────────────────────────────────────────────────
+    /// Bitmask tracking which milestone bonuses have already been applied.
+    /// Bit 0 = 25% milestone, bit 1 = 50% milestone, bit 2 = 75% milestone.
+    pub milestone_bonus_applied: u32,
+    /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
     pub suspension_timestamp: Option<u64>,
     pub suspension_amount_repaid: i128,
@@ -1760,6 +1786,9 @@ pub struct SlashRecord {
     pub reversal_reason: Option<soroban_sdk::String>,
     /// True once an admin has reversed this slash.
     pub reversed: bool,
+    /// Effective slash percentage (basis points) applied at slash time.
+    /// Used to correctly restore funds on successful appeal.
+    pub effective_slash_bps: i128,
 }
 
 /// Monthly aggregated report of all slashing events.
@@ -2229,6 +2258,14 @@ pub struct DynamicRateConfig {
     pub risk_adjustment_bps: u32,
     pub rate_floor_bps: u32,
     pub rate_cap_bps: u32,
+    /// Oracle price key to consult as a risk input.
+    pub oracle_price_symbol: Option<soroban_sdk::Symbol>,
+    /// Price threshold below which oracle risk premium is applied.
+    pub oracle_risk_threshold: i128,
+    /// Risk premium applied when oracle price is below threshold.
+    pub oracle_risk_premium_bps: u32,
+    /// Conservative premium applied when oracle price is missing or stale.
+    pub oracle_stale_premium_bps: u32,
 }
 
 pub const DEFAULT_DYNAMIC_RATE_CONFIG: DynamicRateConfig = DynamicRateConfig {
@@ -2237,13 +2274,45 @@ pub const DEFAULT_DYNAMIC_RATE_CONFIG: DynamicRateConfig = DynamicRateConfig {
     risk_adjustment_bps: 10,
     rate_floor_bps: 500,
     rate_cap_bps: 2000,
+    oracle_price_symbol: None,
+    oracle_risk_threshold: 0,
+    oracle_risk_premium_bps: 0,
+    oracle_stale_premium_bps: 0,
 };
 
 pub const DEFAULT_FORBEARANCE_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
 pub const MAX_FORBEARANCE_PERIODS: u32 = 3;
 
+// ── Oracle Price ──────────────────────────────────────────────────────────────
+
+/// Staleness window for oracle price records, in seconds (1 hour).
+pub const ORACLE_PRICE_MAX_AGE_SECS: u64 = 60 * 60;
+
+/// An oracle price record with a value and timestamp.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
+pub struct OraclePriceRecord {
+    pub price: i128,
+    pub recorded_at: u64,
+}
+
+// ── Graduated Response / Tiered Lockdown ──────────────────────────────────────
+
+/// Protocol threat level for graduated response.
+#[contracttype]
+#[derive(Clone, PartialEq)]
+pub enum ThreatLevel {
+    Normal,
+    Elevated,
+    Critical,
+    Lockdown,
+}
+
+// ── Vouch Merkle Root ─────────────────────────────────────────────────────────
+
+/// Vouch Merkle root record stored per borrower.
+#[contracttype]
+#[derive(Clone)]
 pub struct VouchMerkleRoot {
     pub root: BytesN<32>,
     pub vouch_count: u32,
@@ -2251,24 +2320,7 @@ pub struct VouchMerkleRoot {
 }
 
 #[contracttype]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ThreatLevel {
-    Normal,
-    Elevated,
-    Lockdown,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OraclePriceRecord {
-    pub price: i128,
-    pub recorded_at: u64,
-}
-
-pub const ORACLE_PRICE_MAX_AGE_SECS: u64 = 3600;
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct AdminActionProposal {
     pub id: u64,
     pub action_type: soroban_sdk::String,

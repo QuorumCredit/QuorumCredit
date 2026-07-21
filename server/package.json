@@ -1,0 +1,34 @@
+{
+  "name": "quorum-credit-broadcast-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-instance-safe real-time event broadcast backend for the QuorumCredit dashboard (issue #1142). Tails the tools/indexer SQLite event log and fans events out over Redis pub/sub to socket.io (loans) and raw WebSocket (metrics) clients, with resumable cursors, bounded per-connection queues, and auth-token refresh.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:multi-instance": "vitest run test/multi-instance --config vitest.multi-instance.config.ts",
+    "loadtest": "tsx scripts/loadtest.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "ioredis": "^5.4.1",
+    "socket.io": "^4.8.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "socket.io-client": "^4.8.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.1.4"
+  }
+}

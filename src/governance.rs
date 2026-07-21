@@ -676,6 +676,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         recovery_amount: 0,
         reversal_reason: None,
         reversed: false,
+        effective_slash_bps,
     };
     env.storage()
         .persistent()
@@ -703,56 +704,6 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
 /// Propose a slash action with a delay before execution.
 /// This implements the "confirmation window" for the slash action.
-
-/// Queue a slash operation for deferred batch execution (Issue #937: Lazy Slash).
-/// This allows multiple slashes to be batched together, reducing gas costs.
-pub fn queue_slash(
-    env: Env,
-    admin_signers: Vec<Address>,
-    borrower: Address,
-    slash_amount: i128,
-) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
-    
-    // Calculate slash amount from existing vouch stake if not provided
-    let actual_slash = if slash_amount > 0 {
-        slash_amount
-    } else {
-        let vouches: Vec<VouchRecord> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Vouches(borrower.clone()))
-            .unwrap_or(Vec::new(&env));
-        
-        let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
-        let cfg = config(&env);
-        total_stake.checked_mul(cfg.slash_bps).ok_or(ContractError::ArithmeticError)? / BPS_DENOMINATOR
-    };
-    
-    crate::lazy_slash::queue_slash(&env, borrower.clone(), actual_slash)?;
-    
-    env.events().publish(
-        (symbol_short!("gov"), symbol_short!("slashqd")),
-        (borrower.clone(), actual_slash),
-    );
-    
-    Ok(())
-}
-
-/// Execute all queued slash operations in a single batch (Issue #937: Lazy Slash).
-/// Returns the number of slashes executed.
-pub fn execute_queued_slashes(env: Env, admin_signers: Vec<Address>) -> Result<u32, ContractError> {
-    require_admin_approval(&env, &admin_signers);
-    
-    let executed = crate::lazy_slash::execute_queued_slashes(&env)?;
-    
-    env.events().publish(
-        (symbol_short!("gov"), symbol_short!("slashqexc")),
-        (executed,),
-    );
-    
-    Ok(executed)
-}
 
 pub fn propose_slash(
     env: Env,
@@ -997,7 +948,13 @@ pub fn execute_slash_appeal(
 
     let token_client = soroban_sdk::token::Client::new(&env, &loan.token_address);
 
-    // Restore the voucher's stake (50% of original, since 50% was slashed)
+    // Get the slash record to find the actual effective_slash_bps that was applied
+    let slash_record: SlashRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SlashAudit(borrower.clone()))
+        .ok_or(ContractError::SlashRecordNotFound)?;
+
     let vouches: Vec<VouchRecord> = env
         .storage()
         .persistent()
@@ -1010,8 +967,10 @@ pub fn execute_slash_appeal(
         .map(|v| v.stake)
         .unwrap_or(0);
 
-    // Restore 50% of the original stake (the slashed amount)
-    let restored_amount = original_stake / 2;
+    // Calculate the actual slashed amount based on the effective_slash_bps that was applied
+    let slashed_amount = original_stake.checked_mul(slash_record.effective_slash_bps).ok_or(ContractError::ArithmeticError)? / BPS_DENOMINATOR;
+    let restored_amount = original_stake.checked_sub(slashed_amount).ok_or(ContractError::ArithmeticError)?;
+
     if restored_amount > 0 {
         token_client.transfer(
             &env.current_contract_address(),
@@ -1666,17 +1625,24 @@ fn finalize_appeal_internal(
     if appeal_approved {
         // Reverse the slash: restore funds to vouchers pro-rata
         escrow.status = AppealStatus::Approved;
-        
+
+        // Get the loan to find the token address for transfers
+        let loan = get_latest_loan_record(env, borrower)
+            .ok_or(ContractError::NoActiveLoan)?;
+        let token_client = soroban_sdk::token::Client::new(env, &loan.token_address);
+        let contract_address = env.current_contract_address();
+
         // Return funds to each voucher proportionally
         for vouch in vouches.iter() {
             let voucher_proportion = (vouch.stake.checked_mul(BPS_DENOMINATOR).ok_or(ContractError::ArithmeticError)? / total_stake) as u32;
             let return_amount = escrow.escrow_amount.checked_mul(voucher_proportion as i128).ok_or(ContractError::ArithmeticError)? / BPS_DENOMINATOR;
-            
+
             if return_amount > 0 {
-                // In a real scenario, transfer tokens back to voucher
-                // For now, we just emit an event
+                // Transfer tokens back to voucher from escrow
+                token_client.transfer(&contract_address, &vouch.voucher, &return_amount);
+
                 env.events().publish(
-                    (symbol_short!("app"), symbol_short!("approved")),
+                    (symbol_short!("app"), symbol_short!("funded")),
                     (borrower.clone(), vouch.voucher.clone(), return_amount),
                 );
             }
@@ -2153,7 +2119,7 @@ pub fn propose_config_change(
         .set(&DataKey::TimelockCounter, &proposal_id);
 
     env.events().publish(
-        (symbol_short!("gov"), soroban_sdk::Symbol::new(&env, "config_prop")),
+        (symbol_short!("gov"), symbol_short!("cfg_prop")),
         (proposal_id, proposer, eta),
     );
 
@@ -2196,7 +2162,7 @@ pub fn execute_config_change(env: Env, proposal_id: u64) -> Result<(), ContractE
             .set(&DataKey::Config, new_config);
 
         env.events().publish(
-            (symbol_short!("gov"), soroban_sdk::Symbol::new(&env, "config_exec")),
+            (symbol_short!("gov"), symbol_short!("cfg_exec")),
             (proposal_id,),
         );
 
@@ -2230,7 +2196,7 @@ pub fn cancel_config_change(
         .set(&DataKey::Timelock(proposal_id), &proposal);
 
     env.events().publish(
-        (symbol_short!("gov"), soroban_sdk::Symbol::new(&env, "config_cancel")),
+        (symbol_short!("gov"), symbol_short!("cfg_cncl")),
         (proposal_id,),
     );
 

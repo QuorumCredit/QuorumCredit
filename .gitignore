@@ -44,6 +44,8 @@ lcov.info
 coverage/
 tarpaulin-report.html
 dashboard/node_modules/
+server/node_modules/
+server/dist/
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
