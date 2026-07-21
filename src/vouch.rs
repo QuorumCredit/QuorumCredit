@@ -679,6 +679,7 @@ pub fn withdraw_vouch(
 /// Request a withdrawal during an active loan.
 /// The request is queued and processed when the loan is repaid or slashed.
 /// Optionally pay a priority fee (in stroops) to be processed first.
+/// Priority fee is capped at MAX_PRIORITY_FEE_BPS (default 10%) of the voucher's own stake.
 pub fn request_withdrawal(
     env: Env,
     voucher: Address,
@@ -704,6 +705,17 @@ pub fn request_withdrawal(
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
     let vouch_rec = vouches.get(idx).unwrap();
+
+    if priority_fee > 0 {
+        let max_fee = vouch_rec
+            .stake
+            .checked_mul(crate::types::MAX_PRIORITY_FEE_BPS)
+            .ok_or(ContractError::ArithmeticError)?
+            / BPS_DENOMINATOR;
+        if priority_fee > max_fee {
+            return Err(ContractError::InvalidAmount);
+        }
+    }
 
     if !has_active_loan(&env, &borrower) {
         // No active loan — execute withdrawal immediately (auth already checked above)
@@ -798,6 +810,7 @@ pub fn partial_withdraw(
 /// Called internally by the loan module during repay/slash, BEFORE vouch records are deleted.
 /// For each queued withdrawal, the voucher's stake is transferred back and the vouch record
 /// is removed from the vouches list.
+/// The queue is pre-sorted by priority_fee (DESC) and requested_at (ASC) as tiebreaker.
 pub fn process_withdrawal_queue(env: &Env, borrower: &Address) {
     let queue: Vec<QueuedWithdrawal> = env
         .storage()
@@ -815,30 +828,12 @@ pub fn process_withdrawal_queue(env: &Env, borrower: &Address) {
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(env));
 
-    // Sort by priority fee descending (higher fee = processed first)
-    let mut sorted_queue = queue.clone();
-    let n = sorted_queue.len();
-    for i in 1..n {
-        for j in (1..=i).rev() {
-            let a = sorted_queue.get(j - 1).unwrap();
-            let b = sorted_queue.get(j).unwrap();
-            if b.priority_fee > a.priority_fee {
-                sorted_queue.set(j - 1, b.clone());
-                sorted_queue.set(j, a.clone());
-            } else {
-                break;
-            }
-        }
-    }
-
-    // Collect total priority fees to distribute to non-withdrawing vouchers
-    let total_priority_fees: i128 = sorted_queue.iter().map(|q| q.priority_fee).sum();
-
-    // Track which vouchers have been processed so we can filter them out later
-    let mut processed_vouchers: Vec<Address> = Vec::new(env);
+    // Queue is pre-sorted by priority_fee (DESC) and requested_at (ASC).
+    // No need to re-sort; process in order.
+    let total_priority_fees: i128 = queue.iter().map(|q| q.priority_fee).sum();
 
     // Process each queued withdrawal: transfer the stake back to the voucher
-    for queued in sorted_queue.iter() {
+    for queued in queue.iter() {
         let idx_opt = vouches.iter().position(|v| v.voucher == queued.voucher);
         if let Some(idx) = idx_opt {
             let idx_u32 = idx as u32;
@@ -849,7 +844,6 @@ pub fn process_withdrawal_queue(env: &Env, borrower: &Address) {
                 tc.transfer(&contract, &vouch_rec.voucher, &vouch_rec.stake);
             }
             vouches.remove(idx_u32);
-            processed_vouchers.push_back(queued.voucher.clone());
 
             env.events().publish(
                 (symbol_short!("wq"), symbol_short!("processed")),
@@ -863,7 +857,7 @@ pub fn process_withdrawal_queue(env: &Env, borrower: &Address) {
         let total_remaining_stake: i128 = vouches.iter().map(|v| v.stake).sum();
 
         if total_remaining_stake > 0 {
-            if let Some(first) = sorted_queue.get(0) {
+            if let Some(first) = queue.get(0) {
                 if let Ok(token_client) = require_allowed_token(env, &first.token) {
                     let contract = env.current_contract_address();
                     for vr in vouches.iter() {
@@ -899,6 +893,7 @@ pub fn get_withdrawal_queue(env: Env, borrower: Address) -> Vec<QueuedWithdrawal
 /// Process up to `count` withdrawals from the queue for a borrower.
 /// If count is 0, this is a no-op. If count exceeds queue size, all are processed.
 /// Returns the number of withdrawals actually processed.
+/// The queue is pre-sorted by priority_fee (DESC) and requested_at (ASC) as tiebreaker.
 pub fn process_withdrawal_batch(env: &Env, borrower: &Address, count: u32) -> u32 {
     if count == 0 {
         return 0;
@@ -914,30 +909,8 @@ pub fn process_withdrawal_batch(env: &Env, borrower: &Address, count: u32) -> u3
         return 0;
     }
 
-    let vouches: Vec<VouchRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Vouches(borrower.clone()))
-        .unwrap_or(Vec::new(env));
-
-    // Sort by priority fee descending for processing order
-    let mut sorted_queue = queue.clone();
-    let n = sorted_queue.len();
-    for i in 1..n {
-        for j in (1..=i).rev() {
-            let a = sorted_queue.get(j - 1).unwrap();
-            let b = sorted_queue.get(j).unwrap();
-            if b.priority_fee > a.priority_fee {
-                sorted_queue.set(j - 1, b.clone());
-                sorted_queue.set(j, a.clone());
-            } else {
-                break;
-            }
-        }
-    }
-
-    let process_count: u32 = if count > sorted_queue.len() {
-        sorted_queue.len()
+    let process_count: u32 = if count > queue.len() {
+        queue.len()
     } else {
         count
     };
@@ -945,20 +918,17 @@ pub fn process_withdrawal_batch(env: &Env, borrower: &Address, count: u32) -> u3
     let mut processed: u32 = 0;
     let mut remaining_queue: Vec<QueuedWithdrawal> = Vec::new(env);
 
-    for i in 0..sorted_queue.len() {
-        let queued = sorted_queue.get(i as u32).unwrap();
-        if i < process_count {
-            // Process this withdrawal
-            let idx_opt = vouches.iter().position(|v| v.voucher == queued.voucher);
-            if let Some(_idx) = idx_opt {
-                env.events().publish(
-                    (symbol_short!("wq"), symbol_short!("processed")),
-                    (queued.voucher.clone(), borrower.clone()),
-                );
-                processed += 1;
-            }
+    // Queue is pre-sorted by priority_fee (DESC) and requested_at (ASC).
+    // Process the first `count` entries, keep the rest.
+    for i in 0..queue.len() {
+        let queued = queue.get(i as u32).unwrap();
+        if (i as u32) < process_count {
+            env.events().publish(
+                (symbol_short!("wq"), symbol_short!("processed")),
+                (queued.voucher.clone(), borrower.clone()),
+            );
+            processed += 1;
         } else {
-            // Keep in queue for later processing
             remaining_queue.push_back(queued.clone());
         }
     }
@@ -1019,13 +989,36 @@ fn queue_withdrawal_internal(
         }
     }
 
-    queue.push_back(QueuedWithdrawal {
+    let requested_at = env.ledger().timestamp();
+    let new_entry = QueuedWithdrawal {
         voucher: voucher.clone(),
         token,
-        requested_at: env.ledger().timestamp(),
+        requested_at,
         partial,
         priority_fee,
-    });
+    };
+
+    // Insert in sorted order: by priority_fee DESC, then by requested_at ASC (FIFO tiebreaker).
+    // This way the queue is always sorted and process_withdrawal_queue can iterate without re-sorting.
+    let mut insert_idx = queue.len();
+    for i in 0..queue.len() {
+        let existing = queue.get(i).unwrap();
+        if existing.priority_fee < priority_fee {
+            // New entry has higher fee, insert before this one
+            insert_idx = i;
+            break;
+        } else if existing.priority_fee == priority_fee && existing.requested_at > requested_at {
+            // Same fee, but new entry arrived earlier, insert before this one
+            insert_idx = i;
+            break;
+        }
+    }
+
+    if insert_idx >= queue.len() {
+        queue.push_back(new_entry);
+    } else {
+        queue.insert(insert_idx as u32, new_entry);
+    }
 
     env.storage()
         .persistent()

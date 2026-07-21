@@ -135,6 +135,10 @@ pub const PARTIAL_WITHDRAWAL_PENALTY_BPS: i128 = 1_000;
 /// Yield stream period in seconds (7 days).
 pub const YIELD_STREAM_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// Maximum priority fee as a percentage of voucher stake, in basis points (1000 = 10%).
+/// Prevents uncapped front-running by capping the priority fee to a fraction of the voucher's own stake.
+pub const MAX_PRIORITY_FEE_BPS: i128 = 1_000;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RateLimitConfig {
