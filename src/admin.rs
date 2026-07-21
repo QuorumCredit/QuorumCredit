@@ -2154,7 +2154,7 @@ pub fn get_effective_approval_threshold(
 ) -> u32 {
     let cfg = config(&env);
 
-    if let Some(multi_tier) = cfg.multi_tier_thresholds {
+    if let Some(multi_tier) = cfg.multi_tier_thresholds.get(0) {
         multi_tier.get_threshold(operation_type)
     } else {
         cfg.admin_threshold

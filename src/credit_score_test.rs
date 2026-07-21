@@ -114,7 +114,8 @@ fn test_vouching_score() {
 fn test_different_repayment_histories_produce_different_scores() {
     let env = Env::default();
     env.mock_all_auths();
-
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {
     let borrower_early = Address::generate(&env);
     let borrower_late = Address::generate(&env);
 
@@ -268,13 +269,15 @@ fn test_different_repayment_histories_produce_different_scores() {
         "Late repayment avg_repayment_time ({}) should be negative",
         score_late.avg_repayment_time
     );
+    });
 }
 
 #[test]
 fn test_credit_score_total_borrowed() {
     let env = Env::default();
     env.mock_all_auths();
-
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {
     let borrower = Address::generate(&env);
     let now = env.ledger().timestamp();
 
@@ -382,13 +385,15 @@ fn test_credit_score_total_borrowed() {
         credit_score.total_borrowed, 800_000,
         "Total borrowed should be 800_000"
     );
+    });
 }
 
 #[test]
 fn test_credit_score_total_repaid() {
     let env = Env::default();
     env.mock_all_auths();
-
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    env.as_contract(&contract_id, || {
     let borrower = Address::generate(&env);
     let now = env.ledger().timestamp();
 
@@ -457,6 +462,7 @@ fn test_credit_score_total_repaid() {
         credit_score.total_repaid, 750_000,
         "Total repaid should be 750_000"
     );
+    });
 }
 
 #[test]

@@ -7,7 +7,7 @@ use crate::types::{
     Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
     MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS, BPS_DENOMINATOR,
 };
-use soroban_sdk::{token, Address, Env, String, Vec};
+use soroban_sdk::{token, Address, Env, String, Symbol, Vec};
 
 // ── Reentrancy Guard ──────────────────────────────────────────────────────────
 
@@ -327,7 +327,7 @@ pub fn require_admin_approval_for_operation(
     let cfg = config(env);
     
     // Determine the required threshold based on operation type
-    let required_threshold = if let Some(multi_tier) = &cfg.multi_tier_thresholds {
+    let required_threshold = if let Some(multi_tier) = cfg.multi_tier_thresholds.get(0) {
         multi_tier.get_threshold(operation_type)
     } else {
         // Fall back to single threshold if multi-tier not configured
@@ -673,6 +673,32 @@ pub fn get_fresh_price(
         .ok_or(ContractError::OracleUnauthorized)?;
     validate_price_freshness(env, &record)?;
     Ok(record)
+}
+
+/// Called by the registered oracle (see `verify_repayment` for the same pattern)
+/// to publish a fresh price for `key`. Overwrites any previous record for that key.
+pub fn set_oracle_price(
+    env: &Env,
+    oracle: &Address,
+    key: Symbol,
+    price: i128,
+) -> Result<(), ContractError> {
+    oracle.require_auth();
+
+    let cfg = config(env);
+    let registered = cfg.oracle_address.ok_or(ContractError::OracleUnauthorized)?;
+    if *oracle != registered {
+        return Err(ContractError::OracleUnauthorized);
+    }
+
+    let record = crate::types::OraclePriceRecord {
+        price,
+        recorded_at: env.ledger().timestamp(),
+    };
+    env.storage()
+        .persistent()
+        .set(&DataKey::OraclePrice(key), &record);
+    Ok(())
 }
 
 // ── Issue #65: Graduated Response / Tiered Lockdown ───────────────────────────

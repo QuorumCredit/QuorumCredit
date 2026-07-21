@@ -12,11 +12,11 @@ use crate::types::{
     BatchVouchResult, BridgeRecord, DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord,
     VouchMerkleRoot, PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS, BPS_DENOMINATOR,
 };
-use soroban_sdk::{symbol_short, token, Address, Env, String, Vec};
+use soroban_sdk::{symbol_short, token, Address, BytesN, Env, String, Vec};
 
 /// Verify that an active bridge is registered for `chain_id`.
 /// Returns `InvalidChain` if no active bridge record exists.
-fn validate_bridge(env: &Env, chain_id: u32) -> Result<(), ContractError> {
+pub(crate) fn validate_bridge(env: &Env, chain_id: u32) -> Result<(), ContractError> {
     let bridges: Vec<BridgeRecord> = env
         .storage()
         .persistent()
@@ -154,7 +154,7 @@ pub fn vouch_cross_chain(
     token: Address,
     chain_id: u32,
 ) -> Result<(), ContractError> {
-    vouch_with_chain(env, voucher, borrower, stake, token, Some(chain_id))
+    vouch_with_chain(env, voucher, borrower, stake, token, chain_id)
 }
 
 fn vouch_with_chain(
@@ -163,7 +163,7 @@ fn vouch_with_chain(
     borrower: Address,
     stake: i128,
     token: Address,
-    chain_id: Option<u32>,
+    chain_id: u32,
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_thawing(&env)?;
@@ -174,7 +174,8 @@ fn vouch_with_chain(
     }
 
     let cfg = VouchConfig::load(&env);
-    do_vouch(&env, &cfg, voucher, borrower, stake, token, chain_id)
+    let chain_opt = if chain_id == 0 { None } else { Some(chain_id) };
+    do_vouch(&env, &cfg, voucher, borrower, stake, token, chain_opt)
 }
 
 fn validate_vouch<'a>(
@@ -248,10 +249,7 @@ fn validate_vouch<'a>(
             .unwrap_or(0);
         let now = env.ledger().timestamp();
         if now < last + cfg.vouch_cooldown_secs {
-            // Check if there is an approved cooldown bypass for this (voucher, borrower)
-            if !crate::cooldown_bypass::has_cooldown_bypass(env, voucher, borrower) {
-                return Err(ContractError::VouchCooldownActive);
-            }
+            return Err(ContractError::VouchCooldownActive);
         }
     }
 
@@ -1749,146 +1747,3 @@ pub fn execute_vouch_withdrawal(
     Err(ContractError::InvalidStateTransition)
 }
 
-// ── Issue #936: Merkle Tree Verification ─────────────────────────────────────
-
-/// Compute and store the Merkle root for a borrower's vouch list (Issue #936).
-/// This enables off-chain provers to create compact proofs without retrieving the full vouch list.
-pub fn compute_and_store_merkle_root(env: Env, borrower: Address) -> Result<soroban_sdk::BytesN<32>, ContractError> {
-    let vouches: Vec<VouchRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Vouches(borrower.clone()))
-        .unwrap_or(Vec::new(&env));
-
-    if vouches.is_empty() {
-        return Err(ContractError::NoVouchesForBorrower);
-    }
-
-    // Build leaves from vouches: each leaf is 32 zero-bytes (placeholder for serialized vouch data)
-    // In production, a proper serialization of (voucher, stake, token) should be used.
-    let mut leaves: Vec<soroban_sdk::Bytes> = Vec::new(&env);
-    for _v in vouches.iter() {
-        let leaf_bytes = soroban_sdk::Bytes::from_array(&env, &[0u8; 32]);
-        leaves.push_back(leaf_bytes);
-    }
-
-    // Compute Merkle root
-    let root_bytes = crate::merkle_tree::build_merkle_root(&env, leaves);
-    // Convert the 32-byte Bytes result to BytesN<32>
-    let root_arr: [u8; 32] = {
-        let mut arr = [0u8; 32];
-        for i in 0..32u32 {
-            arr[i as usize] = root_bytes.get(i).unwrap_or(0);
-        }
-        arr
-    };
-    let root = soroban_sdk::BytesN::from_array(&env, &root_arr);
-
-    // Store the root
-    let merkle_record = VouchMerkleRoot {
-        root: root.clone(),
-        vouch_count: vouches.len(),
-        computed_at: env.ledger().timestamp(),
-    };
-    
-    env.storage()
-        .persistent()
-        .set(&DataKey::VouchMerkleRoot(borrower.clone()), &merkle_record);
-
-    env.events().publish(
-        (symbol_short!("vouch"), symbol_short!("mrkl_root")),
-        (borrower.clone(), vouches.len()),
-    );
-
-    Ok(merkle_record.root)
-}
-
-/// Get the stored Merkle root for a borrower's vouch list (Issue #936).
-pub fn get_merkle_root(env: Env, borrower: Address) -> Option<VouchMerkleRoot> {
-    env
-        .storage()
-        .persistent()
-        .get(&DataKey::VouchMerkleRoot(borrower))
-}
-
-
-/// Estimate the economic cost to execute a Sybil attack on a borrower's
-/// current voucher configuration.
-///
-/// ## Model
-/// To "beat" the legitimate voucher set an attacker must field a ring of
-/// controlled addresses whose combined **reputation-weighted stake** at least
-/// equals `total_weighted_stake` of the real vouchers.
-///
-/// Under the new stake-time-weighted rules:
-///   - Each attacker address must stake ≥ `SYBIL_MIN_STAKE_FOR_CREDIT` (0.1 XLM).
-///   - Each attacker vouch must age ≥ `SYBIL_MIN_VOUCH_AGE_SECS` (24 h) before
-///     it counts toward governance or credit score.
-///   - Reputation weight grows as `sqrt(total_yield_earned / 1_000)` — fresh
-///     accounts with no history receive 1× base weight only.
-///
-/// Therefore the attacker's cheapest strategy is to field `N` addresses each
-/// holding `min_stake_per_address` for the minimum lock period.  The returned
-/// `min_stake_stroops` is the total capital that must be committed, and
-/// `min_lock_secs` is the minimum time before those vouches become eligible.
-///
-/// This view function is read-only — it does not mutate any state.
-pub fn estimate_sybil_attack_cost(
-    env: Env,
-    borrower: Address,
-) -> crate::types::SybilAttackCostEstimate {
-    let now = env.ledger().timestamp();
-
-    let vouches: Vec<VouchRecord> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::Vouches(borrower.clone()))
-        .unwrap_or_else(|| Vec::new(&env));
-
-    let mut total_weighted_stake: i128 = 0;
-    let voucher_count = vouches.len();
-
-    // Compute total reputation-weighted stake of the current legitimate set
-    for v in vouches.iter() {
-        let weight = vouch_reputation_weight(&env, &v.voucher);
-        let weighted = v.stake * weight / BPS_DENOMINATOR;
-        total_weighted_stake = total_weighted_stake.saturating_add(weighted);
-    }
-
-    // An attacker with zero history gets base weight only (1×), meaning each
-    // attacker address contributes exactly its raw stake.
-    // To match total_weighted_stake the attacker needs total_weighted_stake stroops
-    // split across however many addresses they spin up.
-    //
-    // Floor: each address must stake at least SYBIL_MIN_STAKE_FOR_CREDIT.
-    // We compute "how many addresses at minimum stake" are required:
-    let min_stake_per_address = SYBIL_MIN_STAKE_FOR_REP;
-    let addresses_required = if total_weighted_stake <= 0 {
-        1u32
-    } else {
-        let n = (total_weighted_stake + min_stake_per_address - 1) / min_stake_per_address;
-        n.min(i128::from(u32::MAX)) as u32
-    };
-
-    let min_stake_stroops = (addresses_required as i128)
-        .saturating_mul(min_stake_per_address)
-        .max(total_weighted_stake); // attacker must match or exceed
-
-    // Minimum lock time = SYBIL_MIN_VOUCH_AGE_SECS (24 h) for vouches to be eligible
-    let min_lock_secs = SYBIL_REP_MIN_VOUCH_AGE_SECS;
-
-    // Cache the estimate for off-chain consumption (non-critical, best-effort)
-    let estimate = crate::types::SybilAttackCostEstimate {
-        min_stake_stroops,
-        min_lock_secs,
-        voucher_count,
-        total_weighted_stake,
-        computed_at: now,
-    };
-
-    env.storage()
-        .persistent()
-        .set(&DataKey::SybilAttackCost(borrower), &estimate.clone());
-
-    estimate
-}
