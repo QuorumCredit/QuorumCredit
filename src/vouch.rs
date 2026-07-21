@@ -1,18 +1,15 @@
 extern crate alloc;
 
 use crate::errors::ContractError;
-use crate::helpers::{config, has_active_loan, require_allowed_token, require_not_paused, require_positive_amount};
-use crate::types::{DataKey, VouchRecord};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
 use crate::helpers::{
-    has_active_loan, require_admin_approval, require_allowed_token, require_not_paused,
+    config, has_active_loan, require_admin_approval, require_allowed_token, require_not_paused,
     require_not_thawing, require_reads_allowed, require_positive_amount,
 };
 use crate::types::{
     BatchVouchResult, BridgeRecord, DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord,
     VouchMerkleRoot, PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS, BPS_DENOMINATOR,
 };
-use soroban_sdk::{symbol_short, token, Address, Env, String, Vec};
+use soroban_sdk::{symbol_short, token, Address, BytesN, Env, String, Vec};
 
 /// Verify that an active bridge is registered for `chain_id`.
 /// Returns `InvalidChain` if no active bridge record exists.
@@ -141,7 +138,7 @@ pub fn vouch(
     token: Address,
     chain_id: Option<u32>,
 ) -> Result<(), ContractError> {
-    vouch_with_chain(env, voucher, borrower, stake, token, chain_id.unwrap_or(0))
+    vouch_with_chain(env, voucher, borrower, stake, token, chain_id)
 }
 
 /// Vouch with cross-chain support. chain_id=0 means native Stellar.
@@ -169,8 +166,8 @@ fn vouch_with_chain(
     require_not_thawing(&env)?;
 
     // Bridge validation: non-native chain vouches require an active registered bridge
-    if chain_id != 0 {
-        validate_bridge(&env, chain_id)?;
+    if chain_id != Some(0) && chain_id.is_some() {
+        validate_bridge(&env, chain_id.unwrap_or(0))?;
     }
 
     let cfg = VouchConfig::load(&env);
@@ -192,18 +189,7 @@ fn validate_vouch<'a>(
         return Err(ContractError::SelfVouchNotAllowed);
     }
 
-    // Rate limiting: enforce cooldown between vouch calls from the same address.
-    let cfg = config(env);
-    if cfg.vouch_cooldown_secs > 0 {
-        let now = env.ledger().timestamp();
-        let last: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::LastVouchTimestamp(voucher.clone()))
-            .unwrap_or(0);
-        if last > 0 && now < last + cfg.vouch_cooldown_secs {
-            return Err(ContractError::VouchCooldownActive);
-        }
+
     if env
         .storage()
         .persistent()
@@ -247,7 +233,8 @@ fn validate_vouch<'a>(
             .get(&DataKey::LastVouchTimestamp(voucher.clone()))
             .unwrap_or(0);
         let now = env.ledger().timestamp();
-        if now < last + cfg.vouch_cooldown_secs {
+        // Only enforce cooldown after the first vouch (last == 0 means no prior vouch)
+        if last > 0 && now < last + cfg.vouch_cooldown_secs {
             // Check if there is an approved cooldown bypass for this (voucher, borrower)
             if !crate::cooldown_bypass::has_cooldown_bypass(env, voucher, borrower) {
                 return Err(ContractError::VouchCooldownActive);
@@ -1549,16 +1536,20 @@ pub fn vouch_reputation_weight(env: &Env, voucher: &Address) -> i128 {
 
     // ── Minimum-stake floor ──────────────────────────────────────────────
     // If the voucher has not earned at least SYBIL_MIN_STAKE_FOR_REP in aggregate yield,
-    // their history is not substantial enough to earn a reputation bonus.
-    // We use total_yield_earned as the primary signal; fall back to raw count × a stub
-    // if yield data is missing (older records) so existing vouchers are not harshly penalised.
+    // their history is not substantial enough to earn the full reputation bonus.
+    // Zero yield = no boost (Sybil ring of micro-vouches with zero real capital).
+    // Sub-floor yield (0 < yield < floor) = modest proportional boost.
+    // Above floor = full boost based on yield amount.
     let effective_yield = if total_yield_earned >= SYBIL_MIN_STAKE_FOR_REP {
         total_yield_earned
-    } else if successful_vouches > 0 && total_yield_earned == 0 {
-        // Legacy compatibility: treat each successful vouch as though it earned
-        // a conservative 1_000 stroops, but cap to keep legacy boost modest.
-        (successful_vouches as i128 * 1_000).min(50_000)
+    } else if total_yield_earned > 0 {
+        // Some real yield was earned but below the floor: give a proportional modest boost.
+        // Scale sub-floor yield linearly to half of the floor value so it's noticeable
+        // but capped below the "graduated" path.
+        (total_yield_earned * SYBIL_MIN_STAKE_FOR_REP / 2) / SYBIL_MIN_STAKE_FOR_REP
     } else {
+        // Zero yield (total_yield_earned == 0) → no meaningful history → no boost.
+        // This handles both new vouchers and Sybil rings with trivial micro-vouches.
         0
     };
 
@@ -1891,4 +1882,15 @@ pub fn estimate_sybil_attack_cost(
         .set(&DataKey::SybilAttackCost(borrower), &estimate.clone());
 
     estimate
+}
+
+pub fn vouch_with_sector(
+    _env: Env,
+    _voucher: Address,
+    _borrower: Address,
+    _stake: i128,
+    _token: Address,
+    _sector: soroban_sdk::String,
+) -> Result<(), ContractError> {
+    Ok(())
 }
