@@ -1808,6 +1808,9 @@ pub struct SlashRecord {
     pub reversal_reason: Option<soroban_sdk::String>,
     /// True once an admin has reversed this slash.
     pub reversed: bool,
+    /// Effective slash percentage (basis points) applied at slash time.
+    /// Used to correctly restore funds on successful appeal.
+    pub effective_slash_bps: i128,
 }
 
 /// Monthly aggregated report of all slashing events.
