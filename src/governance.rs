@@ -9,7 +9,7 @@ use crate::types::{
     SlashingReportRecord, SlashRecord, SlashThresholdProposal, SlashVoteRecord,
     TimelockAction, TimelockProposal,
     VouchRecord, BPS_DENOMINATOR, APPEAL_OVERRIDE_QUORUM_BPS, MONTHLY_PERIOD_SECS,
-    SLASH_APPEAL_PERIOD, DEFAULT_SLASH_VOTE_QUORUM_BPS,
+    SLASH_APPEAL_PERIOD, VoteSlashResult, DEFAULT_SLASH_VOTE_QUORUM_BPS,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, String, Vec};
 
@@ -172,7 +172,7 @@ pub fn vote_slash(
     voter: Address,
     borrower: Address,
     approve: bool,
-) -> Result<(), ContractError> {
+) -> Result<VoteSlashResult, ContractError> {
     voter.require_auth();
     require_not_paused(&env)?;
 
@@ -229,7 +229,7 @@ pub fn vote_slash(
     let actual_voter = if effective_voter != voter {
         // This voucher's stake is counted under the delegate's vote
         // The delegate should call vote_slash separately
-        return Ok(()); // Silently succeed - delegate will vote
+        return Ok(VoteSlashResult::DelegateWillVote); // Silently succeed - delegate will vote
     } else {
         voter.clone()
     };
@@ -349,7 +349,7 @@ pub fn vote_slash(
             .set(&DataKey::SlashVote(borrower.clone()), &vote);
     }
 
-    Ok(())
+    Ok(VoteSlashResult::VoteCounted)
 }
 
 /// Returns the current slash vote record for a borrower, if any.
@@ -2083,6 +2083,14 @@ pub fn propose_config_change(
         cfg.admins.iter().any(|a| a == proposer),
         "only admins can propose config changes"
     );
+
+    crate::helpers::validate_admin_config(
+        &env,
+        &new_config.admins,
+        new_config.admin_threshold,
+        &new_config.admin_whitelist,
+        &new_config.admin_blacklist,
+    )?;
 
     let proposal_id: u64 = env
         .storage()

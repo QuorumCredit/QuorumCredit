@@ -1,19 +1,17 @@
 use crate::errors::ContractError;
 use crate::helpers::{
     apply_milestone_bonus, calculate_daily_compound_interest, config, deduct_slash_balance,
-    get_active_loan_record, get_latest_loan_record,
-    has_active_loan, next_loan_id, register_borrower_if_needed, require_allowed_token,
-    require_not_paused, require_not_thawing, require_admin_approval,
-    require_governance_participant,
+    get_active_loan_record, get_latest_loan_record, has_active_loan, next_loan_id,
+    register_borrower_if_needed, require_allowed_token, require_not_paused,
+    require_not_thawing, require_admin_approval, require_governance_participant,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
-    BorrowerDynamicRate, DataKey, DynamicRateConfig, EscrowStatus,
-    ForbearanceRecord, ForbearanceStatus, LoanRecord, LoanStatus, LoanStatusEx,
-    RefinanceRecord, SlashRecord, VouchRecord, VoucherStats,
-    YieldDistributionEntry, PaymentRecord,
-    BPS_DENOMINATOR, DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS,
-    MAX_FORBEARANCE_PERIODS, REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD,
+    BorrowerDynamicRate, DataKey, DynamicRateConfig, EscrowStatus, ForbearanceRecord,
+    ForbearanceStatus, LoanRecord, LoanStatus, LoanStatusEx, RefinanceRecord, SlashRecord,
+    VouchRecord, VoucherStats, YieldDistributionEntry, PaymentRecord, BPS_DENOMINATOR,
+    DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS, MAX_FORBEARANCE_PERIODS,
+    REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
     SECS_PER_DAY,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
@@ -395,9 +393,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
 
-    let token = require_allowed_token(&env, &loan.token_address)?;
-    token.transfer(&borrower, &env.current_contract_address(), &payment);
-
     // ── Step 1: Accrue compound interest ─────────────────────────────────────
     let now = env.ledger().timestamp();
     let elapsed_secs = now.saturating_sub(loan.last_interest_calc);
@@ -470,7 +465,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         .expect("total_owed_final overflow");
 
     let fully_repaid = loan.amount_repaid >= total_owed_final;
-    loan.amount_repaid = loan.amount_repaid.checked_add(payment).ok_or(ContractError::ArithmeticError)?;
 
     let now = env.ledger().timestamp();
     
@@ -587,6 +581,15 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         env.storage()
             .persistent()
             .set(&DataKey::RepaymentCount(borrower.clone()), &(prev_count + 1));
+
+        // Mint reputation NFT for borrower on successful repayment
+        if let Some(nft_addr) = env
+            .storage()
+            .instance()
+            .get::<DataKey, soroban_sdk::Address>(&DataKey::ReputationNft)
+        {
+            ReputationNftExternalClient::new(&env, &nft_addr).mint(&borrower);
+        }
 
         // Issue #884: Apply prepayment bonus for early repayment
         let bonus = apply_prepayment_bonus(&env, &borrower, &loan);
@@ -1755,7 +1758,7 @@ pub fn end_forbearance(env: Env, borrower: Address) -> Result<(), ContractError>
     if now >= forbearance.ends_at {
         forbearance.status = ForbearanceStatus::Expired;
     } else {
-        forbearance.status = ForbearanceStatus::Ended;
+        forbearance.status = ForbearanceStatus::Expired;
     }
 
     env.storage()

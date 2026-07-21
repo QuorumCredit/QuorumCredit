@@ -1,15 +1,17 @@
-/// Stub batch_transfer module - implementation pending.
-/// Provides batched token transfer helpers used by loan.rs.
+/// Stub batch_transfer module — performs transfers immediately.
+/// A future implementation may batch these for gas efficiency.
 use crate::errors::ContractError;
 use soroban_sdk::{Address, Env};
 
-/// Queue a token transfer for batch execution.
-pub fn queue_transfer(_env: &Env, _to: Address, _amount: i128, _token: Address) {
-    // Stub: no-op
+/// Queue (and immediately execute) a token transfer.
+pub fn queue_transfer(env: &Env, to: Address, amount: i128, token: Address) {
+    if amount > 0 {
+        let token_client = soroban_sdk::token::Client::new(env, &token);
+        token_client.transfer(&env.current_contract_address(), &to, &amount);
+    }
 }
 
-/// Flush all queued transfers, executing them atomically.
+/// Flush all queued transfers — no-op since transfers are executed immediately.
 pub fn flush_transfers(_env: &Env) -> Result<(), ContractError> {
-    // Stub: no-op
     Ok(())
 }

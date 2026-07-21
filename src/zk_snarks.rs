@@ -90,13 +90,14 @@ fn build_loan_public_inputs(
 }
 
 fn proof_digest(env: &Env, proof: &ZkProof) -> BytesN<32> {
-    let mut payload = [0u8; 0];
     let mut hasher = Sha3_256::new();
     hasher.update(&proof.proof_type.to_be_bytes());
     for input in proof.public_inputs.iter() {
         hasher.update(&input.to_array());
     }
-    hasher.update(&proof.proof_bytes.len().to_be_bytes());
+    // NOTE: proof_bytes.len() is intentionally NOT hashed here because
+    // proof_bytes IS the output of this function — including its length
+    // would make create() and verify() produce different digests.
     let mut proof_bytes = [0u8; 32];
     proof_bytes.copy_from_slice(&hasher.finalize()[..]);
     BytesN::from_array(env, &proof_bytes)
