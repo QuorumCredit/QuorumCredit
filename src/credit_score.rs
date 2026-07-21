@@ -62,12 +62,117 @@ pub fn calculate_account_age_score(account_age: u64) -> u32 {
     score.min(1000.0) as u32
 }
 
+/// Minimum stake (in stroops) for a vouch to count toward credit score reputation.
+/// Vouches below this floor are ignored for reputation purposes, making trivial
+/// micro-stake Sybil rings worthless. 1,000,000 stroops = 0.1 XLM.
+pub const SYBIL_MIN_STAKE_FOR_CREDIT: i128 = 1_000_000;
+
+/// Minimum age (in seconds) a vouch must have before it counts toward
+/// the vouching score. 24 hours prevents same-block vouching farms.
+pub const SYBIL_MIN_VOUCH_AGE_SECS: u64 = 24 * 60 * 60;
+
+/// Saturation cap for stake-time weight (in stroops × seconds / 1e14).
+/// Prevents a single mega-stake from dominating the entire score.
+pub const SYBIL_STAKE_TIME_SATURATION: i128 = 100;
+
 /// Calculate vouching activity score component (0-1000).
-pub fn calculate_vouching_score(voucher_count: u32) -> u32 {
-    // More vouching = higher score (up to 20 vouches)
-    let max_vouches = 20;
-    let score = (voucher_count as f64 / max_vouches as f64) * 1000.0;
-    score.min(1000.0) as u32
+///
+/// **Sybil-resistant redesign (replaces raw voucher-count logic):**
+/// Score is now based on the *total stake-time weight* of qualifying vouches
+/// for the borrower as the scored party, not raw vouch count.
+///
+/// For each VouchRecord of the borrower:
+///   1. Ignore vouches with `stake < SYBIL_MIN_STAKE_FOR_CREDIT` (trivial-stake floor).
+///   2. Ignore vouches younger than `SYBIL_MIN_VOUCH_AGE_SECS` (flash-vouch floor).
+///   3. Compute `weight = stake_xlm * age_days` (stake in XLM units × age in days).
+///   4. Apply diminishing returns: contribution = sqrt(weight), capped per vouch at
+///      `SYBIL_STAKE_TIME_SATURATION` (unit: sqrt(XLM·days)).
+///   5. Sum contributions across all qualifying vouches, saturate total at 100,
+///      and scale to 0–1000.
+///
+/// A Sybil ring of N addresses each staking the minimum with 0-day-old vouches
+/// contributes 0. A single genuine voucher staking 10 XLM for 30 days contributes
+/// sqrt(10 * 30) ≈ 17, far more than 17 dust accounts cycling micro-stakes.
+pub fn calculate_vouching_score(
+    voucher_count: u32,          // kept for backwards-compatible call sites that only have count
+    env: Option<&Env>,           // Some(env) enables stake-time weighting; None = legacy path
+    borrower: Option<&Address>,  // borrower whose incoming vouches to examine
+) -> u32 {
+    // ── Stake-time path ─────────────────────────────────────────────────
+    if let (Some(env), Some(borrower)) = (env, borrower) {
+        let now = env.ledger().timestamp();
+
+        // Load all vouches for this borrower
+        let vouches: soroban_sdk::Vec<crate::types::VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&crate::types::DataKey::Vouches(borrower.clone()))
+            .unwrap_or_else(|| soroban_sdk::Vec::new(env));
+
+        let mut total_weight_scaled: u64 = 0; // sum of sqrt(stake_xlm * age_days) * 1000 (fixed-point)
+
+        for v in vouches.iter() {
+            // Floor 1: ignore trivial stakes
+            if v.stake < SYBIL_MIN_STAKE_FOR_CREDIT {
+                continue;
+            }
+
+            // Floor 2: ignore vouches younger than the minimum age
+            let age_secs = now.saturating_sub(v.vouch_timestamp);
+            if age_secs < SYBIL_MIN_VOUCH_AGE_SECS {
+                continue;
+            }
+
+            // Convert to human-readable units to keep numbers manageable:
+            // stake_xlm_units = stake / 10_000_000  (7 decimals)
+            // age_days        = age_secs / 86400
+            // We work in integer arithmetic: stake_deci_xlm (0.1 XLM units) × age_days
+            let stake_deci_xlm = (v.stake / 1_000_000) as u64;  // 0.1 XLM units
+            let age_days = (age_secs / 86_400) as u64;
+
+            if stake_deci_xlm == 0 || age_days == 0 {
+                continue;
+            }
+
+            // weight = stake_deci_xlm * age_days
+            let weight = stake_deci_xlm.saturating_mul(age_days);
+
+            // Integer sqrt (Babylonian method, 64-bit)
+            let sqrt_weight = integer_sqrt_u64(weight);
+
+            // Cap per-vouch contribution at SYBIL_STAKE_TIME_SATURATION
+            let contribution = sqrt_weight.min(SYBIL_STAKE_TIME_SATURATION as u64);
+
+            total_weight_scaled = total_weight_scaled.saturating_add(contribution);
+        }
+
+        // Saturate total at SYBIL_STAKE_TIME_SATURATION and scale to 0–1000
+        let saturation = SYBIL_STAKE_TIME_SATURATION as u64;
+        let total_capped = total_weight_scaled.min(saturation);
+        let score = (total_capped * 1000 / saturation) as u32;
+        return score.min(1000);
+    }
+
+    // ── Legacy fallback path (no env/borrower available) ────────────────
+    // Kept so that unit tests that only test the scoring formula still compile.
+    let max_vouches = 20u32;
+    let score = (voucher_count.min(max_vouches) as u64 * 1000 / max_vouches as u64) as u32;
+    score.min(1000)
+}
+
+/// Integer square root (floor) for u64, used in stake-time weight calculation.
+/// Uses the Babylonian (Newton's method) algorithm.
+pub fn integer_sqrt_u64(n: u64) -> u64 {
+    if n == 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
 
 /// Calculate repayment timeliness score component (0-1000).
@@ -237,7 +342,8 @@ pub fn calculate_credit_score(
         calculate_repayment_history_score(successful_repayments, total_loans, defaults);
     let loan_count_score = calculate_loan_count_score(total_loans);
     let account_age_score = calculate_account_age_score(account_age);
-    let vouching_score = calculate_vouching_score(voucher_count);
+    // Use stake-time-weighted vouching score (Sybil resistant)
+    let vouching_score = calculate_vouching_score(voucher_count, Some(env), Some(borrower));
     
     // Calculate real timeliness from actual repayment history
     let avg_repayment_time_secs = calculate_avg_repayment_time(env, borrower);

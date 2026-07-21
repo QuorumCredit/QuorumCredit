@@ -1,5 +1,9 @@
 use crate::errors::ContractError;
 use crate::types::{
+    Config, DataKey, LoanRecord, COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS,
+    MILESTONE_25_PCT_PERMILLE, MILESTONE_50_DISCOUNT_BPS, MILESTONE_50_PCT_PERMILLE,
+    MILESTONE_75_DISCOUNT_BPS, MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50,
+    MILESTONE_FLAG_75, SECS_PER_DAY,
     Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
     MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS, BPS_DENOMINATOR,
 };
@@ -559,6 +563,104 @@ pub fn validate_price_freshness(
     Ok(())
 }
 
+// ── Daily-Compound Interest ───────────────────────────────────────────────────
+
+/// Calculate compound interest that has accrued over `days_elapsed` whole days
+/// on `outstanding_principal` at the annual rate `COMPOUND_RATE_BPS`.
+///
+/// Formula (all integer arithmetic, truncating):
+/// ```text
+/// interest_per_day = outstanding_principal * COMPOUND_RATE_BPS / 10_000 / 365
+/// total            = interest_per_day * days_elapsed
+/// ```
+///
+/// Notes:
+/// - Returns 0 when `days_elapsed == 0` (same-day calls never double-charge).
+/// - Returns 0 when `outstanding_principal <= 0` (defensive guard).
+/// - The result is always ≥ 0.
+pub fn calculate_daily_compound_interest(
+    outstanding_principal: i128,
+    days_elapsed: u64,
+) -> i128 {
+    if outstanding_principal <= 0 || days_elapsed == 0 {
+        return 0;
+    }
+    // interest_per_day = principal * COMPOUND_RATE_BPS / (10_000 * 365)
+    // We compute it as two separate divisions to stay within i128 for realistic
+    // Soroban loan sizes (principal ≤ 10^18 stroops is safe).
+    let daily_interest = outstanding_principal
+        .checked_mul(COMPOUND_RATE_BPS)
+        .unwrap_or(0)
+        / 10_000
+        / 365;
+
+    daily_interest
+        .checked_mul(days_elapsed as i128)
+        .unwrap_or(0)
+}
+
+// ── Milestone Bonus Application ───────────────────────────────────────────────
+
+/// Check whether any new repayment milestone has been crossed by the borrower
+/// and, if so, apply a one-time discount to `accrued_interest` (floor 0).
+///
+/// Milestones are checked in ascending order (25 % → 50 % → 75 %).  Each fires
+/// at most once per loan, tracked by the `milestone_bonus_applied` bitmask on
+/// the `LoanRecord`.
+///
+/// `amount_repaid_after_payment` is the *new* cumulative repaid amount after
+/// the current payment is applied.  `total_obligation` is the full amount owed
+/// (principal + static yield; compound interest is handled separately).
+///
+/// Returns the updated `(accrued_interest, milestone_bonus_applied)`.
+pub fn apply_milestone_bonus(
+    loan: &LoanRecord,
+    amount_repaid_after_payment: i128,
+    total_obligation: i128,
+) -> (i128, u32) {
+    if total_obligation <= 0 {
+        return (loan.accrued_interest, loan.milestone_bonus_applied);
+    }
+
+    let mut accrued = loan.accrued_interest;
+    let mut flags = loan.milestone_bonus_applied;
+
+    // Compute the repaid fraction in per-mille (‰) to avoid floating-point.
+    // repaid_permille = amount_repaid_after_payment * 1000 / total_obligation
+    let repaid_permille: u32 = (amount_repaid_after_payment
+        .saturating_mul(1_000)
+        / total_obligation)
+        .max(0) as u32;
+
+    // 75 % milestone — must be applied before 50 % / 25 % to avoid applying
+    // lower-tier discounts to an already-reduced balance.
+    if repaid_permille >= MILESTONE_75_PCT_PERMILLE && (flags & MILESTONE_FLAG_75 == 0) {
+        let discount = accrued
+            .saturating_mul(MILESTONE_75_DISCOUNT_BPS)
+            / 10_000;
+        accrued = (accrued - discount).max(0);
+        flags |= MILESTONE_FLAG_75;
+    }
+
+    // 50 % milestone
+    if repaid_permille >= MILESTONE_50_PCT_PERMILLE && (flags & MILESTONE_FLAG_50 == 0) {
+        let discount = accrued
+            .saturating_mul(MILESTONE_50_DISCOUNT_BPS)
+            / 10_000;
+        accrued = (accrued - discount).max(0);
+        flags |= MILESTONE_FLAG_50;
+    }
+
+    // 25 % milestone
+    if repaid_permille >= MILESTONE_25_PCT_PERMILLE && (flags & MILESTONE_FLAG_25 == 0) {
+        let discount = accrued
+            .saturating_mul(MILESTONE_25_DISCOUNT_BPS)
+            / 10_000;
+        accrued = (accrued - discount).max(0);
+        flags |= MILESTONE_FLAG_25;
+    }
+
+    (accrued, flags)
 /// Retrieves an oracle price record and validates its freshness in one call.
 pub fn get_fresh_price(
     env: &Env,
