@@ -28,6 +28,9 @@ fn validate_admin_member(env: &Env, admin: &Address, config: &Config) {
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::AddAdmin) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -46,6 +49,9 @@ pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
 
 pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::RemoveAdmin) {
+        panic_with_error!(&env, err);
+    }
 
     // Issue #372: Prevent removing an admin who is one of the signers
     for signer in admin_signers.iter() {
@@ -81,6 +87,9 @@ pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Addr
 
 pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, new_admin: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::RotateAdmin) {
+        panic_with_error!(&env, err);
+    }
 
     if old_admin == new_admin {
         panic_with_error!(&env, ContractError::InvalidAmount);
@@ -111,6 +120,9 @@ pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, n
 
 pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold: u32) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetAdminThreshold) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -133,6 +145,9 @@ pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold:
 /// Issue #688: Add an address to the admin whitelist.
 pub fn add_to_admin_whitelist(env: Env, admin_signers: Vec<Address>, address: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageWhitelist) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -155,6 +170,9 @@ pub fn add_to_admin_whitelist(env: Env, admin_signers: Vec<Address>, address: Ad
 /// Issue #688: Remove an address from the admin whitelist.
 pub fn remove_from_admin_whitelist(env: Env, admin_signers: Vec<Address>, address: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageWhitelist) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -176,6 +194,9 @@ pub fn remove_from_admin_whitelist(env: Env, admin_signers: Vec<Address>, addres
 /// Issue #689: Add an address to the admin blacklist.
 pub fn add_to_admin_blacklist(env: Env, admin_signers: Vec<Address>, address: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -198,6 +219,9 @@ pub fn add_to_admin_blacklist(env: Env, admin_signers: Vec<Address>, address: Ad
 /// Issue #689: Remove an address from the admin blacklist.
 pub fn remove_from_admin_blacklist(env: Env, admin_signers: Vec<Address>, address: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -218,6 +242,9 @@ pub fn remove_from_admin_blacklist(env: Env, admin_signers: Vec<Address>, addres
 
 pub fn set_protocol_fee(env: Env, admin_signers: Vec<Address>, fee_bps: u32) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
+        panic_with_error!(&env, err);
+    }
     if fee_bps > 10_000 {
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
@@ -236,6 +263,9 @@ pub fn set_protocol_fee(env: Env, admin_signers: Vec<Address>, fee_bps: u32) {
 
 pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
     env.storage()
         .persistent()
         .set(&DataKey::VoucherWhitelist(voucher), &true);
@@ -243,6 +273,9 @@ pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address
 
 pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: bool) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
     env.storage()
         .instance()
         .set(&DataKey::WhitelistEnabled, &enabled);
@@ -254,6 +287,9 @@ pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: boo
 
 pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
+        panic_with_error!(&env, err);
+    }
     env.storage()
         .instance()
         .set(&DataKey::FeeTreasury, &treasury);
@@ -261,6 +297,9 @@ pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address
 
 pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Upgrade) {
+        panic_with_error!(&env, err);
+    }
     env.deployer()
         .update_current_contract_wasm(new_wasm_hash.clone());
     env.events()
@@ -269,6 +308,9 @@ pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>)
 
 pub fn pause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause) {
+        panic_with_error!(&env, err);
+    }
     let now = env.ledger().timestamp();
     env.storage().instance().set(&DataKey::Paused, &true);
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::Paused);
@@ -293,6 +335,9 @@ pub fn pause(env: Env, admin_signers: Vec<Address>) {
 /// After the window elapses the contract auto-transitions back to `Normal`.
 pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause) {
+        panic_with_error!(&env, err);
+    }
     let mode: crate::types::PauseMode = env
         .storage()
         .instance()
@@ -323,6 +368,9 @@ pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
 
 pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Unpause) {
+        panic_with_error!(&env, err);
+    }
     env.storage().instance().set(&DataKey::Paused, &false);
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::None);
     env.storage().instance().remove(&DataKey::ThawState);
@@ -336,6 +384,9 @@ pub fn unpause(env: Env, admin_signers: Vec<Address>) {
 /// Writes are blocked immediately; reads and withdrawals allowed for `thaw_duration` seconds.
 pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause) {
+        panic_with_error!(&env, err);
+    }
     let now = env.ledger().timestamp();
 
     env.storage().instance().set(&DataKey::Paused, &true);
@@ -368,6 +419,9 @@ pub fn is_in_thaw_period(env: &Env) -> bool {
 
 pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
+        panic_with_error!(&env, err);
+    }
     env.storage()
         .persistent()
         .set(&DataKey::Blacklisted(borrower), &true);
@@ -376,6 +430,9 @@ pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
 pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     require_not_paused(&env).expect("contract paused");
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetConfig) {
+        panic_with_error!(&env, err);
+    }
     validate_admin_config(
         &env,
         &config.admins,
@@ -423,6 +480,9 @@ pub fn update_config(
 ) {
     require_not_paused(&env).expect("contract paused");
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -464,6 +524,9 @@ pub fn batch_update_config(
 ) {
     require_not_paused(&env).expect("contract paused");
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
 
@@ -532,6 +595,9 @@ pub fn set_dynamic_slash_threshold(
     enabled: bool,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageDynamicSlash) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
     cfg.dynamic_slash_threshold = enabled;
@@ -559,6 +625,9 @@ pub fn set_loan_size_slash_enabled(
     enabled: bool,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageDynamicSlash) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
     cfg.loan_size_slash_enabled = enabled;
@@ -578,6 +647,9 @@ pub fn set_loan_size_slash_max_bps(
     max_bps: i128,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageDynamicSlash) {
+        panic_with_error!(&env, err);
+    }
 
     let cfg = config(&env);
     assert!(
@@ -598,6 +670,9 @@ pub fn set_loan_size_slash_max_bps(
 
 pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetReputationNft) {
+        panic_with_error!(&env, err);
+    }
     env.storage()
         .instance()
         .set(&DataKey::ReputationNft, &nft_contract);
@@ -620,6 +695,9 @@ pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: A
 ///   1 XLM = 10,000,000 stroops.
 pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
+        panic_with_error!(&env, err);
+    }
     if amount < 0 {
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
@@ -643,6 +721,9 @@ pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
 ///   1 XLM = 10,000,000 stroops.
 pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
+        panic_with_error!(&env, err);
+    }
     if amount < 0 {
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
@@ -661,6 +742,9 @@ pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) 
 
 pub fn set_min_vouchers(env: Env, admin_signers: Vec<Address>, count: u32) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
+        panic_with_error!(&env, err);
+    }
     env.storage().instance().set(&DataKey::MinVouchers, &count);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("minvchrs")),
@@ -674,6 +758,9 @@ pub fn set_min_vouchers(env: Env, admin_signers: Vec<Address>, count: u32) {
 
 pub fn set_max_loan_to_stake_ratio(env: Env, admin_signers: Vec<Address>, ratio: u32) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
+        panic_with_error!(&env, err);
+    }
     if ratio == 0 {
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
@@ -684,6 +771,9 @@ pub fn set_max_loan_to_stake_ratio(env: Env, admin_signers: Vec<Address>, ratio:
 
 pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
+        panic_with_error!(&env, err);
+    }
     let cfg = config(&env);
     if period > cfg.loan_duration {
         panic_with_error!(&env, ContractError::InvalidAmount);
@@ -781,6 +871,7 @@ pub fn get_config(env: Env) -> Config {
 
 pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
+    crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig)?;
     require_valid_token(&env, &token)?;
     let mut cfg = config(&env);
     if cfg.allowed_tokens.iter().any(|t| t == token) || token == cfg.token {
@@ -793,6 +884,9 @@ pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) 
 
 pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
     let mut cfg = config(&env);
     let idx = cfg
         .allowed_tokens
@@ -827,6 +921,9 @@ pub fn is_whitelist_enabled(env: Env) -> bool {
 
 pub fn set_max_vouchers_per_borrower(env: Env, admin_signers: Vec<Address>, max_vouchers: u32) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
+        panic_with_error!(&env, err);
+    }
     if max_vouchers == 0 {
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
@@ -857,6 +954,9 @@ pub fn withdraw_slash_treasury(
     amount: i128,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
+        panic_with_error!(&env, err);
+    }
     assert!(amount > 0, "amount must be greater than zero");
 
     let balance: i128 = env
@@ -882,6 +982,7 @@ pub fn withdraw_slash_treasury(
 
 pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
+    crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::AddAdmin)?;
 
     if new_admin == Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF") {
         return Err(ContractError::ZeroAddress);
@@ -931,6 +1032,9 @@ pub fn set_successor_admin(
     successor: Option<Address>,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::AddAdmin) {
+        panic_with_error!(&env, err);
+    }
 
     if let Some(ref addr) = successor {
         if is_admin(&env, addr) {
@@ -974,6 +1078,9 @@ pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
 
 pub fn set_prepayment_penalty_bps(env: Env, admin_signers: Vec<Address>, penalty_bps: u32) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
+        panic_with_error!(&env, err);
+    }
     assert!(penalty_bps <= 10_000, "penalty_bps must not exceed 10000");
     env.storage()
         .instance()
@@ -1264,6 +1371,7 @@ pub fn emergency_pause(env: Env, admin: Address) -> Result<(), ContractError> {
 
 pub fn emergency_unpause(env: Env, admin_signers: Vec<Address>) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
+    crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause)?;
 
     let mut cfg = config(&env);
     cfg.emergency_pause_enabled = false;
@@ -1286,6 +1394,9 @@ pub fn set_confirmation_required(
     enabled: bool,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
     cfg.confirmation_required = enabled;
@@ -1310,6 +1421,9 @@ pub fn set_admin_compensation_bps(
     compensation_bps: u32,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
+        panic_with_error!(&env, err);
+    }
     if compensation_bps > 10_000 {
         panic_with_error!(&env, ContractError::InvalidBps);
     }
@@ -1444,6 +1558,9 @@ pub fn set_removal_vote_threshold(
     threshold: u32,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
 
     let mut cfg = config(&env);
     cfg.removal_vote_threshold = threshold;
@@ -1461,6 +1578,9 @@ pub fn set_rate_limit_config(
     rate_limit_config: crate::types::RateLimitConfig,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
     let mut cfg = config(&env);
     cfg.rate_limit_config = rate_limit_config;
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -1473,6 +1593,9 @@ pub fn set_role_permissions(
     permissions: crate::types::RolePermissions,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
     env.storage()
         .persistent()
         .set(&DataKey::RolePermissions(account), &permissions);
@@ -1500,6 +1623,9 @@ pub fn set_governance_queue_config(
     config: GovernanceQueueConfig,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
 
     if config.timelock_delay == 0 {
         panic_with_error!(&env, ContractError::InvalidAmount);
@@ -2110,6 +2236,9 @@ pub fn set_multi_tier_thresholds(
     thresholds: MultiTierAdminThresholds,
 ) {
     require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
 
     // Validate thresholds
     let admin_count = config(&env).admins.len() as u32;
