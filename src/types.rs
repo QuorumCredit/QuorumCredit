@@ -501,6 +501,10 @@ pub enum DataKey {
     /// Per-borrower timestamp of the most recent slash proposal initiation.
     /// Used to enforce the 7-day cooldown between successive slash proposals.
     LastSlashProposalAt(Address),
+    /// Refinance record for a loan: loan_id → RefinanceRecord
+    RefinanceRecord(u64),
+    /// Borrower repayment confirmation for oracle-gated repayment: loan_id → bool
+    RepaymentConfirmation(u64),
     /// Cached total weighted stake per borrower per token: (borrower, token) → i128
     /// Used for O(1) eligibility checks; invalidated on vouch operations.
     TotalWeightedStakeCache(Address, Address),
@@ -1544,41 +1548,14 @@ pub struct LoanRecord {
     /// #666/#667: Escrow status for oracle-verified repayments.
     pub escrow_status: EscrowStatus,
     pub co_borrowers: Vec<Address>,
-    pub amount: i128,        // total loan principal in stroops
-    pub amount_repaid: i128, // cumulative repayments received so far (principal + yield + interest)
-    pub total_yield: i128,   // static yield owed to vouchers, locked in at disbursement
-    pub repaid: bool,
-    pub defaulted: bool,
-    pub created_at: u64,                  // ledger timestamp
-    pub disbursement_timestamp: u64,      // ledger timestamp
-    pub repayment_timestamp: Option<u64>, // set once the loan is fully repaid
-    pub deadline: u64,                    // repayment deadline (ledger timestamp)
-    pub loan_purpose: soroban_sdk::String, // borrower-supplied purpose string
-    pub token_address: Address,           // token used for this loan
-
-    // ── Daily-compound interest fields ───────────────────────────────────────
-    /// Ledger timestamp of the last interest accrual.  Initialised to
-    /// `disbursement_timestamp` so the first `repay()` call charges interest
-    /// for however many whole days have elapsed since disbursement.
-    pub last_interest_calc: u64,
-    /// Total compound interest accrued so far but not yet repaid.
-    /// Updated on every `repay()` call before the payment is applied.
-    pub accrued_interest: i128,
-
-    // ── Milestone bonus field ─────────────────────────────────────────────────
-    /// Bitmask tracking which milestone bonuses have already been applied.
-    /// Bit 0 = 25 % milestone, bit 1 = 50 % milestone, bit 2 = 75 % milestone.
-    /// Once a bit is set it is never cleared, ensuring each bonus fires at most once.
-    pub milestone_bonus_applied: u32,
     /// Total loan principal disbursed, in stroops. 1 XLM = 10,000,000 stroops.
     pub amount: i128,
-    /// Cumulative repayments received so far (principal + yield), in stroops.
-    /// 1 XLM = 10,000,000 stroops.
+    /// Cumulative repayments received so far (principal + yield + interest), in stroops.
     pub amount_repaid: i128,
     /// Yield owed to vouchers, locked in at disbursement time, in stroops.
-    /// Computed as `amount * yield_bps / 10_000`. 1 XLM = 10,000,000 stroops.
+    /// Computed as `amount * yield_bps / 10_000`.
     pub total_yield: i128,
-        pub status: LoanStatus,
+    pub status: LoanStatus,
     pub repaid: bool,
     pub defaulted: bool,
     /// Ledger timestamp when the loan record was created.
@@ -1601,20 +1578,21 @@ pub struct LoanRecord {
     pub risk_score: u32,
     /// Number of payment deferment periods used on this loan.
     pub deferment_periods: u32,
-    /// Optional custom maturity date (ledger timestamp). When set, overrides the
-    /// default `deadline` computed from `loan_duration`. `None` means use `deadline`.
+    /// Optional custom maturity date (ledger timestamp).
     pub maturity_date: Option<u64>,
     /// Interest rate type for this loan.
     pub rate_type: RateType,
-    /// For variable-rate loans: the oracle key or index name used to look up the
-    /// current rate (e.g. `"SOFR"`, `"PRIME"`). `None` for fixed-rate loans.
+    /// For variable-rate loans: the oracle key or index name.
     pub index_reference: Option<soroban_sdk::String>,
-    /// Issue #838: Timestamp of last compound interest calculation (for daily compounding).
+    // ── Daily-compound interest fields ───────────────────────────────────────
+    /// Ledger timestamp of the last interest accrual.
     pub last_interest_calc: u64,
-    /// Issue #838: Accrued compound interest from partial repayments (in stroops).
+    /// Total compound interest accrued so far but not yet repaid.
     pub accrued_interest: i128,
-    /// Issue #838: Milestone bonus applied (50% repaid threshold).
-    pub milestone_bonus_applied: bool,
+    // ── Milestone bonus field ─────────────────────────────────────────────────
+    /// Bitmask tracking which milestone bonuses have already been applied.
+    /// Bit 0 = 25% milestone, bit 1 = 50% milestone, bit 2 = 75% milestone.
+    pub milestone_bonus_applied: u32,
     /// Issue #669: Retry count for failed repayments (max 3).
     pub retry_count: u32,
     /// Timestamp when the loan was suspended due to missed payment.

@@ -193,7 +193,7 @@ pub fn verify_vouch_proof(
     }
 
     let expected_proof_bytes = proof_digest(env, proof);
-    if proof.proof_bytes != expected_proof_bytes.to_array().into() {
+    if proof.proof_bytes != soroban_sdk::Bytes::from(&expected_proof_bytes) {
         return Err(ContractError::InvalidProof);
     }
 
@@ -240,7 +240,7 @@ pub fn verify_loan_proof(
     }
 
     let expected_proof_bytes = proof_digest(env, proof);
-    if proof.proof_bytes != expected_proof_bytes.to_array().into() {
+    if proof.proof_bytes != soroban_sdk::Bytes::from(&expected_proof_bytes) {
         return Err(ContractError::InvalidProof);
     }
 
@@ -252,7 +252,7 @@ pub fn record_proof(env: &Env, proof: &ZkProof, operation_type: u32, submitter: 
         .storage()
         .instance()
         .get(&DataKey::ZkProofCounter)
-        .unwrap_or(0)
+        .unwrap_or(0u64)
         .checked_add(1)
         .expect("proof ID overflow");
     env.storage().instance().set(&DataKey::ZkProofCounter, &proof_id);

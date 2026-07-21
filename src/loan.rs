@@ -1,15 +1,7 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    apply_milestone_bonus, calculate_daily_compound_interest, config, get_active_loan_record,
-    has_active_loan, next_loan_id, require_allowed_token, require_not_paused,
-};
-use crate::reputation::ReputationNftExternalClient;
-use crate::types::{
-    DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
-    SECS_PER_DAY,
-};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
-    config, deduct_slash_balance, get_active_loan_record, get_latest_loan_record,
+    apply_milestone_bonus, calculate_daily_compound_interest, config, deduct_slash_balance,
+    get_active_loan_record, get_latest_loan_record,
     has_active_loan, next_loan_id, register_borrower_if_needed, require_allowed_token,
     require_not_paused, require_not_thawing, require_admin_approval,
     require_governance_participant,
@@ -22,6 +14,7 @@ use crate::types::{
     YieldDistributionEntry, PaymentRecord,
     BPS_DENOMINATOR, DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS,
     MAX_FORBEARANCE_PERIODS, REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD,
+    SECS_PER_DAY,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -228,30 +221,6 @@ pub fn request_loan(
     let loan_id = next_loan_id(&env);
     let total_yield = amount * cfg.yield_bps / 10_000;
 
-    env.storage().persistent().set(
-        &DataKey::Loan(loan_id),
-        &LoanRecord {
-            id: loan_id,
-            borrower: borrower.clone(),
-            co_borrowers: Vec::new(&env),
-            amount,
-            amount_repaid: 0,
-            total_yield,
-            repaid: false,
-            defaulted: false,
-            created_at: now,
-            disbursement_timestamp: now,
-            repayment_timestamp: None,
-            deadline,
-            loan_purpose,
-            token_address: token_addr.clone(),
-            // Interest tracking: start the clock at disbursement so elapsed days
-            // are correctly computed on the first repayment call.
-            last_interest_calc: now,
-            accrued_interest: 0,
-            milestone_bonus_applied: 0,
-        },
-    );
     // Store yield distribution for repayment-time lookup
     env.storage()
         .persistent()
@@ -287,7 +256,7 @@ pub fn request_loan(
         index_reference: None,
         last_interest_calc: now,
         accrued_interest: 0,
-        milestone_bonus_applied: false,
+        milestone_bonus_applied: 0,
         retry_count: 0,
         suspension_timestamp: None,
         suspension_amount_repaid: 0,
@@ -1099,7 +1068,7 @@ pub fn refinance_loan(
         index_reference: old_loan.index_reference,
         last_interest_calc: now,
         accrued_interest: 0,
-        milestone_bonus_applied: false,
+        milestone_bonus_applied: 0,
         retry_count: 0,
         suspension_timestamp: None,
         suspension_amount_repaid: 0,

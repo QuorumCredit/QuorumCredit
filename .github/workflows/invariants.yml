@@ -1,0 +1,76 @@
+name: Contract Invariants
+
+on:
+  pull_request:
+    paths:
+      - "src/vouch.rs"
+      - "src/loan.rs"
+      - "src/governance.rs"
+      - "src/admin.rs"
+      - "src/lib.rs"
+      - "src/helpers.rs"
+      - "src/types.rs"
+      - "src/errors.rs"
+      - "src/invariants_test.rs"
+      - "Cargo.toml"
+      - ".github/workflows/invariants.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/vouch.rs"
+      - "src/loan.rs"
+      - "src/governance.rs"
+      - "src/admin.rs"
+      - "src/lib.rs"
+      - "src/helpers.rs"
+      - "src/types.rs"
+      - "src/errors.rs"
+      - "src/invariants_test.rs"
+      - "Cargo.toml"
+      - ".github/workflows/invariants.yml"
+
+jobs:
+  invariants:
+    name: Contract Invariant Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-invariants-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-invariants-
+
+      - name: cargo check
+        run: cargo check
+
+      - name: cargo clippy (no warnings)
+        run: cargo clippy -- -D warnings
+
+      - name: Run invariant tests
+        run: |
+          cargo test invariants_test -- --nocapture 2>&1
+
+      - name: Run negative control tests
+        run: |
+          cargo test negative_control -- --nocapture 2>&1
+
+      - name: Run proptest fuzzing harness
+        run: |
+          cargo test prop_invariants_hold_under_random_ops -- --nocapture 2>&1
+        env:
+          PROPTEST_CASES: 256
+
+      - name: Run full test suite
+        run: cargo test --lib 2>&1

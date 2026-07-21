@@ -1,10 +1,10 @@
 use crate::errors::ContractError;
 use crate::types::{
-    Config, DataKey, LoanRecord, COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS,
+    Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
+    COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS,
     MILESTONE_25_PCT_PERMILLE, MILESTONE_50_DISCOUNT_BPS, MILESTONE_50_PCT_PERMILLE,
     MILESTONE_75_DISCOUNT_BPS, MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50,
     MILESTONE_FLAG_75, SECS_PER_DAY,
-    Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
     MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS, BPS_DENOMINATOR,
 };
 use soroban_sdk::{token, Address, Env, String, Symbol, Vec};
@@ -661,6 +661,8 @@ pub fn apply_milestone_bonus(
     }
 
     (accrued, flags)
+}
+
 /// Retrieves an oracle price record and validates its freshness in one call.
 pub fn get_fresh_price(
     env: &Env,

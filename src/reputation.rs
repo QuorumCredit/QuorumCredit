@@ -132,6 +132,7 @@ pub fn get_excellent_badge(env: &Env, borrower: &Address) -> Option<ReputationNF
 #[contract]
 pub struct ReputationNftContract;
 
+#[cfg(test)]
 #[contractimpl]
 impl ReputationNftContract {
     /// One-time setup: record the authorised minter (the lending contract).
