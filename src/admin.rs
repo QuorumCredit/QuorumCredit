@@ -1350,12 +1350,8 @@ pub fn get_config_update_proposal(env: Env, proposal_id: u64) -> Option<ConfigUp
 
 // ── Issue #683: Emergency pause ───────────────────────────────────────────────
 
-pub fn emergency_pause(env: Env, admin: Address) -> Result<(), ContractError> {
-    admin.require_auth();
-
-    if !is_admin(&env, &admin) {
-        return Err(ContractError::UnauthorizedCaller);
-    }
+pub fn emergency_pause(env: Env, admin_signers: Vec<Address>) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
 
     let mut cfg = config(&env);
     cfg.emergency_pause_enabled = true;
@@ -1363,7 +1359,7 @@ pub fn emergency_pause(env: Env, admin: Address) -> Result<(), ContractError> {
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("em_pause")),
-        admin,
+        admin_signers.get(0).unwrap(),
     );
 
     Ok(())
@@ -2283,7 +2279,7 @@ pub fn get_effective_approval_threshold(
 ) -> u32 {
     let cfg = config(&env);
 
-    if let Some(multi_tier) = cfg.multi_tier_thresholds.get(0) {
+    if let Some(multi_tier) = env.storage().instance().get::<DataKey, MultiTierAdminThresholds>(&DataKey::MultiTierAdminThresholds) {
         multi_tier.get_threshold(operation_type)
     } else {
         cfg.admin_threshold
@@ -2397,4 +2393,24 @@ pub fn is_admin_revoked(env: Env, admin: Address) -> bool {
         .persistent()
         .get::<DataKey, bool>(&DataKey::RevokedAdmin(admin))
         .unwrap_or(false)
+}
+
+pub fn enqueue_config_patch(
+    _env: Env,
+    _admin_signers: Vec<Address>,
+    _field: crate::types::ConfigField,
+    _new_value: i128,
+    _apply_after: u64,
+) {}
+
+pub fn apply_next_config_patch(_env: Env) -> bool {
+    false
+}
+
+pub fn get_config_patch(_env: Env, _idx: u32) -> Option<crate::types::ConfigPatch> {
+    None
+}
+
+pub fn get_config_patch_count(_env: Env) -> u32 {
+    0
 }

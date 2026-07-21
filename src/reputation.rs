@@ -128,7 +128,6 @@ pub fn get_excellent_badge(env: &Env, borrower: &Address) -> Option<ReputationNF
         .get(&DataKey::ReputationNFTBadge(borrower.clone()))
 }
 
-#[cfg(test)]
 #[contract]
 pub struct ReputationNftContract;
 

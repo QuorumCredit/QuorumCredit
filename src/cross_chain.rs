@@ -247,5 +247,4 @@ pub fn query_reputation_cross_chain(env: Env, borrower: Address) -> Option<Unifi
         mirrored_score: mirrored.as_ref().map(|m| m.score),
         mirrored_from_chain: mirrored.as_ref().map(|m| m.chain),
         mirrored_at: mirrored.as_ref().map(|m| m.updated_at),
-    })
-}
+    })}

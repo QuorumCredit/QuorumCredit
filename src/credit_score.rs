@@ -179,17 +179,17 @@ pub fn integer_sqrt_u64(n: u64) -> u64 {
 pub fn calculate_timeliness_score(avg_repayment_time: i64) -> u32 {
     // Positive = early repayment, Negative = late repayment
     // Max benefit for 7 days early, max penalty for 7 days late
-    let early_threshold = 7 * 24 * 60 * 60; // 7 days
-    let late_threshold = -7 * 24 * 60 * 60; // 7 days late
+    let early_threshold: i64 = 7 * 24 * 60 * 60; // 7 days in seconds
+    let late_threshold: i64 = -7 * 24 * 60 * 60; // 7 days late in seconds
 
-    if avg_repayment_time >= early_threshold as i64 {
+    if avg_repayment_time >= early_threshold {
         return 1000;
     } else if avg_repayment_time <= late_threshold {
         return 0;
     } else {
-        // Linear interpolation
-        let range = early_threshold - (-late_threshold);
-        let position = avg_repayment_time - late_threshold as i64;
+        // Linear interpolation from late_threshold (0) to early_threshold (1000)
+        let range = early_threshold - late_threshold; // = 14 * 24 * 60 * 60
+        let position = avg_repayment_time - late_threshold;
         let score = (position as f64 / range as f64) * 1000.0;
         score.max(0.0).min(1000.0) as u32
     }
