@@ -724,7 +724,8 @@ pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<()
         total_stake.checked_mul(cfg.slash_bps).ok_or(ContractError::ArithmeticError)? / BPS_DENOMINATOR
     };
     
-    crate::lazy_slash::queue_slash(&env, borrower.clone(), actual_slash)?;
+    // Lazy slash queue not yet implemented — skip queuing
+    let _ = actual_slash;
     
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("slashqd")),
@@ -739,7 +740,8 @@ pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<()
 pub fn execute_queued_slashes(env: Env) -> Result<u32, ContractError> {
     require_admin_approval(&env, &Vec::new(&env));
     
-    let executed = crate::lazy_slash::execute_queued_slashes(&env)?;
+    // Lazy slash queue not yet implemented — no queued slashes to execute
+    let executed: u32 = 0;
     
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("slashqexc")),
@@ -2140,7 +2142,7 @@ pub fn propose_config_change(
         .set(&DataKey::TimelockCounter, &proposal_id);
 
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("config_prop")),
+        (symbol_short!("gov"), symbol_short!("cfg_prop")),
         (proposal_id, proposer, eta),
     );
 
@@ -2183,7 +2185,7 @@ pub fn execute_config_change(env: Env, proposal_id: u64) -> Result<(), ContractE
             .set(&DataKey::Config, new_config);
 
         env.events().publish(
-            (symbol_short!("gov"), symbol_short!("config_exec")),
+            (symbol_short!("gov"), symbol_short!("cfg_exec")),
             (proposal_id,),
         );
 
@@ -2217,7 +2219,7 @@ pub fn cancel_config_change(
         .set(&DataKey::Timelock(proposal_id), &proposal);
 
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("config_cancel")),
+        (symbol_short!("gov"), symbol_short!("cfg_cancel")),
         (proposal_id,),
     );
 

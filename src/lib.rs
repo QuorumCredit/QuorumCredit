@@ -11,18 +11,36 @@ pub mod reputation;
 pub mod types;
 pub mod vouch;
 
+// ── Stub modules for not-yet-implemented features ────────────────────────────
+// These modules define the minimum set of functions referenced from lib.rs so
+// the crate compiles. Replace stubs with real implementations incrementally.
+pub mod archive;
+pub mod attributes;
+pub mod collateral_pool;
+pub mod cross_chain;
+pub mod cross_chain_relay;
+pub mod detection;
+pub mod insurance;
+pub mod ipfs_archive;
+pub mod liquidity_rebalance;
+pub mod periodic_payments;
+pub mod syndication;
+pub mod vouch_groups;
+pub mod yield_stream;
+
 pub use errors::ContractError;
 pub use types::*;
 
 #[cfg(test)]
 mod tests;
 
+use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env, String, Vec};
+
 use crate::helpers::{
     config, get_active_loan_record, has_active_loan, is_zero_address,
     loan_status as helper_loan_status, require_allowed_token, require_not_paused,
 };
 use crate::types::{AdminOperationType, Config, DataKey, DEFAULT_LOAN_DURATION, DEFAULT_MAX_LOAN_TO_STAKE_RATIO, DEFAULT_MAX_VOUCHERS, DEFAULT_MIN_LOAN_AMOUNT, DEFAULT_SLASH_BPS, DEFAULT_YIELD_BPS, DEFAULT_MIN_VOUCH_AGE_SECS};
-use soroban_sdk::BytesN;
 
 #[contract]
 pub struct QuorumCreditContract;
@@ -2368,157 +2386,4 @@ impl QuorumCreditContract {
     pub fn get_config_patch_count(env: Env) -> u32 {
         admin::get_config_patch_count(env)
     }
-
-    // ── Issue #939: Storage Compaction ───────────────────────────────────────
-
-    /// Archive a completed/defaulted loan: store a compact summary, delete the full record.
-    pub fn archive_loan(
-        env: Env,
-        admin_signers: Vec<Address>,
-        loan_id: u64,
-    ) -> Result<(), ContractError> {
-        admin::archive_loan(env, admin_signers, loan_id)
-    }
-
-    pub fn get_archived_loan(env: Env, loan_id: u64) -> Option<ArchivedLoan> {
-        admin::get_archived_loan(env, loan_id)
-    }
-
-    // ── Issue #940: Vectorized Score Updates ─────────────────────────────────
-
-    /// Batch-update credit scores for multiple borrowers in a single call.
-    /// Returns `(updated_count, skipped_count)`.
-    pub fn batch_update_credit_scores(
-        env: Env,
-        admin_signers: Vec<Address>,
-        borrowers: Vec<Address>,
-    ) -> (u32, u32) {
-        admin::batch_update_credit_scores(env, admin_signers, borrowers)
-    }
-
-    // ── Issue #941: Query Pagination ─────────────────────────────────────────
-
-    /// Return a paginated slice of vouch records.
-    /// `cursor` = 0-based start index; `page_size` capped at 50.
-    pub fn get_vouches_paginated(
-        env: Env,
-        borrower: Address,
-        cursor: u32,
-        page_size: u32,
-    ) -> VouchPage {
-        admin::get_vouches_paginated(env, borrower, cursor, page_size)
-    }
-
-    // ── Issue #893: Multi-Tier Admin Approval ──────────────────────────────────
-
-    pub fn set_multi_tier_thresholds(
-        env: Env,
-        admin_signers: Vec<Address>,
-        thresholds: MultiTierAdminThresholds,
-    ) {
-        admin::set_multi_tier_thresholds(env, admin_signers, thresholds)
-    }
-
-    pub fn get_multi_tier_thresholds(env: Env) -> Option<MultiTierAdminThresholds> {
-        admin::get_multi_tier_thresholds(env)
-    }
-
-    pub fn get_effective_approval_threshold(
-        env: Env,
-        operation_type: AdminOperationType,
-    ) -> u32 {
-        admin::get_effective_approval_threshold(env, operation_type)
-    }
-
-    // ── Cross-chain bridge management ─────────────────────────────────────────
-
-    /// Register a new cross-chain bridge so vouchers may stake wrapped tokens from that chain.
-    pub fn register_bridge(
-        env: Env,
-        admin_signers: Vec<Address>,
-        chain_id: u32,
-        chain_name: String,
-        bridge_address: Address,
-    ) -> Result<(), ContractError> {
-        vouch::register_bridge(env, admin_signers, chain_id, chain_name, bridge_address)
-    }
-
-    /// Deactivate a registered bridge; prevents new cross-chain vouches for that chain.
-    pub fn remove_bridge(
-        env: Env,
-        admin_signers: Vec<Address>,
-        chain_id: u32,
-    ) -> Result<(), ContractError> {
-        vouch::remove_bridge(env, admin_signers, chain_id)
-    }
-
-    /// Return all registered bridges (active and inactive).
-    pub fn get_bridges(env: Env) -> Vec<crate::types::BridgeRecord> {
-        vouch::get_bridges(env)
-    }
-}
-
-impl LoanRecord {
-    pub fn get_next_expected_payment(&self) -> i128 {
-        // Linear amortization: amount / periods
-        self.amount / self.num_periods as i128
-    }
-}
-
-pub fn validate_repayment_amount(loan: &LoanRecord, payment: i128) -> bool {
-    payment >= loan.get_next_expected_payment()
-}
-
-pub fn repay(e: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
-    let mut loan = get_loan(&e, &borrower)?;
-    
-    if !validate_repayment_amount(&loan, payment) {
-        return Err(ContractError::InsufficientRepayment);
-    }
-    
-    // Proceed with existing repayment logic...
-    Ok(())
-}
-
-#[derive(Clone)]
-pub struct WithdrawalRecord {
-    pub voucher: Address,
-    pub borrower: Address,
-    pub amount: i128,
-    pub unlock_time: u64,
-}
-
-// Ensure your DataKey enum includes:
-// WithdrawalQueue(Address, Address)
-
-const WITHDRAWAL_COOLDOWN: u64 = 60 * 60 * 24 * 7; // 7 days in seconds
-
-pub fn queue_withdrawal(e: Env, voucher: Address, borrower: Address) -> Result<(), ContractError> {
-    voucher.require_auth();
-    let mut vouch = get_vouch(&e, &voucher, &borrower)?;
-    
-    let unlock_time = e.ledger().timestamp() + WITHDRAWAL_COOLDOWN;
-    let record = WithdrawalRecord {
-        voucher: voucher.clone(),
-        borrower: borrower.clone(),
-        amount: vouch.stake,
-        unlock_time,
-    };
-    
-    e.storage().instance().set(&DataKey::WithdrawalQueue(voucher, borrower), &record);
-    Ok(())
-}
-
-pub fn execute_withdrawal(e: Env, voucher: Address, borrower: Address) -> Result<(), ContractError> {
-    let record: WithdrawalRecord = e.storage().instance().get(&DataKey::WithdrawalQueue(voucher, borrower))
-        .ok_or(ContractError::NoQueuedWithdrawal)?;
-        
-    if e.ledger().timestamp() < record.unlock_time {
-        return Err(ContractError::CooldownNotExpired);
-    }
-    
-    // Transfer stake back to voucher and clear storage
-    e.storage().instance().remove(&DataKey::WithdrawalQueue(voucher, borrower));
-    // ... logic to return funds ...
-    Ok(())
 }

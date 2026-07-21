@@ -14,7 +14,7 @@ use crate::types::{
     BPS_DENOMINATOR, DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS,
     MAX_FORBEARANCE_PERIODS, REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD,
 };
-use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, token, Address, Env, Vec};
 
 /// Vouch-age bonus constants
 const VOUCH_AGE_BONUS_MIN_SECS: u64 = 30 * 24 * 60 * 60;   // 30 days
@@ -24,20 +24,8 @@ const VOUCH_AGE_BONUS_MAX_BPS: i128 = 200;                   // cap at 200 bps
 
 /// Get or compute the yield rate for a single vouch with caching (Issue #934).
 pub fn vouch_yield_bps(env: &Env, vouch: &VouchRecord, borrower: &Address, now: u64) -> i128 {
-    let cfg = config(env);
-    
-    // Try to get cached yield
-    if let Some(cached_yield) = crate::cache::get_cached_yield(env, borrower, &vouch.voucher, cfg.yield_bps) {
-        return cached_yield;
-    }
-    
-    // Compute yield if not cached
-    let yield_bps = vouch_yield_bps_uncached(env, vouch, borrower, now);
-    
-    // Cache the result
-    crate::cache::set_cached_yield(env, borrower, &vouch.voucher, yield_bps, cfg.yield_bps);
-    
-    yield_bps
+    // Compute yield directly (cache module not yet implemented)
+    vouch_yield_bps_uncached(env, vouch, borrower, now)
 }
 
 /// Compute the yield rate (in bps) for a single vouch, incorporating:
@@ -474,8 +462,12 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
 
             let payout = v.stake + vouch_yield + penalty_share;
             
-            // Issue #935: Queue transfer for batch processing
-            crate::batch_transfer::queue_transfer(&env, v.voucher.clone(), payout, loan.token_address.clone());
+            // Transfer payout directly to voucher
+            token::Client::new(&env, &loan.token_address).transfer(
+                &env.current_contract_address(),
+                &v.voucher,
+                &payout,
+            );
 
             let mut stats: crate::types::VoucherStats = env
                 .storage()
@@ -494,8 +486,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 .set(&DataKey::VoucherStats(v.voucher.clone()), &stats);
         }
 
-        // Issue #935: Flush all queued transfers in a single batch
-        crate::batch_transfer::flush_transfers(&env)?;
+        // Transfers have been issued above in the voucher loop.
 
         // Increment borrower repayment count (feeds future reputation bonus).
         let prev_count: u32 = env
@@ -512,9 +503,12 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         if bonus > 0 {
             let contract_balance = token.balance(&env.current_contract_address());
             if contract_balance >= bonus {
-                // Issue #935: Queue bonus transfer for batch processing
-                crate::batch_transfer::queue_transfer(&env, borrower.clone(), bonus, loan.token_address.clone());
-                crate::batch_transfer::flush_transfers(&env)?;
+                // Transfer prepayment bonus directly
+                token::Client::new(&env, &loan.token_address).transfer(
+                    &env.current_contract_address(),
+                    &borrower,
+                    &bonus,
+                );
                 env.events().publish(
                     (symbol_short!("loan"), symbol_short!("bonus")),
                     (borrower.clone(), bonus),

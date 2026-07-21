@@ -25,6 +25,7 @@ pub enum ContractError {
     AlreadyInitialized = 19,
     VouchTooRecent = 20,
     VouchCooldownActive = 21,
+    BorrowerHasActiveLoan = 22,
     VoucherNotWhitelisted = 23,
     Blacklisted = 24,
     TimelockNotFound = 25,
@@ -52,8 +53,6 @@ pub enum ContractError {
     InsuranceClaimAlreadyMade = 45,
     /// Basis points value is invalid (must be 0–10000).
     InvalidBps = 46,
-    /// Withdrawal request already queued for this voucher/borrower pair.
-    WithdrawalAlreadyQueued = 57,
     /// No queued withdrawal found for this voucher/borrower pair.
     WithdrawalNotQueued = 47,
     /// Partial withdrawal amount exceeds the 50% cap.
@@ -74,10 +73,8 @@ pub enum ContractError {
     MaxRetriesExceeded = 55,
     /// No escrow record found for this borrower (#666/#667).
     NoEscrowFound = 56,
-    /// No slash record found for the given slash ID.
-    SlashRecordNotFound = 142,
-    /// Refinancing was attempted without any outstanding balance to settle.
-    RefinanceNoOutstanding = 143,
+    /// Withdrawal request already queued for this voucher/borrower pair.
+    WithdrawalAlreadyQueued = 57,
     /// Slash has already been reversed and cannot be reversed again.
     SlashAlreadyReversed = 58,
     /// Caller has exceeded the configured rate limit.
@@ -102,6 +99,62 @@ pub enum ContractError {
     AdminAlreadyRevoked = 68,
     /// The target of revocation is not a current admin.
     AdminNotFound = 69,
+    /// No slash record found for the given slash ID.
+    SlashRecordNotFound = 70,
+    /// Refinancing was attempted without any outstanding balance to settle.
+    RefinanceNoOutstanding = 71,
+    /// Loan has already been fully repaid.
+    AlreadyRepaid = 72,
+    /// Loan forbearance not found.
+    ForbearanceNotFound = 73,
+    /// Loan forbearance is not active.
+    ForbearanceNotActive = 74,
+    /// Loan is currently in forbearance.
+    LoanInForbearance = 75,
+    /// Maximum forbearance periods reached.
+    MaxForbearanceExceeded = 76,
+    /// Dynamic rate configuration is invalid.
+    InvalidDynamicRateConfig = 77,
+    /// Loan amount exceeds maximum loan-to-stake ratio.
+    LoanExceedsMaxRatio = 78,
+    /// Co-borrower has already been added to this loan.
+    CoBorrowerAlreadyAdded = 79,
+    /// Maximum co-borrowers per loan exceeded.
+    MaxCoBorrowersExceeded = 80,
+    /// Borrower cannot add themselves as a co-borrower.
+    SelfCoBorrowerNotAllowed = 81,
+    /// Insufficient repayment amount.
+    InsufficientRepayment = 82,
+    /// No queued withdrawal found for this voucher/borrower pair.
+    NoQueuedWithdrawal = 83,
+    /// Cooldown period has not yet expired.
+    CooldownNotExpired = 84,
+    /// Vote delegation cycle detected (circular delegation).
+    CircularDelegation = 85,
+    /// Vote delegation not found for this voucher.
+    DelegationNotFound = 86,
+    /// A write operation was attempted while the contract is in the Thawing state.
+    ContractThawing = 87,
+    /// Syndication not found.
+    SyndicationNotFound = 88,
+    /// Syndication member not found.
+    SyndicationMemberNotFound = 89,
+    /// Syndication already has a loan.
+    SyndicationHasLoan = 90,
+    /// Syndication is not in the correct status.
+    InvalidSyndicationStatus = 91,
+    /// Syndication member already exists.
+    SyndicationMemberExists = 92,
+    /// Syndication has insufficient approvals.
+    InsufficientSyndicationApprovals = 93,
+    /// Syndication has too many members.
+    SyndicationMaxMembersExceeded = 94,
+    /// Syndication has too few members.
+    SyndicationMinMembersNotMet = 95,
+    /// Invalid syndication share percentage.
+    InvalidSyndicationShare = 96,
+    /// Syndication configuration is invalid.
+    InvalidSyndicationConfig = 97,
     /// The chain_id used in a cross-chain vouch is not registered or is inactive.
     InvalidChain = 98,
     /// A bridge for this chain_id has already been registered.
@@ -138,80 +191,56 @@ pub enum ContractError {
     CreditScoreNotFound = 114,
     /// Credit score configuration is invalid.
     InvalidCreditConfig = 115,
-/// A write operation was attempted while the contract is in the Thawing state.
-/// Only reads and withdrawals are permitted during a thaw period.
-ContractThawing = 116,
-
-/// Syndication not found.
-SyndicationNotFound = 117,
-/// Syndication member not found.
-SyndicationMemberNotFound = 118,
-/// Syndication already has a loan.
-SyndicationHasLoan = 119,
-/// Syndication is not in the correct status.
-InvalidSyndicationStatus = 120,
-/// Syndication member already exists.
-SyndicationMemberExists = 121,
-/// Syndication has insufficient approvals.
-InsufficientSyndicationApprovals = 122,
-/// Syndication has too many members.
-SyndicationMaxMembersExceeded = 123,
-/// Syndication has too few members.
-SyndicationMinMembersNotMet = 124,
-/// Invalid syndication share percentage.
-InvalidSyndicationShare = 125,
-/// Syndication configuration is invalid.
-InvalidSyndicationConfig = 126,
-/// No slash escrow found for this borrower.
-AppealNotFound = 127,
-/// Voucher has already voted on this appeal.
-AppealAlreadyVoted = 128,
-/// Appeal quorum (2/3 voucher stake) not met to overturn slash.
-AppealQuorumNotMet = 129,
-/// Escrow period has expired; appeal can no longer be filed or voted on.
-EscrowExpired = 130,
-/// Emergency cooldown bypass is not authorised for this voucher.
-EmergencyBypassNotAuthorised = 131,
-/// Cooldown bypass request already exists for this (borrower, voucher) pair.
-CooldownBypassAlreadyRequested = 143,
-/// Cooldown bypass request not found.
-CooldownBypassNotFound = 144,
-/// Cooldown bypass has already been approved.
-CooldownBypassAlreadyApproved = 145,
-/// Insufficient admin approvals for cooldown bypass (need 2/3).
-CooldownBypassInsufficientApprovals = 146,
-/// Cross-collateral pool not found.
-CollateralPoolNotFound = 132,
-/// Cross-collateral pool is already active (has an assigned borrower).
-CollateralPoolActive = 133,
-/// Caller is not a member of the specified collateral pool.
-NotPoolMember = 134,
-/// Gradual-unstake schedule not found for this voucher/borrower pair.
-GradualUnstakeNotFound = 135,
-/// A gradual-unstake schedule is already active for this pair.
-GradualUnstakeAlreadyActive = 136,
-/// The next instalment is not yet due.
-GradualUnstakeNotDue = 137,
-/// Loan extension request already pending for this borrower.
-ExtensionAlreadyRequested = 138,
-/// Maximum number of extensions per loan has been reached.
-MaxExtensionsReached = 139,
-/// Caller does not have permission to view this loan (privacy restriction).
-LoanPrivacyRestricted = 140,
-/// Insurance pool is not connected to this loan.
-InsuranceNotLinked = 141,
-/// No relay verification key is configured for the source chain.
-RelayKeyNotConfigured = 142,
-/// Relay chain id is zero or otherwise invalid.
-InvalidRelayChain = 143,
-/// A relay attestation reused an already-consumed nonce.
-RelayReplayDetected = 144,
-/// The relay attestation is older than the freshness window allows.
-RelayEventExpired = 145,
-/// The relay attestation is timestamped too far in the future.
-RelayEventFromFuture = 146,
-/// A relay event with this (source chain, sequence) was already processed.
-RelayEventAlreadyProcessed = 147,
-/// A relay acknowledgement tried to move the cursor backwards.
-RelayAckRegression = 148,
+    /// No slash escrow found for this borrower.
+    AppealNotFound = 116,
+    /// Voucher has already voted on this appeal.
+    AppealAlreadyVoted = 117,
+    /// Appeal quorum not met to overturn slash.
+    AppealQuorumNotMet = 118,
+    /// Escrow period has expired; appeal can no longer be filed.
+    EscrowExpired = 119,
+    /// Emergency cooldown bypass is not authorised for this voucher.
+    EmergencyBypassNotAuthorised = 120,
+    /// Cooldown bypass request already exists.
+    CooldownBypassAlreadyRequested = 121,
+    /// Cooldown bypass request not found.
+    CooldownBypassNotFound = 122,
+    /// Cooldown bypass has already been approved.
+    CooldownBypassAlreadyApproved = 123,
+    /// Insufficient admin approvals for cooldown bypass.
+    CooldownBypassInsufficientApprovals = 124,
+    /// Cross-collateral pool not found.
+    CollateralPoolNotFound = 125,
+    /// Cross-collateral pool is already active.
+    CollateralPoolActive = 126,
+    /// Caller is not a member of the specified collateral pool.
+    NotPoolMember = 127,
+    /// Gradual-unstake schedule not found.
+    GradualUnstakeNotFound = 128,
+    /// A gradual-unstake schedule is already active.
+    GradualUnstakeAlreadyActive = 129,
+    /// The next instalment is not yet due.
+    GradualUnstakeNotDue = 130,
+    /// Loan extension request already pending.
+    ExtensionAlreadyRequested = 131,
+    /// Maximum number of extensions per loan has been reached.
+    MaxExtensionsReached = 132,
+    /// Caller does not have permission to view this loan.
+    LoanPrivacyRestricted = 133,
+    /// Insurance pool is not connected to this loan.
+    InsuranceNotLinked = 134,
+    /// No relay verification key is configured for the source chain.
+    RelayKeyNotConfigured = 135,
+    /// Relay chain id is zero or otherwise invalid.
+    InvalidRelayChain = 136,
+    /// A relay attestation reused an already-consumed nonce.
+    RelayReplayDetected = 137,
+    /// The relay attestation is older than the freshness window allows.
+    RelayEventExpired = 138,
+    /// The relay attestation is timestamped too far in the future.
+    RelayEventFromFuture = 139,
+    /// A relay event with this (source chain, sequence) was already processed.
+    RelayEventAlreadyProcessed = 140,
+    /// A relay acknowledgement tried to move the cursor backwards.
+    RelayAckRegression = 141,
 }

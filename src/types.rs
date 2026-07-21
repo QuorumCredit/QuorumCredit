@@ -654,6 +654,18 @@ pub enum DataKey {
     /// Emergency admin revocation record — Address → bool (true = revoked).
     /// Revoked admins are excluded from admin approval checks.
     RevokedAdmin(Address),
+    // ── zk-SNARK proof storage (Issue #943) ───────────────────────────────────
+    /// Global monotonic counter for zk-proof IDs
+    ZkProofCounter,
+    /// proof_id → ZkProofRecord
+    ZkProofRecord(u64),
+    // ── Vouch commitment for confidential vouches (Issue #944) ────────────────
+    /// (voucher, borrower) → ConfidentialCommitment
+    VouchCommitment(Address, Address),
+    // ── VoucherStats per-user tracking ────────────────────────────────────────
+    VoucherStats(Address),
+    // ── Withdrawal queue ──────────────────────────────────────────────────────
+    WithdrawalRecord(Address, Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -2115,3 +2127,308 @@ pub struct BatchVouchResult {
     /// Error code if `success == false`; `None` when successful.
     pub error_code: Option<u32>,
 }
+
+// ── Missing constants (Issue #878, #881, etc.) ─────────────────────────────────
+
+/// Default forbearance period duration: 30 days in seconds.
+pub const DEFAULT_FORBEARANCE_DURATION_SECS: u64 = 30 * 24 * 60 * 60;
+/// Maximum number of forbearance periods per loan.
+pub const MAX_FORBEARANCE_PERIODS: u32 = 3;
+/// Maximum freshness age for oracle price records, in seconds.
+pub const ORACLE_PRICE_MAX_AGE_SECS: u64 = 3600; // 1 hour
+/// Default dynamic rate configuration (used when no config is stored).
+pub const DEFAULT_DYNAMIC_RATE_CONFIG: DynamicRateConfig = DynamicRateConfig {
+    enabled: false,
+    base_rate_bps: 200,
+    risk_adjustment_bps: 10,
+    rate_floor_bps: 50,
+    rate_cap_bps: 2000,
+};
+
+// ── Threat level (Issue #65) ──────────────────────────────────────────────────
+
+/// Graduated threat level for the contract's security posture.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ThreatLevel {
+    /// Normal operations — no restrictions.
+    Normal,
+    /// Elevated threat — non-critical writes may require extra checks.
+    Elevated,
+    /// Critical threat — only emergency admin operations allowed.
+    Critical,
+    /// Lockdown — all state mutations blocked.
+    Lockdown,
+}
+
+// ── Oracle price record (Issue #64) ──────────────────────────────────────────
+
+/// Stores a single price observation provided by the registered oracle.
+#[contracttype]
+#[derive(Clone)]
+pub struct OraclePriceRecord {
+    /// Token address for which the price was recorded.
+    pub token: Address,
+    /// Price in stroops per 1 unit of the token.
+    pub price: i128,
+    /// Ledger timestamp when the price was recorded.
+    pub recorded_at: u64,
+}
+
+// ── Slash appeal (Issue #552) ─────────────────────────────────────────────────
+
+/// Admin-reviewed appeal record for a slash decision.
+#[contracttype]
+#[derive(Clone)]
+pub struct SlashAppealRecord {
+    pub borrower: Address,
+    pub voucher: Address,
+    /// SHA-256 hash of off-chain evidence submitted by the voucher.
+    pub evidence_hash: BytesN<32>,
+    pub appeal_timestamp: u64,
+    /// `Some(true)` = approved (reverse slash), `Some(false)` = denied, `None` = pending.
+    pub approved: Option<bool>,
+    /// Admin addresses that voted on this appeal.
+    pub admin_votes: Vec<Address>,
+}
+
+// ── Admin action proposal (Issue #554) ───────────────────────────────────────
+
+/// A multi-sig admin action proposal that requires `admin_threshold` approvals.
+#[contracttype]
+#[derive(Clone)]
+pub struct AdminActionProposal {
+    pub id: u64,
+    pub action_type: AdminOperationType,
+    pub proposer: Address,
+    pub approvals: Vec<Address>,
+    pub created_at: u64,
+    pub executed: bool,
+}
+
+// ── Vouch Merkle root (Issue #910) ────────────────────────────────────────────
+
+/// Stores the Merkle root of a borrower's vouch set for efficient on-chain
+/// membership proofs.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchMerkleRoot {
+    /// SHA-256 Merkle root of all vouch records for this borrower.
+    pub root: BytesN<32>,
+    /// Number of vouches included in the root computation.
+    pub vouch_count: u32,
+    /// Timestamp when the root was last computed.
+    pub computed_at: u64,
+}
+
+// ── Forbearance (Issue #878) ──────────────────────────────────────────────────
+
+/// Status of a forbearance period.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ForbearanceStatus {
+    /// Forbearance period is currently active; loan deadline extended.
+    Active,
+    /// Forbearance period ended early (borrower requested end).
+    Ended,
+    /// Forbearance period elapsed without borrower action.
+    Expired,
+}
+
+/// A single forbearance period granted to a borrower.
+#[contracttype]
+#[derive(Clone)]
+pub struct ForbearanceRecord {
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub started_at: u64,
+    pub duration_secs: u64,
+    pub ends_at: u64,
+    /// Original loan deadline before forbearance was applied.
+    pub original_deadline: u64,
+    /// Which forbearance period this is (1-indexed).
+    pub period_number: u32,
+    pub status: ForbearanceStatus,
+}
+
+// ── Dynamic interest rate (Issue #881) ───────────────────────────────────────
+
+/// Global configuration for the dynamic interest rate model.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DynamicRateConfig {
+    /// When false, dynamic rates are disabled and the fixed `yield_bps` is used.
+    pub enabled: bool,
+    /// Base yield rate in basis points before risk adjustments.
+    pub base_rate_bps: u32,
+    /// Basis-point adjustment per unit of risk score.
+    pub risk_adjustment_bps: u32,
+    /// Minimum allowed effective rate in basis points.
+    pub rate_floor_bps: u32,
+    /// Maximum allowed effective rate in basis points.
+    pub rate_cap_bps: u32,
+}
+
+/// Per-borrower dynamic rate snapshot, computed at loan disbursement.
+#[contracttype]
+#[derive(Clone)]
+pub struct BorrowerDynamicRate {
+    pub borrower: Address,
+    pub loan_id: u64,
+    /// Effective yield rate in basis points assigned to this loan.
+    pub effective_rate_bps: u32,
+    /// Risk score used during computation.
+    pub risk_score: u32,
+    /// Credit tier at time of computation.
+    pub credit_tier: CreditTier,
+    /// Timestamp when the rate was last computed.
+    pub computed_at: u64,
+}
+
+// ── Cross-chain types (Issues #686–#690, #906) ────────────────────────────────
+
+/// Metadata attached to a cross-chain loan mirror attestation.
+#[contracttype]
+#[derive(Clone)]
+pub struct CrossChainLoanMetadata {
+    pub origin_chain: u32,
+    pub loan_id: u64,
+    pub borrower: Address,
+    pub amount: i128,
+    pub token: Address,
+    pub timestamp: u64,
+    pub nonce: u64,
+}
+
+/// A cross-chain bridge attestation (Ed25519 signature over message bytes).
+#[contracttype]
+#[derive(Clone)]
+pub struct BridgeAttestation {
+    pub signature: BytesN<64>,
+    pub signer: BytesN<32>,
+    pub timestamp: u64,
+}
+
+/// An outbound relay event to a destination chain.
+#[contracttype]
+#[derive(Clone)]
+pub struct RelayEvent {
+    pub dest_chain: u32,
+    pub seq: u64,
+    pub event_type: soroban_sdk::Symbol,
+    pub payload: soroban_sdk::Bytes,
+    pub timestamp: u64,
+    pub nonce: u64,
+}
+
+/// Attestation for an inbound relay message.
+#[contracttype]
+#[derive(Clone)]
+pub struct RelayAttestation {
+    pub signature: BytesN<64>,
+    pub signer: BytesN<32>,
+    pub timestamp: u64,
+}
+
+// ── Fraud detection types (Issue #637) ───────────────────────────────────────
+
+/// Per-voucher fraud risk score record.
+#[contracttype]
+#[derive(Clone)]
+pub struct VoucherFraudScore {
+    pub voucher: Address,
+    pub score: u32,
+    pub computed_at: u64,
+    pub flags: u32,
+}
+
+/// Global configuration for the fraud detection model.
+#[contracttype]
+#[derive(Clone)]
+pub struct FraudScoreConfig {
+    pub enabled: bool,
+    pub high_risk_threshold: u32,
+    pub lockout_threshold: u32,
+}
+
+impl FraudScoreConfig {
+    pub fn default_config() -> Self {
+        FraudScoreConfig { enabled: false, high_risk_threshold: 80, lockout_threshold: 95 }
+    }
+}
+
+// ── Yield stream types (Issue #907) ──────────────────────────────────────────
+
+/// State of the per-loan yield stream.
+#[contracttype]
+#[derive(Clone)]
+pub struct YieldStreamState {
+    pub loan_id: u64,
+    pub total_yield: i128,
+    pub claimed_yield: i128,
+    pub start_timestamp: u64,
+    pub end_timestamp: u64,
+}
+
+/// Per-voucher yield claim record for a loan.
+#[contracttype]
+#[derive(Clone)]
+pub struct VoucherYieldClaim {
+    pub loan_id: u64,
+    pub voucher: Address,
+    pub claimed: i128,
+    pub last_claimed_at: u64,
+}
+
+// ── Vouch group types (Issue #909) ────────────────────────────────────────────
+
+/// A named group of vouchers.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchGroup {
+    pub group_id: u64,
+    pub creator: Address,
+    pub name: soroban_sdk::String,
+    pub members: Vec<Address>,
+    pub created_at: u64,
+}
+
+// ── Periodic payment types (Issue #908) ──────────────────────────────────────
+
+/// Schedule type for periodic payments.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PeriodicScheduleType {
+    Weekly,
+    Monthly,
+    Custom,
+}
+
+/// Configuration for a loan's periodic payment schedule.
+#[contracttype]
+#[derive(Clone)]
+pub struct PeriodicPaymentConfig {
+    pub loan_id: u64,
+    pub schedule_type: PeriodicScheduleType,
+    pub period_count: u32,
+    pub period_interest_bps: u32,
+    pub created_at: u64,
+}
+
+/// Status of a loan's periodic payment schedule.
+#[contracttype]
+#[derive(Clone)]
+pub struct PeriodicPaymentStatus {
+    pub loan_id: u64,
+    pub payments_made: u32,
+    pub next_payment_due: u64,
+    pub total_paid: i128,
+}
+
+// ── ArchivedLoan type alias ────────────────────────────────────────────────────
+// Used in duplicate function in lib.rs (second occurrence of get_archived_loan)
+pub type ArchivedLoan = ArchivedLoanRecord;
+
+// ── ZkProof DataKey variants ──────────────────────────────────────────────────
+// These are referenced in lib.rs but may not be in the DataKey enum yet.
+// They are handled via DataKey::ZkProofRecord and DataKey::ZkProofCounter.

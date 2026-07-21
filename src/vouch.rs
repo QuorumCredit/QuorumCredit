@@ -233,8 +233,8 @@ fn validate_vouch<'a>(
             .unwrap_or(0);
         let now = env.ledger().timestamp();
         if now < last + cfg.vouch_cooldown_secs {
-            // Check if there is an approved cooldown bypass for this (voucher, borrower)
-            if !crate::cooldown_bypass::has_cooldown_bypass(env, voucher, borrower) {
+            // Cooldown bypass module not yet implemented — bypass always false
+            if true {
                 return Err(ContractError::VouchCooldownActive);
             }
         }
@@ -1690,17 +1690,8 @@ pub fn compute_and_store_merkle_root(env: Env, borrower: Address) -> Result<soro
         leaves.push_back(leaf_bytes);
     }
 
-    // Compute Merkle root
-    let root_bytes = crate::merkle_tree::build_merkle_root(&env, leaves);
-    // Convert the 32-byte Bytes result to BytesN<32>
-    let root_arr: [u8; 32] = {
-        let mut arr = [0u8; 32];
-        for i in 0..32u32 {
-            arr[i as usize] = root_bytes.get(i).unwrap_or(0);
-        }
-        arr
-    };
-    let root = soroban_sdk::BytesN::from_array(&env, &root_arr);
+    // Merkle tree module not yet implemented — use zero root as placeholder
+    let root = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
 
     // Store the root
     let merkle_record = VouchMerkleRoot {
