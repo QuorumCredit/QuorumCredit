@@ -218,4 +218,10 @@ CoBorrowerAlreadyAdded = 161,
 AlreadyRepaid = 162,
 /// The attestor claimed fewer origin-chain confirmations than the required minimum.
 InsufficientBridgeConfirmations = 163,
+/// Issue #1146: a borrower's withdrawal queue is at `MAX_WITHDRAWAL_QUEUE_SIZE`;
+/// new requests are rejected until existing entries are processed.
+WithdrawalQueueFull = 164,
+/// Issue #1146: `check_invariants` found a documented protocol invariant (I1-I8,
+/// or the implicit slash_bps range check) violated for the given borrower set.
+InvariantViolation = 165,
 }

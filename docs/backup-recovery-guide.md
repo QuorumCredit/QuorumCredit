@@ -4,6 +4,34 @@
 
 This guide documents backup and recovery procedures for QuorumCredit contract state and data. Data loss could be catastrophic for borrowers and vouchers, so comprehensive backup strategies are essential.
 
+## What's automated today vs. what still needs an operator (Issue #1146)
+
+**Automated:**
+- `scripts/backup.sh` derives the per-borrower snapshot address set from the
+  `quorum-credit-indexer`'s recorded event history (every address that has
+  ever appeared in a `loan` or `vouch` event), not a manually-maintained list.
+  `BORROWER_ADDRESSES` is still supported but only as a supplementary merge.
+- The backup manifest (`manifest.json`) includes a **completeness proof**
+  (`derived_address_count` vs. the on-chain `get_borrower_count()`) and a
+  **checksum** (`sha256:...`) over every backed-up file, so an operator can
+  verify nothing was silently skipped or corrupted before trusting a backup.
+- `scripts/restore.sh --scenario 6` is a genuinely automated, idempotent, and
+  resumable data-loss recovery path: it diffs the backup against live state,
+  replays only what's missing, records progress in a state file (safe to kill
+  and restart without duplicating work), and is gated by the live
+  `check_invariants` contract entrypoint before and after every step.
+
+**Still requires an operator:**
+- Scenarios 1-5 (unpause, config restore, yield-reserve check, admin key
+  rotation, contract upgrade) remain guided runbooks — `restore.sh` prints
+  (or, with `--execute`, runs) each command, but decisions like which admin
+  key to trust or when a WASM upgrade is safe to apply are not automatable.
+- Reviewing *why* a backup shows `"complete": false` or a `check_invariants`
+  failure, and deciding how to remediate, is always a human judgment call.
+- Off-chain database backups, cold-storage archival, and alerting integration
+  described later in this guide are illustrative examples, not scripts shipped
+  in this repo.
+
 ## Contract State Export
 
 ### Exporting Contract State

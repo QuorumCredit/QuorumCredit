@@ -1,5 +1,5 @@
 use crate::errors::ContractError;
-use crate::helpers::config;
+use crate::helpers::{config, require_admin_approval};
 use crate::types::{AdminPermission, AdminRole, DataKey};
 use soroban_sdk::{Address, Env, Vec};
 
@@ -107,7 +107,7 @@ pub fn require_admin_approval_with_permission(
 ) -> Result<(), ContractError> {
     let cfg = config(env);
 
-    if admin_signers.len() < cfg.admin_threshold as usize {
+    if admin_signers.len() < cfg.admin_threshold {
         return Err(ContractError::UnauthorizedCaller);
     }
 
@@ -125,7 +125,7 @@ pub fn require_admin_approval_with_permission(
             return Err(ContractError::UnauthorizedCaller);
         }
 
-        let role = get_admin_role(env, signer)?;
+        let role = get_admin_role(env, &signer)?;
         if !check_admin_permission(&role, &required_permission) {
             return Err(ContractError::PermissionDenied);
         }

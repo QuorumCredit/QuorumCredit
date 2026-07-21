@@ -297,6 +297,28 @@ impl Store {
         Ok(val.unwrap_or(0.0))
     }
 
+    /// Issue #1146: every distinct borrower address that has ever appeared in
+    /// a `loan` or `vouch` event — the ground-truth address set `backup.sh`
+    /// derives its snapshot targets from, instead of a manually-maintained
+    /// `BORROWER_ADDRESSES` env var. Captures any borrower the indexer has
+    /// observed, whether or not an operator ever added them to a config file.
+    pub async fn distinct_borrower_addresses(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT borrower FROM (
+                 SELECT json_extract(value_json, '$.borrower') AS borrower FROM events WHERE category = 'loan'
+                 UNION
+                 SELECT json_extract(value_json, '$.borrower') AS borrower FROM events WHERE category = 'vouch'
+             ) WHERE borrower IS NOT NULL ORDER BY borrower ASC",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut addresses = Vec::new();
+        for row in rows {
+            addresses.push(row?);
+        }
+        Ok(addresses)
+    }
+
     pub async fn count_events_by_action(&self, category: &str, action: &str) -> Result<i64> {
         let conn = self.conn.lock().await;
         conn.query_row(

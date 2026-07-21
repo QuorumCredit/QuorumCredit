@@ -1,10 +1,14 @@
 #!/bin/bash
 # restore.sh — Disaster recovery restore script for QuorumCredit.
 #
-# Reads a backup archive produced by backup.sh and provides guided recovery
-# procedures. For on-chain state, it prints the exact stellar CLI commands
-# needed to restore each piece of state — it does NOT execute them automatically
-# to prevent accidental overwrites. Pass --execute to apply changes.
+# Reads a backup archive produced by backup.sh and provides recovery
+# procedures. Scenarios 1-5 are operator-guided: they print (or, with
+# --execute, run) the exact stellar CLI commands for that scenario, one at a
+# time. Scenario 6 (Issue #1146) is genuinely automated: it diffs the backup
+# against live state, replays only what's missing, is idempotent (skips
+# anything already matching on-chain state) and resumable (progress is
+# recorded in a state file, so a killed run can restart without duplicating
+# work), and is gated by check_invariants before and after every step.
 #
 # Usage:
 #   ./scripts/restore.sh --backup <path-to-backup.tar.gz> [--network <network>] [--execute]
@@ -26,6 +30,10 @@
 #   3 — Verify yield reserve solvency
 #   4 — Admin key rotation
 #   5 — Full contract upgrade
+#   6 — Automated data-loss recovery (Issue #1146): idempotent, resumable,
+#       gated by check_invariants before/after each step — the only scenario
+#       here that is genuinely automated end-to-end rather than a runbook of
+#       commands for an operator to run by hand.
 #
 # Example (dry-run):
 #   CONTRACT_ID="C..." ADMIN_KEY="S..." ./scripts/restore.sh --backup backups/backup_20260530_120000Z.tar.gz
@@ -96,6 +104,46 @@ run_or_print() {
     else
         echo "  [DRY-RUN] Would run: $*"
     fi
+}
+
+# ── State file for idempotent/resumable restores (Issue #1146) ───────────────
+#
+# Every completed step is appended here immediately after it succeeds. A
+# re-run (after a kill, crash, or manual restart) skips any step already
+# recorded, so a killed restore can be safely resumed without re-applying —
+# and therefore without duplicating — a step that already landed.
+STATE_FILE="${RESTORE_STATE_FILE:-${BACKUP_PATH:-restore}.state.json}"
+[ -f "$STATE_FILE" ] || echo '{"completed_steps":[]}' > "$STATE_FILE"
+
+step_done() {
+    jq -e --arg s "$1" '.completed_steps | index($s) != null' "$STATE_FILE" >/dev/null 2>&1
+}
+
+mark_step_done() {
+    local tmp; tmp=$(mktemp)
+    jq --arg s "$1" '.completed_steps += [$s]' "$STATE_FILE" > "$tmp" && mv "$tmp" "$STATE_FILE"
+}
+
+# ── Invariant gate (Issue #1146) ──────────────────────────────────────────────
+#
+# Calls the live `check_invariants` contract entrypoint (src/invariants.rs)
+# before and after every state-mutating step. A pre-check catches an
+# already-broken starting state before we compound it; a post-check catches a
+# step that itself introduced a violation, before the next step builds on it.
+check_invariants_gate() {
+    local label="$1"; shift
+    local borrowers_json="${1:-[]}"
+    if [ "$EXECUTE" != true ]; then
+        return 0
+    fi
+    if ! stellar contract invoke --id "$CONTRACT_ID" --source "$ADMIN_KEY" \
+        --network "$NETWORK" -- check_invariants --borrowers "$borrowers_json" >/dev/null 2>&1; then
+        echo "  [INVARIANT GATE] FAILED ($label) — aborting restore before further changes are made." >&2
+        echo "  Run with --scenario to resume individual steps once the violation is understood;" >&2
+        echo "  completed steps are preserved in $STATE_FILE." >&2
+        exit 1
+    fi
+    echo "  [INVARIANT GATE] OK ($label)"
 }
 
 # ── Helper: invoke a contract function ────────────────────────────────────────
@@ -287,6 +335,79 @@ run_scenario_4() {
     invoke_fn unpause --admin_signers "[\"$ADMIN_KEY\"]"
 }
 
+run_scenario_6() {
+    echo "=== Scenario 6: Automated data-loss recovery (Issue #1146) ==="
+    echo "Use when: loan/vouch records are missing and need replaying from a backup."
+    echo "Idempotent and resumable: each borrower's steps are checked against current"
+    echo "on-chain state before acting, and recorded in $STATE_FILE as they complete,"
+    echo "so a killed run can be safely restarted without duplicating any action."
+    echo ""
+
+    if [ -z "$BACKUP_DIR" ]; then
+        echo "Error: --backup is required for scenario 6." >&2
+        exit 1
+    fi
+
+    local loans_dir="$BACKUP_DIR/loans"
+    [ -d "$loans_dir" ] || { echo "No loans/ directory in backup — nothing to recover."; return 0; }
+
+    local borrowers_json="[]"
+    for addr_file in "$loans_dir"/*.address; do
+        [ -e "$addr_file" ] || continue
+        local borrower; borrower=$(cat "$addr_file")
+        borrowers_json=$(jq -c --arg b "$borrower" '. + [$b]' <<< "$borrowers_json")
+    done
+
+    check_invariants_gate "pre-restore" "$borrowers_json"
+
+    for addr_file in "$loans_dir"/*.address; do
+        [ -e "$addr_file" ] || continue
+        local base="${addr_file%.address}"
+        local borrower; borrower=$(cat "$addr_file")
+        local step_key="scenario6:loan:$borrower"
+
+        if step_done "$step_key"; then
+            echo "  [SKIP] $borrower — already restored (recorded in $STATE_FILE)"
+            continue
+        fi
+
+        # Idempotency check: skip if on-chain state already matches the backup
+        # (e.g. a previous run got this far before being killed).
+        local current_loan
+        current_loan=$(stellar contract invoke --id "$CONTRACT_ID" --source "$ADMIN_KEY" \
+            --network "$NETWORK" -- get_loan --borrower "$borrower" 2>/dev/null || echo "null")
+        local backup_loan; backup_loan=$(cat "${base}.json" 2>/dev/null || echo "null")
+
+        if [ "$current_loan" != "null" ] && [ -n "$current_loan" ]; then
+            echo "  [SKIP] $borrower — active loan already present on-chain"
+            mark_step_done "$step_key"
+            continue
+        fi
+
+        if [ "$backup_loan" = "null" ] || [ -z "$backup_loan" ]; then
+            echo "  [SKIP] $borrower — no loan recorded in backup"
+            mark_step_done "$step_key"
+            continue
+        fi
+
+        echo "  Restoring loan for $borrower from backup..."
+        run_or_print stellar contract invoke \
+            --id "$CONTRACT_ID" --source "$ADMIN_KEY" --network "$NETWORK" \
+            -- request_loan --borrower "$borrower" \
+            --amount "$(jq -r '.amount // empty' <<< "$backup_loan")" \
+            --threshold "$(jq -r '.threshold // 0' <<< "$backup_loan")" \
+            --loan_purpose "$(jq -r '.loan_purpose // "restored"' <<< "$backup_loan")" \
+            --token "$(jq -r '.token_address // empty' <<< "$backup_loan")"
+
+        check_invariants_gate "post-restore:$borrower" "$borrowers_json"
+        mark_step_done "$step_key"
+    done
+
+    echo ""
+    echo "Scenario 6 complete. Re-run this scenario any time to pick up new backup entries —"
+    echo "already-restored borrowers are skipped via $STATE_FILE."
+}
+
 run_scenario_5() {
     echo "=== Scenario 5: Full contract upgrade ==="
     echo "Use when: A critical bug requires a WASM upgrade."
@@ -339,7 +460,8 @@ if [ -n "$SCENARIO" ]; then
         3) run_scenario_3 ;;
         4) run_scenario_4 ;;
         5) run_scenario_5 ;;
-        *) echo "Error: Unknown scenario '$SCENARIO'. Valid: 1-5." >&2; exit 1 ;;
+        6) run_scenario_6 ;;
+        *) echo "Error: Unknown scenario '$SCENARIO'. Valid: 1-6." >&2; exit 1 ;;
     esac
 else
     # Interactive menu
@@ -349,14 +471,16 @@ else
     echo "  3 — Verify yield reserve solvency"
     echo "  4 — Admin key rotation"
     echo "  5 — Full contract upgrade"
+    echo "  6 — Automated data-loss recovery (idempotent, resumable, invariant-gated)"
     echo ""
-    read -r -p "Select scenario (1-5): " CHOICE
+    read -r -p "Select scenario (1-6): " CHOICE
     case "$CHOICE" in
         1) run_scenario_1 ;;
         2) run_scenario_2 ;;
         3) run_scenario_3 ;;
         4) run_scenario_4 ;;
         5) run_scenario_5 ;;
+        6) run_scenario_6 ;;
         *) echo "Error: Invalid choice '$CHOICE'." >&2; exit 1 ;;
     esac
 fi

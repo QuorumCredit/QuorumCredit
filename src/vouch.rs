@@ -2,12 +2,14 @@ extern crate alloc;
 
 use crate::errors::ContractError;
 use crate::helpers::{
-    config, has_active_loan, require_admin_approval, require_allowed_token, require_not_paused,
-    require_not_thawing, require_reads_allowed, require_positive_amount,
+    config, has_active_loan, paginate_vec, require_admin_approval, require_allowed_token,
+    require_not_paused, require_not_thawing, require_reads_allowed, require_positive_amount,
 };
 use crate::types::{
     BatchVouchResult, BridgeRecord, DataKey, QueuedWithdrawal, VouchHistoryEntry, VouchRecord,
-    VouchMerkleRoot, PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS, BPS_DENOMINATOR,
+    VouchMerkleRoot, MAX_HOT_VOUCH_HISTORY_ENTRIES, MAX_WITHDRAWAL_QUEUE_SIZE,
+    PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS, BPS_DENOMINATOR,
+    VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES,
 };
 use soroban_sdk::{symbol_short, token, Address, BytesN, Env, String, Vec};
 
@@ -318,26 +320,17 @@ fn commit_vouch(
     // Invalidate the weighted stake cache for O(1) eligibility check
     crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &token);
 
-    let mut vouch_history: Vec<VouchHistoryEntry> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::VouchHistory(
-            borrower.clone(),
-            voucher.clone(),
-            token.clone(),
-        ))
-        .unwrap_or(Vec::new(env));
-
-    vouch_history.push_back(VouchHistoryEntry {
-        timestamp,
-        modification_type: soroban_sdk::String::from_str(env, "created"),
-        stake_amount: stake,
-        delegate: None,
-    });
-
-    env.storage().persistent().set(
-        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
-        &vouch_history,
+    append_vouch_history_entry(
+        env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchHistoryEntry {
+            timestamp,
+            modification_type: soroban_sdk::String::from_str(env, "created"),
+            stake_amount: stake,
+            delegate: None,
+        },
     );
 
     env.storage().persistent().set(
@@ -875,6 +868,23 @@ pub fn get_withdrawal_queue(env: Env, borrower: Address) -> Vec<QueuedWithdrawal
         .unwrap_or(Vec::new(&env))
 }
 
+/// Paginated read of a borrower's withdrawal queue (Issue #1146). Bounds the
+/// read to `[offset, offset+limit)` instead of loading the full queue, so cost
+/// stays flat as the queue grows toward `MAX_WITHDRAWAL_QUEUE_SIZE`.
+pub fn get_withdrawal_queue_page(
+    env: Env,
+    borrower: Address,
+    offset: u32,
+    limit: u32,
+) -> (Vec<QueuedWithdrawal>, Option<u32>) {
+    let queue: Vec<QueuedWithdrawal> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::WithdrawalQueue(borrower))
+        .unwrap_or(Vec::new(&env));
+    paginate_vec(&env, &queue, offset, limit)
+}
+
 /// Process up to `count` withdrawals from the queue for a borrower.
 /// If count is 0, this is a no-op. If count exceeds queue size, all are processed.
 /// Returns the number of withdrawals actually processed.
@@ -972,6 +982,14 @@ fn queue_withdrawal_internal(
         if q.voucher == voucher {
             return Err(ContractError::WithdrawalAlreadyQueued);
         }
+    }
+
+    // Issue #1146: bound the queue's persistent-storage growth. Without this cap
+    // a borrower's withdrawal queue Vec could grow without limit as vouchers
+    // queue faster than `process_withdrawal_queue`/`process_withdrawal_batch`
+    // drain it.
+    if queue.len() >= MAX_WITHDRAWAL_QUEUE_SIZE {
+        return Err(ContractError::WithdrawalQueueFull);
     }
 
     let requested_at = env.ledger().timestamp();
@@ -1239,22 +1257,17 @@ pub fn delegate_vouch(
     );
 
     let timestamp = env.ledger().timestamp();
-    let mut vouch_history: Vec<VouchHistoryEntry> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()))
-        .unwrap_or(Vec::new(&env));
-
-    vouch_history.push_back(VouchHistoryEntry {
-        timestamp,
-        modification_type: soroban_sdk::String::from_str(&env, "delegated"),
-        stake_amount: vouch_rec.stake,
-        delegate: Some(delegate.clone()),
-    });
-
-    env.storage().persistent().set(
-        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
-        &vouch_history,
+    append_vouch_history_entry(
+        &env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchHistoryEntry {
+            timestamp,
+            modification_type: soroban_sdk::String::from_str(&env, "delegated"),
+            stake_amount: vouch_rec.stake,
+            delegate: Some(delegate.clone()),
+        },
     );
 
     env.events().publish(
@@ -1343,26 +1356,17 @@ pub fn set_vouch_expiry(
         "expiry_cleared"
     };
 
-    let mut vouch_history: Vec<VouchHistoryEntry> = env
-        .storage()
-        .persistent()
-        .get(&DataKey::VouchHistory(
-            borrower.clone(),
-            voucher.clone(),
-            token.clone(),
-        ))
-        .unwrap_or(Vec::new(&env));
-
-    vouch_history.push_back(VouchHistoryEntry {
-        timestamp: now,
-        modification_type: soroban_sdk::String::from_str(&env, modification_type),
-        stake_amount: vouch_rec.stake,
-        delegate: None,
-    });
-
-    env.storage().persistent().set(
-        &DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone()),
-        &vouch_history,
+    append_vouch_history_entry(
+        &env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchHistoryEntry {
+            timestamp: now,
+            modification_type: soroban_sdk::String::from_str(&env, modification_type),
+            stake_amount: vouch_rec.stake,
+            delegate: None,
+        },
     );
 
     env.events().publish(
@@ -1373,6 +1377,59 @@ pub fn set_vouch_expiry(
     Ok(())
 }
 
+/// Append `entry` to the (borrower, voucher, token) vouch-history log, cutting
+/// over the oldest entries into an `ArchivedVouchHistory` batch once the hot
+/// window reaches `VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES` (Issue #1146). This
+/// keeps the hot `VouchHistory` key's read/write cost bounded by
+/// `MAX_HOT_VOUCH_HISTORY_ENTRIES` regardless of how long a vouch
+/// relationship has been active; the full log remains reconstructible via
+/// `get_vouch_history_archive_count` + `get_archived_vouch_history_batch`.
+fn append_vouch_history_entry(
+    env: &Env,
+    borrower: &Address,
+    voucher: &Address,
+    token: &Address,
+    entry: VouchHistoryEntry,
+) {
+    let key = DataKey::VouchHistory(borrower.clone(), voucher.clone(), token.clone());
+    let mut history: Vec<VouchHistoryEntry> =
+        env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
+    history.push_back(entry);
+
+    if history.len() >= VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES {
+        let overflow = history.len() - MAX_HOT_VOUCH_HISTORY_ENTRIES;
+        let mut archived_batch: Vec<VouchHistoryEntry> = Vec::new(env);
+        for _ in 0..overflow {
+            archived_batch.push_back(history.get(0).unwrap());
+            history.remove(0);
+        }
+
+        let count_key = DataKey::VouchHistoryArchiveCount(
+            borrower.clone(),
+            voucher.clone(),
+            token.clone(),
+        );
+        let batch_id: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::ArchivedVouchHistory(
+                borrower.clone(),
+                voucher.clone(),
+                token.clone(),
+                batch_id,
+            ),
+            &archived_batch,
+        );
+        env.storage().persistent().set(&count_key, &(batch_id + 1));
+    }
+
+    env.storage().persistent().set(&key, &history);
+}
+
+/// Read the bounded "hot" vouch-history window for (borrower, voucher, token)
+/// — at most `MAX_HOT_VOUCH_HISTORY_ENTRIES` most-recent entries (Issue
+/// #1146). Older entries have been cut over into archive batches; walk them
+/// with `get_vouch_history_archive_count` + `get_archived_vouch_history_batch`
+/// if the full historical log is needed.
 pub fn get_vouch_history(
     env: Env,
     borrower: Address,

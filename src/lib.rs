@@ -1,5 +1,4 @@
 #![no_std]
-#![no_std]
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, String,
@@ -16,6 +15,7 @@ pub mod errors;
 pub mod governance;
 pub mod helpers;
 pub mod insurance;
+pub mod invariants;
 pub mod lazy_slash;
 pub mod loan;
 pub mod merkle_tree;
@@ -39,6 +39,8 @@ mod multi_asset_test;
 mod referral_test;
 #[cfg(test)]
 mod rbac_enforcement_test;
+#[cfg(test)]
+mod storage_redesign_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -916,6 +918,117 @@ impl QuorumCreditContract {
             .persistent()
             .get(&DataKey::Vouches(borrower))
             .unwrap_or(Vec::new(&env))
+    }
+
+    /// Paginated read of a borrower's vouches (Issue #1146). Returns up to
+    /// `limit` (capped at `MAX_PAGE_SIZE`) records starting at `offset`, plus
+    /// `next_cursor` — `Some(offset)` for the next call, or `None` at the end.
+    pub fn get_vouches_page(
+        env: Env,
+        borrower: Address,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<VouchRecord>, Option<u32>) {
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower))
+            .unwrap_or(Vec::new(&env));
+        crate::helpers::paginate_vec(&env, &vouches, offset, limit)
+    }
+
+    /// Paginated read of the addresses of borrowers a `voucher` has ever
+    /// backed (Issue #1146). See `get_vouches_page` for cursor semantics.
+    pub fn get_voucher_history_page(
+        env: Env,
+        voucher: Address,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Address>, Option<u32>) {
+        let history: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherHistory(voucher))
+            .unwrap_or(Vec::new(&env));
+        crate::helpers::paginate_vec(&env, &history, offset, limit)
+    }
+
+    /// Paginated read of a borrower's pending withdrawal queue (Issue #1146).
+    pub fn get_withdrawal_queue_page(
+        env: Env,
+        borrower: Address,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<crate::types::QueuedWithdrawal>, Option<u32>) {
+        vouch::get_withdrawal_queue_page(env, borrower, offset, limit)
+    }
+
+    /// Read the bounded hot vouch-history window for (borrower, voucher,
+    /// token) (Issue #1146). See `get_vouch_history_archive_count` for the
+    /// full historical log.
+    pub fn get_vouch_history(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+    ) -> Vec<crate::types::VouchHistoryEntry> {
+        vouch::get_vouch_history(env, borrower, voucher, token)
+    }
+
+    /// Number of archive batches created so far for this (borrower, voucher,
+    /// token) relationship's vouch-history log (Issue #1146). Use with
+    /// `get_archived_vouch_history_batch` to walk the full historical log;
+    /// `get_vouch_history` alone only returns the bounded hot window.
+    pub fn get_vouch_history_archive_count(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+    ) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VouchHistoryArchiveCount(borrower, voucher, token))
+            .unwrap_or(0)
+    }
+
+    /// Read one archived vouch-history batch (Issue #1146). `batch_id` ranges
+    /// over `0..get_vouch_history_archive_count(...)`, oldest batch first.
+    pub fn get_archived_vouch_history_batch(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        batch_id: u32,
+    ) -> Vec<crate::types::VouchHistoryEntry> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ArchivedVouchHistory(borrower, voucher, token, batch_id))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Total number of borrowers ever registered (Issue #1146). Ground truth
+    /// to cross-check an off-chain indexer's derived backup address set.
+    pub fn get_borrower_count(env: Env) -> u32 {
+        crate::helpers::get_borrower_count(&env)
+    }
+
+    /// Paginated read of the global borrower list (Issue #1146).
+    pub fn get_borrower_list_page(
+        env: Env,
+        offset: u32,
+        limit: u32,
+    ) -> (Vec<Address>, Option<u32>) {
+        crate::helpers::get_borrower_list_page(&env, offset, limit)
+    }
+
+    /// Verify all documented protocol invariants (I1-I8) for `borrowers`
+    /// against live on-chain state (Issue #1146). Returns
+    /// `Err(ContractError::InvariantViolation)` on the first violation found.
+    /// Callable via `stellar contract invoke -- check_invariants` so
+    /// operational tooling (e.g. `scripts/restore.sh`) can gate destructive
+    /// recovery steps with a pre/post invariant check.
+    pub fn check_invariants(env: Env, borrowers: Vec<Address>) -> Result<(), ContractError> {
+        crate::invariants::check_invariants_live(&env, borrowers)
     }
 
     pub fn vouch_exists(env: Env, voucher: Address, borrower: Address) -> bool {
