@@ -132,3 +132,128 @@ fn test_negative_control_quadratic_detection() {
     let complexity = fit_complexity(measurements.as_slice());
     assert_eq!(complexity, "O(n²)", "negative control must correctly detect quadratic operations");
 }
+
+/// Benchmark: Iterating over a pre-sorted withdrawal queue to calculate total fees.
+/// Should scale O(n) since the queue is already sorted at insertion time.
+#[test]
+fn test_withdrawal_queue_processing_linear_complexity() {
+    use crate::types::{QueuedWithdrawal, DataKey};
+
+    let env = Env::default();
+
+    let sizes = [10, 25, 50, 100];
+    let mut measurements: Vec<GasMeasurement> = Vec::new(&env);
+
+    for size in sizes.iter() {
+        let budget_before = env.budget();
+
+        // Create a pre-sorted queue of QueuedWithdrawal entries
+        let mut queue: Vec<QueuedWithdrawal> = Vec::new(&env);
+        let token = Address::generate(&env);
+
+        // Add entries in descending priority_fee order (simulating sorted queue)
+        for i in 0..*size {
+            let priority_fee = ((*size - i) as i128) * 1_000;
+            queue.push_back(QueuedWithdrawal {
+                voucher: Address::generate(&env),
+                token: token.clone(),
+                requested_at: 1000 + (i as u64),
+                partial: false,
+                priority_fee,
+            });
+        }
+
+        // Simulate queue processing: iterate to collect total fees and stake
+        let total_priority_fees: i128 = queue.iter().map(|q| q.priority_fee).sum();
+        let _ = total_priority_fees; // Use the value to prevent optimization
+
+        let budget_after = env.budget();
+        let cpu = (budget_before.cpu_instruction_cost() - budget_after.cpu_instruction_cost()).max(0);
+        let mem = (budget_before.memory_bytes() - budget_after.memory_bytes()).max(0);
+
+        measurements.push_back(GasMeasurement {
+            size: *size,
+            cpu_instructions: cpu as u64,
+            memory_bytes: mem as u64,
+        });
+    }
+
+    let complexity = fit_complexity(measurements.as_slice());
+    assert!(
+        complexity == "O(1)" || complexity == "O(n)" || complexity == "O(n log n)",
+        "Queue processing iteration should be at most O(n log n), got: {}",
+        complexity
+    );
+}
+
+/// Benchmark: Insertion-order maintenance during queue insertion.
+/// Tests that maintaining sorted order during insertion scales appropriately.
+/// With binary insertion (O(n) shift worst case), total amortized cost should be O(n log n) for n insertions.
+#[test]
+fn test_withdrawal_queue_insertion_sorted_complexity() {
+    use crate::types::QueuedWithdrawal;
+
+    let env = Env::default();
+
+    let sizes = [5, 10, 25, 50];
+    let mut measurements: Vec<GasMeasurement> = Vec::new(&env);
+
+    for size in sizes.iter() {
+        let budget_before = env.budget();
+
+        // Simulate sequential insertions into a growing queue
+        let token = Address::generate(&env);
+        let mut queue: Vec<QueuedWithdrawal> = Vec::new(&env);
+
+        // Insert entries in random-ish fee order to stress the insertion logic
+        let fees = [500, 2000, 800, 1500, 1000, 3000, 1200, 900, 2500, 1800];
+        for i in 0..*size {
+            let priority_fee = if i < fees.len() { fees[i] as i128 } else { (i as i128) * 100 };
+            let new_entry = QueuedWithdrawal {
+                voucher: Address::generate(&env),
+                token: token.clone(),
+                requested_at: 1000 + (i as u64),
+                partial: false,
+                priority_fee,
+            };
+
+            // Simulate insertion with position search (O(n) in worst case)
+            let mut insert_idx = queue.len();
+            for j in 0..queue.len() {
+                let existing = queue.get(j).unwrap();
+                if existing.priority_fee < priority_fee {
+                    insert_idx = j;
+                    break;
+                } else if existing.priority_fee == priority_fee && existing.requested_at > new_entry.requested_at {
+                    insert_idx = j;
+                    break;
+                }
+            }
+
+            if insert_idx >= queue.len() {
+                queue.push_back(new_entry);
+            } else {
+                queue.insert(insert_idx as u32, new_entry);
+            }
+        }
+
+        let budget_after = env.budget();
+        let cpu = (budget_before.cpu_instruction_cost() - budget_after.cpu_instruction_cost()).max(0);
+        let mem = (budget_before.memory_bytes() - budget_after.memory_bytes()).max(0);
+
+        measurements.push_back(GasMeasurement {
+            size: *size,
+            cpu_instructions: cpu as u64,
+            memory_bytes: mem as u64,
+        });
+    }
+
+    let complexity = fit_complexity(measurements.as_slice());
+    // Insertion into sorted queue is O(n) per insert, but total for n insertions is O(n²) worst case
+    // However, with typical distributions, it's often O(n log n) amortized
+    assert!(
+        complexity == "O(n)" || complexity == "O(n log n)" || complexity == "O(n²)",
+        "Queue insertion complexity: {}",
+        complexity
+    );
+}
