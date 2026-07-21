@@ -1266,7 +1266,13 @@ pub fn request_extension(
 }
 
 /// Issue #883: Voucher approves a pending loan extension request.
-/// When a majority of vouchers (by count) approve, the deadline is extended.
+/// When a majority of vouchers **by stake weight** approve, the deadline is extended.
+///
+/// **Sybil-resistance fix**: The old logic required `(total_vouchers / 2) + 1` raw
+/// vouchers to approve — meaning a Sybil ring with many tiny stakes could override
+/// a single large legitimate voucher. The new logic mirrors `vouch_reputation_weight`:
+/// we sum the stake of approving vouchers and require it to exceed half of the total
+/// vouched stake. A single 10 XLM voucher correctly out-weighs 100 dust vouchers.
 pub fn approve_extension(
     env: Env,
     voucher: Address,
@@ -1287,19 +1293,38 @@ pub fn approve_extension(
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(&env));
 
+    // Check the caller is a legitimate voucher
     if !vouches.iter().any(|v| v.voucher == voucher) {
         return Err(ContractError::VoucherNotFound);
     }
 
+    // Prevent double-voting
     if request.approvals.iter().any(|a| a == voucher) {
         return Err(ContractError::AlreadyVoted);
     }
 
     request.approvals.push_back(voucher.clone());
-    let total_vouchers = vouches.len();
-    let required = (total_vouchers / 2) + 1;
 
-    if request.approvals.len() >= required {
+    // ── Stake-weighted quorum ────────────────────────────────────────────
+    // total_stake = sum of all vouchers' reputation-weighted stakes
+    // approval_stake = sum of approving vouchers' reputation-weighted stakes
+    // Extension executes when approval_stake > total_stake / 2 (strict majority)
+    let mut total_stake: i128 = 0;
+    let mut approval_stake: i128 = 0;
+
+    for v in vouches.iter() {
+        let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
+        let weighted = v.stake * weight / crate::types::BPS_DENOMINATOR;
+        total_stake = total_stake.saturating_add(weighted);
+        if request.approvals.iter().any(|a| a == v.voucher) {
+            approval_stake = approval_stake.saturating_add(weighted);
+        }
+    }
+
+    // Require strict majority of stake (approval_stake * 2 > total_stake)
+    let quorum_met = total_stake > 0 && approval_stake * 2 > total_stake;
+
+    if quorum_met {
         let mut loan = get_active_loan_record(&env, &borrower)?;
         loan.deadline += request.extension_secs;
         env.storage()

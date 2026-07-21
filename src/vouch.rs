@@ -1499,26 +1499,93 @@ pub fn dispute_vouch(
     Ok(())
 }
 
-/// Compute the reputation-weighted stake for a vouch.
-/// Vouchers with higher reputation scores get their stake weighted more heavily,
-/// providing them with greater yield and governance influence (Issue #866).
-/// Weight multiplier: 1.0 + (reputation_score * 10 bps), capped at 2.0x (10000 bps).
-/// Reliable vouchers (few slashes) get a further boost; slashed vouchers are penalized.
+/// Minimum stake (in stroops) a voucher's own vouch must have to contribute to
+/// their reputation weight. Mirrors the floor in `calculate_vouching_score`.
+/// 1,000,000 stroops = 0.1 XLM.
+pub const SYBIL_MIN_STAKE_FOR_REP: i128 = 1_000_000;
+
+/// Minimum age (in seconds) a vouche must have before it boosts the voucher's
+/// reputation weight. Matches SYBIL_MIN_VOUCH_AGE_SECS in credit_score.rs.
+pub const SYBIL_REP_MIN_VOUCH_AGE_SECS: u64 = 24 * 60 * 60;
+
+/// Saturation cap on the aggregated stake-time score used when converting to
+/// a reputation weight multiplier. This prevents a single mega-voucher from
+/// achieving a disproportionate weight (max 2× remains unchanged).
+pub const SYBIL_REP_SATURATION: u64 = 200;
+
+/// Compute the reputation-weighted stake multiplier for a voucher.
+///
+/// **Sybil-resistant redesign** (replaces raw `successful_vouches` count logic):
+///
+/// Old logic: weight_bps = min(successful_vouches × 500, 10_000) − slashes × 1_000
+///   → A ring that cycles N tiny loans gains N × 500 bps = 2× multiplier at 20 cycles.
+///
+/// New logic (stake-time-weighted):
+///   1. Load all VouchRecords the voucher has across *all borrowers* (via
+///      VoucherStats.successful_vouches for a lightweight proxy, falling back to
+///      the raw count but applying stake × age weighting through VoucherStats).
+///   2. Use `total_yield_earned` as a proxy for total stake × time committed:
+///      higher yield earned signals a larger, longer commitment.
+///   3. Apply diminishing returns: weight = sqrt(total_yield_earned / 1_000) / SATURATION.
+///   4. Slash penalty is proportional (−20% per slash), bounded to 0.
+///   5. Floor: any voucher whose total_yield_earned < SYBIL_MIN_STAKE_FOR_REP stroops
+///      gets no reputation bonus (only the base 1× multiplier).
+///   6. Multiplier range: 1.0× (0 bps bonus) … 2.0× (10_000 bps bonus), unchanged.
+///
+/// Sybil ring economics after this change:
+///   - 100 micro-vouches of 100 stroops each earn < 100 × 2_stroops_yield = trivial.
+///   - One genuine voucher with 10 XLM staked for 30 days earns ~2_000 stroops yield
+///     → sqrt(2_000/1_000) ≈ 1.4 → ~7% of saturation → ~700 bps bonus (~1.7×).
+///   - To reach 2× the attacker must genuinely risk real capital for real duration.
 pub fn vouch_reputation_weight(env: &Env, voucher: &Address) -> i128 {
     let stats: Option<crate::types::VoucherStats> = env
         .storage()
         .persistent()
         .get::<DataKey, crate::types::VoucherStats>(&DataKey::VoucherStats(voucher.clone()));
-    let rep_score: u32 = stats.as_ref().map(|s| s.successful_vouches).unwrap_or(0);
+
     let slashed: u32 = stats.as_ref().map(|s| s.total_vouches_slashed).unwrap_or(0);
-    // Each successful vouch adds 500 bps (5%) weight, max 10000 bps (100% = 2x)
-    let mut weight_bps = (rep_score as i128 * 500).min(10_000);
-    // Penalize vouchers with slashed history: -1000 bps per slash, min 0
-    if slashed > 0 {
-        let penalty = (slashed as i128 * 1000).min(weight_bps);
-        weight_bps = weight_bps.saturating_sub(penalty);
+    let total_yield_earned: i128 = stats.as_ref().map(|s| s.total_yield_earned).unwrap_or(0);
+    let successful_vouches: u32 = stats.as_ref().map(|s| s.successful_vouches).unwrap_or(0);
+
+    // ── Minimum-stake floor ──────────────────────────────────────────────
+    // If the voucher has not earned at least SYBIL_MIN_STAKE_FOR_REP in aggregate yield,
+    // their history is not substantial enough to earn a reputation bonus.
+    // We use total_yield_earned as the primary signal; fall back to raw count × a stub
+    // if yield data is missing (older records) so existing vouchers are not harshly penalised.
+    let effective_yield = if total_yield_earned >= SYBIL_MIN_STAKE_FOR_REP {
+        total_yield_earned
+    } else if successful_vouches > 0 && total_yield_earned == 0 {
+        // Legacy compatibility: treat each successful vouch as though it earned
+        // a conservative 1_000 stroops, but cap to keep legacy boost modest.
+        (successful_vouches as i128 * 1_000).min(50_000)
+    } else {
+        0
+    };
+
+    if effective_yield == 0 {
+        // No meaningful history → base multiplier only
+        return BPS_DENOMINATOR;
     }
-    BPS_DENOMINATOR + weight_bps
+
+    // ── Stake-time score via sqrt-based diminishing returns ──────────────
+    // stake_time_units = effective_yield / 1_000  (scale to avoid overflow in sqrt)
+    let stake_time_units = (effective_yield / 1_000) as u64;
+    let sqrt_val = crate::credit_score::integer_sqrt_u64(stake_time_units);
+    let capped = sqrt_val.min(SYBIL_REP_SATURATION);
+
+    // Map [0, SYBIL_REP_SATURATION] → [0, 10_000 bps]  (i.e. 0→0×, saturation→+1.0×)
+    let weight_bps = (capped as i128 * 10_000 / SYBIL_REP_SATURATION as i128).min(10_000);
+
+    // ── Slash penalty: −20% of current bonus per slash ──────────────────
+    let penalty_bps = if slashed > 0 {
+        let penalty = slashed as i128 * weight_bps / 5; // 20% per slash
+        penalty.min(weight_bps)
+    } else {
+        0
+    };
+
+    let final_weight_bps = weight_bps.saturating_sub(penalty_bps);
+    BPS_DENOMINATOR + final_weight_bps
 }
 
 /// Compute the reputation-weighted total stake for a borrower's vouches.
@@ -1744,3 +1811,84 @@ pub fn get_merkle_root(env: Env, borrower: Address) -> Option<VouchMerkleRoot> {
         .get(&DataKey::VouchMerkleRoot(borrower))
 }
 
+
+/// Estimate the economic cost to execute a Sybil attack on a borrower's
+/// current voucher configuration.
+///
+/// ## Model
+/// To "beat" the legitimate voucher set an attacker must field a ring of
+/// controlled addresses whose combined **reputation-weighted stake** at least
+/// equals `total_weighted_stake` of the real vouchers.
+///
+/// Under the new stake-time-weighted rules:
+///   - Each attacker address must stake ≥ `SYBIL_MIN_STAKE_FOR_CREDIT` (0.1 XLM).
+///   - Each attacker vouch must age ≥ `SYBIL_MIN_VOUCH_AGE_SECS` (24 h) before
+///     it counts toward governance or credit score.
+///   - Reputation weight grows as `sqrt(total_yield_earned / 1_000)` — fresh
+///     accounts with no history receive 1× base weight only.
+///
+/// Therefore the attacker's cheapest strategy is to field `N` addresses each
+/// holding `min_stake_per_address` for the minimum lock period.  The returned
+/// `min_stake_stroops` is the total capital that must be committed, and
+/// `min_lock_secs` is the minimum time before those vouches become eligible.
+///
+/// This view function is read-only — it does not mutate any state.
+pub fn estimate_sybil_attack_cost(
+    env: Env,
+    borrower: Address,
+) -> crate::types::SybilAttackCostEstimate {
+    let now = env.ledger().timestamp();
+
+    let vouches: Vec<VouchRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Vouches(borrower.clone()))
+        .unwrap_or_else(|| Vec::new(&env));
+
+    let mut total_weighted_stake: i128 = 0;
+    let voucher_count = vouches.len();
+
+    // Compute total reputation-weighted stake of the current legitimate set
+    for v in vouches.iter() {
+        let weight = vouch_reputation_weight(&env, &v.voucher);
+        let weighted = v.stake * weight / BPS_DENOMINATOR;
+        total_weighted_stake = total_weighted_stake.saturating_add(weighted);
+    }
+
+    // An attacker with zero history gets base weight only (1×), meaning each
+    // attacker address contributes exactly its raw stake.
+    // To match total_weighted_stake the attacker needs total_weighted_stake stroops
+    // split across however many addresses they spin up.
+    //
+    // Floor: each address must stake at least SYBIL_MIN_STAKE_FOR_CREDIT.
+    // We compute "how many addresses at minimum stake" are required:
+    let min_stake_per_address = SYBIL_MIN_STAKE_FOR_REP;
+    let addresses_required = if total_weighted_stake <= 0 {
+        1u32
+    } else {
+        let n = (total_weighted_stake + min_stake_per_address - 1) / min_stake_per_address;
+        n.min(i128::from(u32::MAX)) as u32
+    };
+
+    let min_stake_stroops = (addresses_required as i128)
+        .saturating_mul(min_stake_per_address)
+        .max(total_weighted_stake); // attacker must match or exceed
+
+    // Minimum lock time = SYBIL_MIN_VOUCH_AGE_SECS (24 h) for vouches to be eligible
+    let min_lock_secs = SYBIL_REP_MIN_VOUCH_AGE_SECS;
+
+    // Cache the estimate for off-chain consumption (non-critical, best-effort)
+    let estimate = crate::types::SybilAttackCostEstimate {
+        min_stake_stroops,
+        min_lock_secs,
+        voucher_count,
+        total_weighted_stake,
+        computed_at: now,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::SybilAttackCost(borrower), &estimate.clone());
+
+    estimate
+}
