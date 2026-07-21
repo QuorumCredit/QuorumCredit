@@ -28,7 +28,7 @@ This platform is designed for developers building on Stellar, fintech teams targ
 - [Setup Instructions](#setup-instructions)
 - [Testing](#testing)
 - [Deployment](#deployment)
-- [Security Best Practices](SECURITY_BEST_PRACTICES.md)
+- [Security Best Practices](docs/security-best-practices.md)
 - [Documentation](#documentation)
 - [Architecture](#architecture)
 - [Error Reference](#error-reference)
@@ -1000,6 +1000,8 @@ Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for our full guidelines on:
 ## Security
 
 See [SECURITY.md](SECURITY.md) for the full vulnerability disclosure policy and contact information.
+
+**Interacting with the protocol as a user?** Read the [Security Best Practices guide](docs/security-best-practices.md) first — it covers key management, wallet security, phishing risks, how to spot a rug pull, a safe-operation checklist, and emergency contact procedures for compromised accounts or suspected scams.
 
 - Never commit `.env` files or secret keys
 - Use hardware wallets or multisig for admin keys

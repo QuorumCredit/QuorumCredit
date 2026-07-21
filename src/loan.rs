@@ -1,5 +1,14 @@
 use crate::errors::ContractError;
 use crate::helpers::{
+    apply_milestone_bonus, calculate_daily_compound_interest, config, get_active_loan_record,
+    has_active_loan, next_loan_id, require_allowed_token, require_not_paused,
+};
+use crate::reputation::ReputationNftExternalClient;
+use crate::types::{
+    DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
+    SECS_PER_DAY,
+};
+use soroban_sdk::{symbol_short, Address, Env, Vec};
     config, deduct_slash_balance, get_active_loan_record, get_latest_loan_record,
     has_active_loan, next_loan_id, register_borrower_if_needed, require_allowed_token,
     require_not_paused, require_not_thawing, require_admin_approval,
@@ -228,6 +237,34 @@ pub fn request_loan(
         });
     }
 
+    let deadline = now + cfg.loan_duration;
+    let loan_id = next_loan_id(&env);
+    let total_yield = amount * cfg.yield_bps / 10_000;
+
+    env.storage().persistent().set(
+        &DataKey::Loan(loan_id),
+        &LoanRecord {
+            id: loan_id,
+            borrower: borrower.clone(),
+            co_borrowers: Vec::new(&env),
+            amount,
+            amount_repaid: 0,
+            total_yield,
+            repaid: false,
+            defaulted: false,
+            created_at: now,
+            disbursement_timestamp: now,
+            repayment_timestamp: None,
+            deadline,
+            loan_purpose,
+            token_address: token_addr.clone(),
+            // Interest tracking: start the clock at disbursement so elapsed days
+            // are correctly computed on the first repayment call.
+            last_interest_calc: now,
+            accrued_interest: 0,
+            milestone_bonus_applied: 0,
+        },
+    );
     // Store yield distribution for repayment-time lookup
     env.storage()
         .persistent()
@@ -342,6 +379,28 @@ pub fn apply_slash_recovery(env: &Env, borrower: &Address) -> Result<(), Contrac
     Ok(())
 }
 
+/// Repay part or all of an active loan.
+///
+/// ## Interest Accrual Pipeline (executed at the top of every call)
+///
+/// 1. Compute `days_elapsed` = whole days since `last_interest_calc`.
+/// 2. Compute new interest = `calculate_daily_compound_interest(outstanding_principal, days_elapsed)`.
+/// 3. Add to `loan.accrued_interest` and advance `loan.last_interest_calc`.
+///
+/// ## Milestone Bonuses
+///
+/// After accrual and *after* adding `payment` to `amount_repaid`, we check
+/// whether any repayment milestone (25 %, 50 %, 75 %) has just been crossed
+/// for the first time.  If so, a one-time discount is applied to
+/// `accrued_interest` via `apply_milestone_bonus`.
+///
+/// ## Total Obligation
+///
+/// ```text
+/// total_owed = amount + total_yield + accrued_interest (after bonus adjustments)
+/// ```
+///
+/// A payment is valid when `0 < payment ≤ (total_owed - amount_repaid)`.
 /// Repay loan (active or defaulted).
 pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
     borrower.require_auth();
@@ -387,6 +446,78 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     let token = require_allowed_token(&env, &loan.token_address)?;
     token.transfer(&borrower, &env.current_contract_address(), &payment);
 
+    // ── Step 1: Accrue compound interest ─────────────────────────────────────
+    let now = env.ledger().timestamp();
+    let elapsed_secs = now.saturating_sub(loan.last_interest_calc);
+    let days_elapsed = elapsed_secs / SECS_PER_DAY;
+
+    if days_elapsed > 0 {
+        // Outstanding principal is everything not yet repaid, minus the static
+        // yield component (which is already accounted for in total_yield).
+        let outstanding_principal = (loan.amount - loan.amount_repaid).max(0);
+        let new_interest =
+            calculate_daily_compound_interest(outstanding_principal, days_elapsed);
+        loan.accrued_interest = loan
+            .accrued_interest
+            .checked_add(new_interest)
+            .unwrap_or(i128::MAX);
+        // Advance the clock by whole days only; any sub-day remainder rolls
+        // forward and will be picked up on the next call.
+        loan.last_interest_calc += days_elapsed * SECS_PER_DAY;
+    }
+
+    // ── Step 2: Validate payment against total obligation ────────────────────
+    //
+    // total_owed = principal + static_yield + accrued_compound_interest
+    let total_owed = loan
+        .amount
+        .checked_add(loan.total_yield)
+        .and_then(|v| v.checked_add(loan.accrued_interest))
+        .expect("total_owed overflow");
+
+    let outstanding = total_owed
+        .checked_sub(loan.amount_repaid)
+        .unwrap_or(0)
+        .max(0);
+
+    assert!(
+        payment > 0 && payment <= outstanding,
+        "invalid payment amount"
+    );
+
+    // ── Step 3: Apply payment ─────────────────────────────────────────────────
+    let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
+    token.transfer(&borrower, &env.current_contract_address(), &payment);
+    loan.amount_repaid = loan
+        .amount_repaid
+        .checked_add(payment)
+        .expect("amount_repaid overflow");
+
+    // ── Step 4: Check milestones (post-payment) ───────────────────────────────
+    // total_obligation for milestone fraction: principal + static yield only.
+    // (We exclude accrued_interest from the denominator so early repayers
+    // aren't penalised by a growing denominator.)
+    let total_obligation_for_milestone = loan
+        .amount
+        .checked_add(loan.total_yield)
+        .unwrap_or(loan.amount);
+
+    let (new_accrued, new_flags) = apply_milestone_bonus(
+        &loan,
+        loan.amount_repaid,
+        total_obligation_for_milestone,
+    );
+    loan.accrued_interest = new_accrued;
+    loan.milestone_bonus_applied = new_flags;
+
+    // ── Step 5: Re-check whether fully repaid (with updated accrued_interest) ─
+    let total_owed_final = loan
+        .amount
+        .checked_add(loan.total_yield)
+        .and_then(|v| v.checked_add(loan.accrued_interest))
+        .expect("total_owed_final overflow");
+
+    let fully_repaid = loan.amount_repaid >= total_owed_final;
     loan.amount_repaid = loan.amount_repaid.checked_add(payment).ok_or(ContractError::ArithmeticError)?;
 
     let now = env.ledger().timestamp();
@@ -1135,7 +1266,13 @@ pub fn request_extension(
 }
 
 /// Issue #883: Voucher approves a pending loan extension request.
-/// When a majority of vouchers (by count) approve, the deadline is extended.
+/// When a majority of vouchers **by stake weight** approve, the deadline is extended.
+///
+/// **Sybil-resistance fix**: The old logic required `(total_vouchers / 2) + 1` raw
+/// vouchers to approve — meaning a Sybil ring with many tiny stakes could override
+/// a single large legitimate voucher. The new logic mirrors `vouch_reputation_weight`:
+/// we sum the stake of approving vouchers and require it to exceed half of the total
+/// vouched stake. A single 10 XLM voucher correctly out-weighs 100 dust vouchers.
 pub fn approve_extension(
     env: Env,
     voucher: Address,
@@ -1156,19 +1293,38 @@ pub fn approve_extension(
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(&env));
 
+    // Check the caller is a legitimate voucher
     if !vouches.iter().any(|v| v.voucher == voucher) {
         return Err(ContractError::VoucherNotFound);
     }
 
+    // Prevent double-voting
     if request.approvals.iter().any(|a| a == voucher) {
         return Err(ContractError::AlreadyVoted);
     }
 
     request.approvals.push_back(voucher.clone());
-    let total_vouchers = vouches.len();
-    let required = (total_vouchers / 2) + 1;
 
-    if request.approvals.len() >= required {
+    // ── Stake-weighted quorum ────────────────────────────────────────────
+    // total_stake = sum of all vouchers' reputation-weighted stakes
+    // approval_stake = sum of approving vouchers' reputation-weighted stakes
+    // Extension executes when approval_stake > total_stake / 2 (strict majority)
+    let mut total_stake: i128 = 0;
+    let mut approval_stake: i128 = 0;
+
+    for v in vouches.iter() {
+        let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
+        let weighted = v.stake * weight / crate::types::BPS_DENOMINATOR;
+        total_stake = total_stake.saturating_add(weighted);
+        if request.approvals.iter().any(|a| a == v.voucher) {
+            approval_stake = approval_stake.saturating_add(weighted);
+        }
+    }
+
+    // Require strict majority of stake (approval_stake * 2 > total_stake)
+    let quorum_met = total_stake > 0 && approval_stake * 2 > total_stake;
+
+    if quorum_met {
         let mut loan = get_active_loan_record(&env, &borrower)?;
         loan.deadline += request.extension_secs;
         env.storage()
