@@ -9,7 +9,7 @@ use crate::types::{
     SlashingReportRecord, SlashRecord, SlashThresholdProposal, SlashVoteRecord,
     TimelockAction, TimelockProposal,
     VouchRecord, BPS_DENOMINATOR, APPEAL_OVERRIDE_QUORUM_BPS, MONTHLY_PERIOD_SECS,
-    SLASH_APPEAL_PERIOD,
+    SLASH_APPEAL_PERIOD, VoteSlashResult, DEFAULT_SLASH_VOTE_QUORUM_BPS,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, String, Vec};
 
@@ -28,7 +28,7 @@ pub fn resolve_vote_delegation(env: &Env, voucher: &Address) -> Address {
             .get(&DataKey::VoteDelegation(current.clone()))
         {
             // Check for circular delegation
-            if visited.iter().any(|a| a == &delegate) {
+            if visited.iter().any(|a| a == delegate) {
                 break;
             }
             current = delegate;
@@ -106,7 +106,7 @@ pub fn delegate_vote(
             .persistent()
             .get(&DataKey::VoteDelegation(current.clone()))
         {
-            if visited.iter().any(|a| a == &next_delegate) {
+            if visited.iter().any(|a| a == next_delegate) {
                 break;
             }
             visited.push_back(next_delegate.clone());
@@ -172,7 +172,7 @@ pub fn vote_slash(
     voter: Address,
     borrower: Address,
     approve: bool,
-) -> Result<(), ContractError> {
+) -> Result<VoteSlashResult, ContractError> {
     voter.require_auth();
     require_not_paused(&env)?;
 
@@ -225,13 +225,13 @@ pub fn vote_slash(
         .unwrap_or(Vec::new(&env));
 
     // Issue #1069: Resolve delegation - if this voucher has delegated, the delegate votes with this stake
-    let effective_voter = resolve_vote_delegation(&env, &voucher);
-    let actual_voter = if effective_voter != voucher {
+    let effective_voter = resolve_vote_delegation(&env, &voter);
+    let actual_voter = if effective_voter != voter {
         // This voucher's stake is counted under the delegate's vote
         // The delegate should call vote_slash separately
-        return Ok(()); // Silently succeed - delegate will vote
+        return Ok(VoteSlashResult::DelegateWillVote); // Silently succeed - delegate will vote
     } else {
-        voucher.clone()
+        voter.clone()
     };
 
     let voucher_stake = vouches
@@ -287,7 +287,7 @@ pub fn vote_slash(
     }
 
     // Prevent double-voting by the effective voter.
-    if vote.voters.iter().any(|v| resolve_vote_delegation(&env, v) == actual_voter) {
+    if vote.voters.iter().any(|v| resolve_vote_delegation(&env, &v) == actual_voter) {
         return Err(ContractError::AlreadyVoted);
     }
 
@@ -349,7 +349,7 @@ pub fn vote_slash(
             .set(&DataKey::SlashVote(borrower.clone()), &vote);
     }
 
-    Ok(())
+    Ok(VoteSlashResult::VoteCounted)
 }
 
 /// Returns the current slash vote record for a borrower, if any.
@@ -706,8 +706,13 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
 /// Queue a slash operation for deferred batch execution (Issue #937: Lazy Slash).
 /// This allows multiple slashes to be batched together, reducing gas costs.
-pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<(), ContractError> {
-    require_admin_approval(&env, &Vec::new(&env));
+pub fn queue_slash(
+    env: Env,
+    admin_signers: Vec<Address>,
+    borrower: Address,
+    slash_amount: i128,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
     
     // Calculate slash amount from existing vouch stake if not provided
     let actual_slash = if slash_amount > 0 {
@@ -736,8 +741,8 @@ pub fn queue_slash(env: Env, borrower: Address, slash_amount: i128) -> Result<()
 
 /// Execute all queued slash operations in a single batch (Issue #937: Lazy Slash).
 /// Returns the number of slashes executed.
-pub fn execute_queued_slashes(env: Env) -> Result<u32, ContractError> {
-    require_admin_approval(&env, &Vec::new(&env));
+pub fn execute_queued_slashes(env: Env, admin_signers: Vec<Address>) -> Result<u32, ContractError> {
+    require_admin_approval(&env, &admin_signers);
     
     let executed = crate::lazy_slash::execute_queued_slashes(&env)?;
     
@@ -1537,7 +1542,7 @@ pub fn vote_appeal(
         .get(&DataKey::SlashEscrowAppeal(borrower.clone()))
         .ok_or(ContractError::AppealNotFound)?;
 
-    let mut voting_stake = 0;
+    let mut voting_stake: i128 = 0;
     let mut newly_voted_vouches: Vec<Address> = Vec::new(&env);
 
     for v in vouches.iter() {
@@ -2109,9 +2114,17 @@ pub fn propose_config_change(
     require_not_paused(&env)?;
     let cfg = config(&env);
     assert!(
-        cfg.admins.iter().any(|a| a == &proposer),
+        cfg.admins.iter().any(|a| a == proposer),
         "only admins can propose config changes"
     );
+
+    crate::helpers::validate_admin_config(
+        &env,
+        &new_config.admins,
+        new_config.admin_threshold,
+        &new_config.admin_whitelist,
+        &new_config.admin_blacklist,
+    )?;
 
     let proposal_id: u64 = env
         .storage()
@@ -2140,7 +2153,7 @@ pub fn propose_config_change(
         .set(&DataKey::TimelockCounter, &proposal_id);
 
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("config_prop")),
+        (symbol_short!("gov"), soroban_sdk::Symbol::new(&env, "config_prop")),
         (proposal_id, proposer, eta),
     );
 
@@ -2183,7 +2196,7 @@ pub fn execute_config_change(env: Env, proposal_id: u64) -> Result<(), ContractE
             .set(&DataKey::Config, new_config);
 
         env.events().publish(
-            (symbol_short!("gov"), symbol_short!("config_exec")),
+            (symbol_short!("gov"), soroban_sdk::Symbol::new(&env, "config_exec")),
             (proposal_id,),
         );
 
@@ -2217,7 +2230,7 @@ pub fn cancel_config_change(
         .set(&DataKey::Timelock(proposal_id), &proposal);
 
     env.events().publish(
-        (symbol_short!("gov"), symbol_short!("config_cancel")),
+        (symbol_short!("gov"), soroban_sdk::Symbol::new(&env, "config_cancel")),
         (proposal_id,),
     );
 

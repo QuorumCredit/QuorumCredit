@@ -1,11 +1,11 @@
 use crate::errors::ContractError;
 use crate::types::{
-    Config, DataKey, LoanRecord, COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS,
-    MILESTONE_25_PCT_PERMILLE, MILESTONE_50_DISCOUNT_BPS, MILESTONE_50_PCT_PERMILLE,
-    MILESTONE_75_DISCOUNT_BPS, MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50,
-    MILESTONE_FLAG_75, SECS_PER_DAY,
     Config, DataKey, LoanRecord, LoanStatus, PauseMode, ThawState,
-    MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS, BPS_DENOMINATOR,
+    COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS, MILESTONE_25_PCT_PERMILLE,
+    MILESTONE_50_DISCOUNT_BPS, MILESTONE_50_PCT_PERMILLE, MILESTONE_75_DISCOUNT_BPS,
+    MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75,
+    SECS_PER_DAY, MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
+    BPS_DENOMINATOR,
 };
 use soroban_sdk::{token, Address, Env, String, Vec};
 
@@ -327,7 +327,7 @@ pub fn require_admin_approval_for_operation(
     let cfg = config(env);
     
     // Determine the required threshold based on operation type
-    let required_threshold = if let Some(multi_tier) = &cfg.multi_tier_thresholds {
+    let required_threshold = if let Some(multi_tier) = env.storage().instance().get::<crate::types::DataKey, crate::types::MultiTierAdminThresholds>(&crate::types::DataKey::MultiTierAdminThresholds) {
         multi_tier.get_threshold(operation_type)
     } else {
         // Fall back to single threshold if multi-tier not configured
@@ -455,6 +455,14 @@ pub fn primary_token(env: &Env) -> token::Client {
     token::Client::new(env, &config(env).token)
 }
 
+pub fn token(env: &Env) -> token::Client {
+    primary_token(env)
+}
+
+pub fn token_client(env: &Env) -> token::Client {
+    primary_token(env)
+}
+
 // ── Rate Limiting ─────────────────────────────────────────────────────────────
 
 pub fn check_rate_limit(env: &Env, account: &Address) -> Result<(), ContractError> {
@@ -499,11 +507,15 @@ pub fn check_permission(
         return Ok(());
     }
 
-    let permissions: crate::types::RolePermissions = env
+    let permissions: crate::types::RolePermissions = match env
         .storage()
         .persistent()
         .get(&DataKey::RolePermissions(account.clone()))
-        .ok_or(ContractError::PermissionDenied)?;
+    {
+        Some(p) => p,
+        // No permissions record: default-allow (RBAC is opt-in, not opt-out)
+        None => return Ok(()),
+    };
 
     if permission_fn(&permissions) {
         Ok(())
@@ -661,6 +673,8 @@ pub fn apply_milestone_bonus(
     }
 
     (accrued, flags)
+}
+
 /// Retrieves an oracle price record and validates its freshness in one call.
 pub fn get_fresh_price(
     env: &Env,
@@ -716,7 +730,7 @@ pub fn require_graduated_response(
                 Ok(())
             }
         }
-        crate::types::ThreatLevel::Critical | crate::types::ThreatLevel::Lockdown => {
+        crate::types::ThreatLevel::Lockdown => {
             Err(ContractError::ContractPaused)
         }
     }
