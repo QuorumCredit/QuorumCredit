@@ -1,27 +1,18 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    apply_milestone_bonus, calculate_daily_compound_interest, config, get_active_loan_record,
-    has_active_loan, next_loan_id, require_allowed_token, require_not_paused,
+    apply_milestone_bonus, calculate_daily_compound_interest, config, deduct_slash_balance,
+    get_active_loan_record, get_latest_loan_record, has_active_loan, next_loan_id,
+    register_borrower_if_needed, require_allowed_token, require_not_paused,
+    require_not_thawing, require_admin_approval, require_governance_participant,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{
-    DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
+    BorrowerDynamicRate, DataKey, DynamicRateConfig, EscrowStatus, ForbearanceRecord,
+    ForbearanceStatus, LoanRecord, LoanStatus, LoanStatusEx, RefinanceRecord, SlashRecord,
+    VouchRecord, VoucherStats, YieldDistributionEntry, PaymentRecord, BPS_DENOMINATOR,
+    DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS, MAX_FORBEARANCE_PERIODS,
+    REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE,
     SECS_PER_DAY,
-};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
-    config, deduct_slash_balance, get_active_loan_record, get_latest_loan_record,
-    has_active_loan, next_loan_id, register_borrower_if_needed, require_allowed_token,
-    require_not_paused, require_not_thawing, require_admin_approval,
-    require_governance_participant,
-};
-use crate::reputation::ReputationNftExternalClient;
-use crate::types::{
-    BorrowerDynamicRate, DataKey, DynamicRateConfig, EscrowStatus,
-    ForbearanceRecord, ForbearanceStatus, LoanRecord, LoanStatus, LoanStatusEx,
-    RefinanceRecord, SlashRecord, VouchRecord, VoucherStats,
-    YieldDistributionEntry, PaymentRecord,
-    BPS_DENOMINATOR, DEFAULT_DYNAMIC_RATE_CONFIG, DEFAULT_FORBEARANCE_DURATION_SECS,
-    MAX_FORBEARANCE_PERIODS, REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD,
 };
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -126,7 +117,7 @@ fn vouch_yield_bps_uncached(env: &Env, vouch: &VouchRecord, borrower: &Address, 
         .unwrap_or(Vec::new(env));
     let mut unique_borrowers = Vec::new(env);
     for b in history.iter() {
-        if !unique_borrowers.iter().any(|ub| ub == &b) {
+        if !unique_borrowers.iter().any(|ub| ub == b) {
             unique_borrowers.push_back(b.clone());
         }
     }
@@ -241,30 +232,6 @@ pub fn request_loan(
     let loan_id = next_loan_id(&env);
     let total_yield = amount * cfg.yield_bps / 10_000;
 
-    env.storage().persistent().set(
-        &DataKey::Loan(loan_id),
-        &LoanRecord {
-            id: loan_id,
-            borrower: borrower.clone(),
-            co_borrowers: Vec::new(&env),
-            amount,
-            amount_repaid: 0,
-            total_yield,
-            repaid: false,
-            defaulted: false,
-            created_at: now,
-            disbursement_timestamp: now,
-            repayment_timestamp: None,
-            deadline,
-            loan_purpose,
-            token_address: token_addr.clone(),
-            // Interest tracking: start the clock at disbursement so elapsed days
-            // are correctly computed on the first repayment call.
-            last_interest_calc: now,
-            accrued_interest: 0,
-            milestone_bonus_applied: 0,
-        },
-    );
     // Store yield distribution for repayment-time lookup
     env.storage()
         .persistent()
@@ -283,6 +250,8 @@ pub fn request_loan(
         amount_repaid: 0,
         total_yield,
         status: LoanStatus::Active,
+        repaid: false,
+        defaulted: false,
         created_at: now,
         disbursement_timestamp: now,
         repayment_timestamp: None,
@@ -298,7 +267,7 @@ pub fn request_loan(
         index_reference: None,
         last_interest_calc: now,
         accrued_interest: 0,
-        milestone_bonus_applied: false,
+        milestone_bonus_applied: 0,
         retry_count: 0,
         suspension_timestamp: None,
         suspension_amount_repaid: 0,
@@ -443,9 +412,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
 
-    let token = require_allowed_token(&env, &loan.token_address)?;
-    token.transfer(&borrower, &env.current_contract_address(), &payment);
-
     // ── Step 1: Accrue compound interest ─────────────────────────────────────
     let now = env.ledger().timestamp();
     let elapsed_secs = now.saturating_sub(loan.last_interest_calc);
@@ -518,7 +484,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         .expect("total_owed_final overflow");
 
     let fully_repaid = loan.amount_repaid >= total_owed_final;
-    loan.amount_repaid = loan.amount_repaid.checked_add(payment).ok_or(ContractError::ArithmeticError)?;
 
     let now = env.ledger().timestamp();
     
@@ -637,6 +602,15 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         env.storage()
             .persistent()
             .set(&DataKey::RepaymentCount(borrower.clone()), &(prev_count + 1));
+
+        // Mint reputation NFT for borrower on successful repayment
+        if let Some(nft_addr) = env
+            .storage()
+            .instance()
+            .get::<DataKey, soroban_sdk::Address>(&DataKey::ReputationNft)
+        {
+            ReputationNftExternalClient::new(&env, &nft_addr).mint(&borrower);
+        }
 
         // Issue #884: Apply prepayment bonus for early repayment
         let bonus = apply_prepayment_bonus(&env, &borrower, &loan);
@@ -1103,6 +1077,8 @@ pub fn refinance_loan(
         amount_repaid: 0,
         total_yield: new_yield,
         status: LoanStatus::Active,
+        repaid: false,
+        defaulted: false,
         created_at: now,
         disbursement_timestamp: now,
         repayment_timestamp: None,
@@ -1118,7 +1094,7 @@ pub fn refinance_loan(
         index_reference: old_loan.index_reference,
         last_interest_calc: now,
         accrued_interest: 0,
-        milestone_bonus_applied: false,
+        milestone_bonus_applied: 0,
         retry_count: 0,
         suspension_timestamp: None,
         suspension_amount_repaid: 0,
@@ -1805,7 +1781,7 @@ pub fn end_forbearance(env: Env, borrower: Address) -> Result<(), ContractError>
     if now >= forbearance.ends_at {
         forbearance.status = ForbearanceStatus::Expired;
     } else {
-        forbearance.status = ForbearanceStatus::Ended;
+        forbearance.status = ForbearanceStatus::Expired;
     }
 
     env.storage()
