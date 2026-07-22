@@ -196,6 +196,48 @@ impl QuorumCreditContract {
         vouch::estimate_sybil_attack_cost(env, borrower)
     }
 
+    /// Issue #936: Compute a Merkle root over a borrower's current vouch set
+    /// and persist it, enabling off-chain provers to build compact inclusion
+    /// proofs without retrieving the full vouch list. See
+    /// docs/vouch-merkle-proof.md for the leaf/root format.
+    pub fn compute_and_store_merkle_root(
+        env: Env,
+        borrower: Address,
+    ) -> Result<BytesN<32>, ContractError> {
+        vouch::compute_and_store_merkle_root(env, borrower)
+    }
+
+    /// Issue #936: Read the most recently stored vouch Merkle root for a
+    /// borrower, if one has been computed.
+    pub fn get_merkle_root(env: Env, borrower: Address) -> Option<crate::types::VouchMerkleRoot> {
+        vouch::get_merkle_root(env, borrower)
+    }
+
+    /// Issue #936: Hash a single vouch's plaintext fields into the canonical
+    /// Merkle leaf format, for use as the `leaf` argument to
+    /// `verify_vouch_inclusion`.
+    pub fn hash_vouch_leaf(
+        env: Env,
+        voucher: Address,
+        stake: i128,
+        token: Address,
+        vouch_timestamp: u64,
+    ) -> BytesN<32> {
+        vouch::hash_vouch_leaf(env, voucher, stake, token, vouch_timestamp)
+    }
+
+    /// Issue #936: Verify a Merkle inclusion proof for a single vouch leaf
+    /// against a previously-stored root, without needing the full vouch
+    /// list. Returns `true` iff the proof is valid.
+    pub fn verify_vouch_inclusion(
+        env: Env,
+        root: BytesN<32>,
+        leaf: BytesN<32>,
+        proof: Vec<BytesN<32>>,
+    ) -> bool {
+        vouch::verify_vouch_inclusion(env, root, leaf, proof)
+    }
+
     /// Issue #867: Create a cross-collateral pool, seeded by the creator's stake.
     pub fn create_collateral_pool(
         env: Env,

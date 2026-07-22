@@ -108,6 +108,8 @@ cargo test
 ### 1. Vouching
 Users stake XLM to vouch for a borrower in their network. This stake is transferred into the contract and held as social collateral.
 
+A borrower's vouch set can also be committed to a Merkle root, letting a third party prove a specific vouch was included without reading the full list — see [docs/vouch-merkle-proof.md](docs/vouch-merkle-proof.md).
+
 ### 2. Loan Eligibility
 A borrower becomes eligible once their total vouched stake meets the minimum threshold — no personal collateral needed.
 

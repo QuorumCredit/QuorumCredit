@@ -1806,25 +1806,22 @@ pub fn compute_and_store_merkle_root(env: Env, borrower: Address) -> Result<soro
         return Err(ContractError::NoVouchesForBorrower);
     }
 
-    // Build leaves from vouches: each leaf is 32 zero-bytes (placeholder for serialized vouch data)
-    // In production, a proper serialization of (voucher, stake, token) should be used.
-    let mut leaves: Vec<soroban_sdk::Bytes> = Vec::new(&env);
-    for _v in vouches.iter() {
-        let leaf_bytes = soroban_sdk::Bytes::from_array(&env, &[0u8; 32]);
-        leaves.push_back(leaf_bytes);
+    // Each leaf commits to a vouch's (voucher, stake, token, vouch_timestamp)
+    // tuple via crate::merkle_tree::hash_leaf. See docs/vouch-merkle-proof.md
+    // for the full leaf/root format and its guarantees.
+    let mut leaves: Vec<soroban_sdk::BytesN<32>> = Vec::new(&env);
+    for v in vouches.iter() {
+        leaves.push_back(crate::merkle_tree::hash_leaf(
+            &env,
+            &v.voucher,
+            v.stake,
+            &v.token,
+            v.vouch_timestamp,
+        ));
     }
 
     // Compute Merkle root
-    let root_bytes = crate::merkle_tree::build_merkle_root(&env, leaves);
-    // Convert the 32-byte Bytes result to BytesN<32>
-    let root_arr: [u8; 32] = {
-        let mut arr = [0u8; 32];
-        for i in 0..32u32 {
-            arr[i as usize] = root_bytes.get(i).unwrap_or(0);
-        }
-        arr
-    };
-    let root = soroban_sdk::BytesN::from_array(&env, &root_arr);
+    let root = crate::merkle_tree::build_merkle_root(&env, leaves);
 
     // Store the root
     let merkle_record = VouchMerkleRoot {
@@ -1851,6 +1848,39 @@ pub fn get_merkle_root(env: Env, borrower: Address) -> Option<VouchMerkleRoot> {
         .storage()
         .persistent()
         .get(&DataKey::VouchMerkleRoot(borrower))
+}
+
+/// Hash a single vouch's `(voucher, stake, token, vouch_timestamp)` into the
+/// canonical Merkle leaf used by [`compute_and_store_merkle_root`]. A third
+/// party needs this to derive the `leaf` argument for
+/// [`verify_vouch_inclusion`] from a vouch's known plaintext fields (Issue
+/// #936).
+pub fn hash_vouch_leaf(
+    env: Env,
+    voucher: Address,
+    stake: i128,
+    token: Address,
+    vouch_timestamp: u64,
+) -> soroban_sdk::BytesN<32> {
+    crate::merkle_tree::hash_leaf(&env, &voucher, stake, &token, vouch_timestamp)
+}
+
+/// Verify that `leaf` was included in the vouch set committed to by `root`,
+/// given a Merkle inclusion `proof` (Issue #936). Runs in `O(proof.len())`
+/// and never touches the borrower's stored vouch list, so a third party can
+/// verify a single vouch's inclusion without re-deriving the whole tree.
+///
+/// `root` is typically the value returned by [`compute_and_store_merkle_root`]
+/// or read via [`get_merkle_root`]; `leaf` is produced by [`hash_vouch_leaf`];
+/// `proof` is generated off-chain (or via `merkle_tree::generate_proof` in
+/// tests) from the full leaf set. See docs/vouch-merkle-proof.md.
+pub fn verify_vouch_inclusion(
+    env: Env,
+    root: soroban_sdk::BytesN<32>,
+    leaf: soroban_sdk::BytesN<32>,
+    proof: Vec<soroban_sdk::BytesN<32>>,
+) -> bool {
+    crate::merkle_tree::verify_inclusion(&env, &root, &leaf, &proof)
 }
 
 
