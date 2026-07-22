@@ -54,6 +54,21 @@ pub const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 pub const DEFAULT_MAX_VOUCHERS_PER_BORROWER: u32 = 50;
 /// Default timelock delay for config changes, in seconds (7 days).
 pub const CONFIG_TIMELOCK_SECONDS: u64 = 7 * 24 * 60 * 60;
+/// Issue #1146: maximum number of pending entries a single borrower's
+/// withdrawal queue may hold. Requests beyond this cap are rejected
+/// (`ContractError::WithdrawalQueueFull`) instead of growing the queue's
+/// persistent-storage Vec without bound.
+pub const MAX_WITHDRAWAL_QUEUE_SIZE: u32 = 200;
+/// Issue #1146: target size of the "hot" per-(borrower, voucher, token)
+/// vouch-history window kept after an archival cutover.
+pub const MAX_HOT_VOUCH_HISTORY_ENTRIES: u32 = 20;
+/// Issue #1146: once the hot vouch-history window reaches this length, the
+/// oldest entries are cut over into a single `ArchivedVouchHistory` batch,
+/// bringing the hot window back down to `MAX_HOT_VOUCH_HISTORY_ENTRIES`.
+pub const VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
+/// Issue #1146: maximum number of items returned by a single page of any
+/// `*_page` read function, regardless of the caller-requested `limit`.
+pub const MAX_PAGE_SIZE: u32 = 50;
 /// Default governance voting period for slash-threshold proposals, in seconds (7 days).
 pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum delay before a timelocked governance action may be executed, in seconds (24 hours).
@@ -754,6 +769,10 @@ pub enum DataKey {
     /// Cached estimate of the cost (in stroops) to Sybil-attack a borrower's
     /// voucher configuration. Invalidated when vouches change.
     SybilAttackCost(Address),
+    /// Issue #1146: (borrower, voucher, token) → u32 number of archive batches
+    /// created so far for this relationship's vouch history. The index needed
+    /// to enumerate `ArchivedVouchHistory` batches in order (0..count).
+    VouchHistoryArchiveCount(Address, Address, Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

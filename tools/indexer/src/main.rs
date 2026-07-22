@@ -40,6 +40,18 @@ struct Cli {
 
     #[arg(long)]
     deploy_ledger: Option<u32>,
+
+    /// Issue #1146: one-shot mode. Instead of starting the long-running
+    /// daemon, print every distinct borrower address ever observed in the
+    /// indexed event history to stdout (one per line, or JSON with
+    /// `--export-format json`) and exit. Used by `scripts/backup.sh` to
+    /// derive its snapshot address set instead of a manually-maintained
+    /// `BORROWER_ADDRESSES` env var.
+    #[arg(long)]
+    export_addresses: bool,
+
+    #[arg(long, default_value = "text")]
+    export_format: String,
 }
 
 #[tokio::main]
@@ -52,6 +64,19 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    if cli.export_addresses {
+        let store = db::Store::open(Path::new(&cli.db_path))?;
+        let addresses = store.distinct_borrower_addresses().await?;
+        if cli.export_format == "json" {
+            println!("{}", serde_json::to_string(&addresses)?);
+        } else {
+            for address in &addresses {
+                println!("{address}");
+            }
+        }
+        return Ok(());
+    }
 
     info!(
         rpc_url = %cli.rpc_url,

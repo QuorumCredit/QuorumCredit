@@ -2,11 +2,13 @@
 //!
 //! This module provides:
 //!
-//! - [`InvariantViolation`] — a structured error type naming which invariant was breached.
-//! - [`verify_invariants`] — checks all 8 documented invariants (I1–I8) plus implicit
-//!   invariants discovered during implementation. Call this after every state-changing
-//!   operation in tests.
-//! - Integration tests that wire `verify_invariants` into the full loan lifecycle.
+//! - Integration tests that wire [`crate::invariants::verify_invariants`] into the full
+//!   loan lifecycle. The invariant definitions themselves (`InvariantViolation`,
+//!   `verify_invariants`) live in `src/invariants.rs` — a non-test module compiled into
+//!   the production contract, since Issue #1146 exposes them live via the
+//!   `check_invariants` entrypoint for `scripts/restore.sh` to gate on. This module
+//!   imports rather than redefines them so the test harness and the live entrypoint
+//!   can never drift apart.
 //! - A proptest-based fuzzing harness that exercises randomised vouch/loan/repay sequences.
 //! - Three deliberate negative-control tests that **break** invariants and confirm the
 //!   harness catches the violation (not a vacuous pass).
@@ -29,7 +31,8 @@
 
 #![cfg(test)]
 
-use crate::types::{Config, DataKey, LoanRecord, LoanStatus, VouchRecord};
+use crate::invariants::{verify_invariants_in_contract, InvariantViolation};
+use crate::types::{Config, DataKey};
 use crate::{QuorumCreditContract, QuorumCreditContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -37,218 +40,19 @@ use soroban_sdk::{
     Address, Env, String, Vec,
 };
 
-// ── InvariantViolation ────────────────────────────────────────────────────────
-
-/// Identifies which invariant was violated.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InvariantViolation {
-    /// I1: contract token balance < sum of active vouch stakes.
-    SolvencyViolated {
-        contract_balance: i128,
-        total_locked_stake: i128,
-    },
-    /// I2: loan amount > total vouched stake × max_loan_to_stake_ratio/100.
-    LoanExceedsStake {
-        loan_amount: i128,
-        total_stake: i128,
-    },
-    /// I3: active loan exists but borrower has zero vouches on record.
-    ActiveLoanWithoutVouches { borrower_debug: &'static str },
-    /// I4: loan.amount_repaid > loan.amount + loan.total_yield.
-    RepaidExceedsPrincipalPlusYield {
-        amount_repaid: i128,
-        max_allowed: i128,
-    },
-    /// I5: loan status moved backwards (e.g. Repaid → Active).
-    InvalidStatusTransition {
-        from: &'static str,
-        to: &'static str,
-    },
-    /// I6: slash treasury balance is negative.
-    SlashTreasuryNegative { balance: i128 },
-    /// I7: yield_bps is outside [0, 10_000].
-    YieldBpsOutOfRange { yield_bps: i128 },
-    /// I8: admin_threshold is 0 or exceeds the number of admins.
-    AdminThresholdInvalid { threshold: u32, admin_count: u32 },
-    /// Implicit: slash_bps is outside [0, 10_000].
-    SlashBpsOutOfRange { slash_bps: i128 },
-}
-
-impl core::fmt::Display for InvariantViolation {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::SolvencyViolated { contract_balance, total_locked_stake } =>
-                write!(f, "I1 violated: contract_balance={contract_balance} < total_locked_stake={total_locked_stake}"),
-            Self::LoanExceedsStake { loan_amount, total_stake } =>
-                write!(f, "I2 violated: loan_amount={loan_amount} > total_stake={total_stake}"),
-            Self::ActiveLoanWithoutVouches { .. } =>
-                write!(f, "I3 violated: active loan has no vouches"),
-            Self::RepaidExceedsPrincipalPlusYield { amount_repaid, max_allowed } =>
-                write!(f, "I4 violated: amount_repaid={amount_repaid} > principal+yield={max_allowed}"),
-            Self::InvalidStatusTransition { from, to } =>
-                write!(f, "I5 violated: invalid status transition {from} -> {to}"),
-            Self::SlashTreasuryNegative { balance } =>
-                write!(f, "I6 violated: slash_treasury={balance} < 0"),
-            Self::YieldBpsOutOfRange { yield_bps } =>
-                write!(f, "I7 violated: yield_bps={yield_bps} not in [0, 10000]"),
-            Self::AdminThresholdInvalid { threshold, admin_count } =>
-                write!(f, "I8 violated: admin_threshold={threshold}, admins={admin_count}"),
-            Self::SlashBpsOutOfRange { slash_bps } =>
-                write!(f, "Implicit violated: slash_bps={slash_bps} not in [0, 10000]"),
-        }
-    }
-}
-
-// ── verify_invariants ─────────────────────────────────────────────────────────
-
-/// Check all 8 documented invariants (plus implicit slash_bps range invariant)
-/// against current on-chain state.
-///
-/// # Arguments
-/// * `env` – the test environment (must be called inside `as_contract`)
-/// * `contract_id` – the deployed contract address
-/// * `token` – the primary token address
-/// * `borrowers` – list of all borrower addresses that have ever had a loan
-///
-/// # Returns
-/// `Ok(())` if all invariants hold; `Err(InvariantViolation)` for the first breach found.
-pub fn verify_invariants(
+/// Test-only wrapper: enters `contract_id`'s storage context via the
+/// testutils-only `as_contract`, then delegates to
+/// `verify_invariants_in_contract` (which itself has no testutils dependency
+/// and is what the live `check_invariants` entrypoint calls directly, since a
+/// `#[contractimpl]` method already runs inside its own contract's context).
+fn verify_invariants(
     env: &Env,
     contract_id: &Address,
     token: &Address,
     borrowers: &[Address],
 ) -> Result<(), InvariantViolation> {
     env.as_contract(contract_id, || {
-        // ── I7: yield_bps in [0, 10_000] ────────────────────────────────────
-        let cfg: Config = env
-            .storage()
-            .instance()
-            .get(&DataKey::Config)
-            .expect("contract not initialised");
-
-        if cfg.yield_bps < 0 || cfg.yield_bps > 10_000 {
-            return Err(InvariantViolation::YieldBpsOutOfRange {
-                yield_bps: cfg.yield_bps,
-            });
-        }
-
-        // ── Implicit: slash_bps in [0, 10_000] ──────────────────────────────
-        if cfg.slash_bps < 0 || cfg.slash_bps > 10_000 {
-            return Err(InvariantViolation::SlashBpsOutOfRange {
-                slash_bps: cfg.slash_bps,
-            });
-        }
-
-        // ── I8: 1 ≤ admin_threshold ≤ admins.len() ──────────────────────────
-        let admin_count = cfg.admins.len();
-        if cfg.admin_threshold == 0 || cfg.admin_threshold > admin_count {
-            return Err(InvariantViolation::AdminThresholdInvalid {
-                threshold: cfg.admin_threshold,
-                admin_count,
-            });
-        }
-
-        // ── I6: slash treasury ≥ 0 ──────────────────────────────────────────
-        let slash_treasury: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::SlashTreasury)
-            .unwrap_or(0i128);
-
-        if slash_treasury < 0 {
-            return Err(InvariantViolation::SlashTreasuryNegative {
-                balance: slash_treasury,
-            });
-        }
-
-        // ── Per-borrower invariants (I2, I3, I4, I5) ────────────────────────
-        let mut total_locked_stake: i128 = 0i128;
-
-        for borrower in borrowers {
-            // Check active loan
-            let maybe_loan_id: Option<u64> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::ActiveLoan(borrower.clone()));
-
-            if let Some(loan_id) = maybe_loan_id {
-                let loan: LoanRecord = match env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::Loan(loan_id))
-                {
-                    Some(l) => l,
-                    None => continue,
-                };
-
-                // ── I5: status must be Active for an entry in ActiveLoan ──
-                if loan.status != LoanStatus::Active {
-                    return Err(InvariantViolation::InvalidStatusTransition {
-                        from: "non-Active",
-                        to: "ActiveLoan slot still set",
-                    });
-                }
-
-                // ── I4: amount_repaid ≤ amount + total_yield ────────────────
-                let max_repaid = loan.amount.saturating_add(loan.total_yield);
-                if loan.amount_repaid > max_repaid {
-                    return Err(InvariantViolation::RepaidExceedsPrincipalPlusYield {
-                        amount_repaid: loan.amount_repaid,
-                        max_allowed: max_repaid,
-                    });
-                }
-
-                // ── Collect vouches for I1, I2, I3 ─────────────────────────
-                let vouches: Vec<VouchRecord> = env
-                    .storage()
-                    .persistent()
-                    .get(&DataKey::Vouches(borrower.clone()))
-                    .unwrap_or_else(|| Vec::new(env));
-
-                // ── I3: active loan requires vouches ─────────────────────────
-                if vouches.is_empty() {
-                    return Err(InvariantViolation::ActiveLoanWithoutVouches {
-                        borrower_debug: "borrower",
-                    });
-                }
-
-                // ── I2: loan.amount ≤ total_stake × ratio/100 ───────────────
-                let token_stake: i128 = vouches
-                    .iter()
-                    .filter(|v| v.token == loan.token_address)
-                    .map(|v| v.stake)
-                    .fold(0i128, |acc, s| acc.saturating_add(s));
-
-                let max_loan =
-                    token_stake.saturating_mul(cfg.max_loan_to_stake_ratio as i128) / 100;
-                if loan.amount > max_loan && max_loan > 0 {
-                    return Err(InvariantViolation::LoanExceedsStake {
-                        loan_amount: loan.amount,
-                        total_stake: token_stake,
-                    });
-                }
-
-                // Accumulate locked stake for I1
-                for v in vouches.iter() {
-                    if v.token == loan.token_address {
-                        total_locked_stake = total_locked_stake.saturating_add(v.stake);
-                    }
-                }
-            }
-        }
-
-        // ── I1: contract token balance ≥ total locked stake ─────────────────
-        let token_client = soroban_sdk::token::Client::new(env, token);
-        let contract_balance = token_client.balance(contract_id);
-
-        if contract_balance < total_locked_stake {
-            return Err(InvariantViolation::SolvencyViolated {
-                contract_balance,
-                total_locked_stake,
-            });
-        }
-
-        Ok(())
+        verify_invariants_in_contract(env, contract_id, token, borrowers)
     })
 }
 

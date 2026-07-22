@@ -451,6 +451,56 @@ pub fn register_borrower_if_needed(env: &Env, borrower: &Address) {
     }
 }
 
+// ── Pagination (Issue #1146) ──────────────────────────────────────────────────
+
+/// Slice `items[offset..offset+limit]` out of an unbounded persistent-storage
+/// `Vec`, capping `limit` to `MAX_PAGE_SIZE`, so a single call's cost is
+/// bounded by the page size rather than the collection's total length.
+///
+/// Returns the page plus `next_cursor`: `Some(offset)` to pass on the next
+/// call, or `None` once the end of `items` has been reached.
+pub fn paginate_vec<T>(env: &Env, items: &Vec<T>, offset: u32, limit: u32) -> (Vec<T>, Option<u32>)
+where
+    T: Clone + soroban_sdk::TryFromVal<Env, soroban_sdk::Val> + soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    let capped_limit = limit.clamp(1, crate::types::MAX_PAGE_SIZE);
+    let len = items.len();
+    let mut page = Vec::new(env);
+
+    if offset >= len {
+        return (page, None);
+    }
+
+    let end = (offset + capped_limit).min(len);
+    for i in offset..end {
+        page.push_back(items.get(i).unwrap());
+    }
+
+    let next_cursor = if end < len { Some(end) } else { None };
+    (page, next_cursor)
+}
+
+/// Total number of borrowers ever registered (Issue #1146). Lets an operator
+/// cross-check an off-chain indexer's derived address set against ground
+/// truth on-chain without reading the full unbounded `BorrowerList`.
+pub fn get_borrower_count(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, Vec<Address>>(&DataKey::BorrowerList)
+        .map(|l| l.len())
+        .unwrap_or(0)
+}
+
+/// Paginated read of the global `BorrowerList` (Issue #1146).
+pub fn get_borrower_list_page(env: &Env, offset: u32, limit: u32) -> (Vec<Address>, Option<u32>) {
+    let list: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::BorrowerList)
+        .unwrap_or(Vec::new(env));
+    paginate_vec(env, &list, offset, limit)
+}
+
 pub fn primary_token(env: &Env) -> token::Client {
     token::Client::new(env, &config(env).token)
 }
