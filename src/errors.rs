@@ -240,4 +240,8 @@ EmergencyBypassNotAuthorised = 131,
     InvalidDynamicRateConfig = 172,
     /// Attestor reported fewer origin-chain confirmations than the required minimum.
     InsufficientBridgeConfirmations = 173,
+    /// A live protocol invariant check failed (see `crate::invariants`).
+    InvariantViolation = 178,
+    /// The withdrawal queue has reached its maximum size.
+    WithdrawalQueueFull = 179,
 }

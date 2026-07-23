@@ -6,5 +6,7 @@ mod cross_chain_attestation_test;
 mod dynamic_rate_oracle_test;
 #[path = "invariants_test.rs"]
 mod invariants_test;
+#[path = "merkle_tree_test.rs"]
+mod merkle_tree_test;
 #[path = "withdrawal_queue_test.rs"]
 mod withdrawal_queue_test;
