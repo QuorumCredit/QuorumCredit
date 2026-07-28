@@ -26,6 +26,7 @@ use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, String, Vec,};
 
 pub mod admin;
+pub mod arbitrage_prevention;
 pub mod audit;
 pub mod batch_transfer;
 pub mod bridge;
@@ -33,6 +34,8 @@ pub mod cache;
 pub mod cooldown_bypass;
 pub mod credit_score;
 pub mod cross_chain;
+pub mod cross_chain_auction;
+pub mod cross_chain_governance;
 pub mod differential_testing;
 pub mod errors;
 pub mod flash_loan;
@@ -42,6 +45,7 @@ pub mod helpers;
 pub mod insurance;
 pub mod invariants;
 pub mod lazy_slash;
+pub mod liquidity_farming;
 pub mod loan;
 pub mod maturity;
 pub mod merkle_tree;
@@ -90,6 +94,14 @@ mod contingent_loan_test;
 mod cross_chain_test_scenarios;
 #[cfg(test)]
 mod loan_tranching_test;
+#[cfg(test)]
+mod arbitrage_prevention_test;
+#[cfg(test)]
+mod cross_chain_governance_test;
+#[cfg(test)]
+mod cross_chain_auction_test;
+#[cfg(test)]
+mod liquidity_farming_test;
 
 pub use errors::ContractError;
 pub use types::*;

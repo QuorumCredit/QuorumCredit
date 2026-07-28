@@ -807,6 +807,32 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
+    
+    // ── Issue #967: Arbitrage Prevention ──────────────────────────────────
+    /// (token_a, token_b) → ExchangeRate
+    ExchangeRate(Address, Address),
+    /// (token_a, token_b) → RateHistory
+    RateHistory(Address, Address),
+    
+    // ── Issue #970: Cross-Chain Governance ────────────────────────────────
+    /// proposal_id → CrossChainProposal
+    CrossChainProposal(u64),
+    /// (proposal_id, voter) → CrossChainVote
+    CrossChainVote(u64, Address),
+    
+    // ── Issue #974: Cross-Chain Auction ───────────────────────────────────
+    /// auction_id → CrossChainAuction
+    CrossChainAuction(u64),
+    /// (auction_id, bidder) → Bid
+    AuctionBid(u64, Address),
+    /// auction_id → AuctionSettlement
+    AuctionSettlement(u64),
+    
+    // ── Issue #978: Liquidity Farming ─────────────────────────────────────
+    /// pool_id → LiquidityFarmPool
+    FarmPool(u64),
+    /// (pool_id, lp_provider) → FarmingPosition
+    FarmingPosition(u64, Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
