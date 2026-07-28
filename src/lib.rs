@@ -93,6 +93,8 @@ mod contingent_loan_test;
 mod cross_chain_test_scenarios;
 #[cfg(test)]
 mod loan_tranching_test;
+#[cfg(test)]
+mod features_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -179,6 +181,7 @@ impl QuorumCreditContract {
                 immunity_period_seconds: 0,
                 insurance_premium_bps: 0,
                 liquidity_tier_yield_bonus: Vec::new(&env),
+                score_decay_per_month: DEFAULT_REPUTATION_SCORE_DECAY_BPS,
             },
         );
 
@@ -2372,6 +2375,31 @@ impl QuorumCreditContract {
         admin::remove_allowed_token(env, admin_signers, token)
     }
 
+    /// Issue #1073: Set blacklist reason for a borrower.
+    pub fn set_blacklist_reason(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        reason: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        admin::set_blacklist_reason(env, admin_signers, borrower, reason)
+    }
+
+    /// Issue #1073: Get blacklist reason for a borrower.
+    pub fn get_blacklist_reason(env: Env, borrower: Address) -> Option<soroban_sdk::Bytes> {
+        admin::get_blacklist_reason(env, borrower)
+    }
+
+    /// Issue #1072: Apply reputation score decay to a borrower.
+    pub fn apply_reputation_decay(env: Env, borrower: Address) -> Result<(), ContractError> {
+        credit_score::apply_reputation_decay(&env, &borrower)
+    }
+
+    /// Issue #1072: Batch apply reputation score decay to multiple borrowers.
+    pub fn apply_reputation_decay_batch(env: Env, borrowers: Vec<Address>) -> Result<u32, ContractError> {
+        credit_score::apply_reputation_decay_batch(&env, borrowers)
+    }
+
     // ── Views ─────────────────────────────────────────────────────────────────
 
     pub fn is_initialized(env: Env) -> bool {
@@ -2809,6 +2837,19 @@ impl QuorumCreditContract {
         payment_amount: i128,
     ) -> Result<(), ContractError> {
         bridge::repay_with_swap(env, borrower, payment_token, payment_amount)
+    }
+
+    /// Issue #965: Atomic cross-chain repayment with bridge attestation verification.
+    /// Enables borrowers to repay loans from other chains with atomic semantics.
+    pub fn repay_cross_chain_atomic(
+        env: Env,
+        origin_chain: u32,
+        loan_id: u64,
+        borrower: Address,
+        payment_amount: i128,
+        attestation: BridgeAttestation,
+    ) -> Result<(), ContractError> {
+        bridge::repay_cross_chain_atomic(env, origin_chain, loan_id, borrower, payment_amount, attestation)
     }
 
     // ── Issue #1077: Dynamic yield based on token liquidity ───────────────────

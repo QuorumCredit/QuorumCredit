@@ -627,3 +627,137 @@ mod tests {
         );
     }
 }
+
+/// Issue #965: Atomic cross-chain repayment with bridge attestation verification.
+///
+/// This function enables a borrower to repay a loan from another chain by:
+/// 1. Verifying that the repayment actually occurred on the origin chain (via bridge attestation)
+/// 2. Atomically updating the local loan state ONLY if verification succeeds
+/// 3. Returning an error if verification fails (no partial state changes)
+///
+/// **Atomic semantics**: The repayment record is updated and events are published
+/// only after successful attestation verification. If verification fails at any point,
+/// the function returns early with no state mutations.
+///
+/// **Parameters:**
+/// - `origin_chain`: The chain ID where the repayment originated (0 = local/Stellar)
+/// - `loan_id`: The loan ID on the origin chain
+/// - `borrower`: The borrower address (must match the attestation)
+/// - `payment_amount`: Amount repaid (in origin chain's stroops equivalent)
+/// - `attestation`: Bridge-signed proof that repayment occurred on origin chain
+///
+/// **Errors:**
+/// - `InvalidToken`: Attestation references unknown token
+/// - `InsufficientFunds`: Payment amount invalid or insufficient
+/// - `NoActiveLoan`: Borrower has no active or defaulted loan
+/// - `UnauthorizedCaller`: Attestation doesn't match borrower address
+/// - `StaleBridgeAttestation`: Attestation timestamp is too old
+pub fn repay_cross_chain_atomic(
+    env: Env,
+    origin_chain: u32,
+    loan_id: u64,
+    borrower: Address,
+    payment_amount: i128,
+    attestation: crate::cross_chain::BridgeAttestation,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+    
+    // Load the active (or defaulted) loan for this borrower
+    let active_loan_id: Option<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ActiveLoan(borrower.clone()));
+
+    let mut loan: LoanRecord = match active_loan_id {
+        Some(id) => {
+            let record: Option<LoanRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Loan(id));
+            match record {
+                Some(r) if r.status == LoanStatus::Active || r.status == LoanStatus::Defaulted => r,
+                _ => return Err(ContractError::NoActiveLoan),
+            }
+        }
+        None => {
+            // Try latest loan if it is defaulted
+            let latest_id: Option<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LatestLoan(borrower.clone()));
+            match latest_id {
+                Some(id) => {
+                    let record: Option<LoanRecord> = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::Loan(id));
+                    match record {
+                        Some(r) if r.status == LoanStatus::Defaulted => r,
+                        _ => return Err(ContractError::NoActiveLoan),
+                    }
+                }
+                None => return Err(ContractError::NoActiveLoan),
+            }
+        }
+    };
+
+    // Validate payment amount
+    if payment_amount <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    // Phase 1: Verify the bridge attestation (all-or-nothing)
+    // This is the critical atomic boundary — if attestation fails, return immediately
+    // without any state mutations.
+    crate::cross_chain::verify_bridge_message(
+        env.clone(),
+        crate::cross_chain::CrossChainLoanMetadata {
+            origin_chain,
+            loan_id,
+            borrower: borrower.clone(),
+            amount: payment_amount,
+            status: LoanStatus::Repaid,
+            reputation_score: 0, // Not used for repayment verification
+        },
+        attestation.clone(),
+    )?;
+
+    // Phase 2: Attestation verified — atomically update local state
+    
+    // Transfer payment from borrower to contract
+    let token_client = token::Client::new(&env, &loan.token_address);
+    token_client.transfer(&borrower, &env.current_contract_address(), &payment_amount);
+
+    // Update loan record with repayment
+    let now = env.ledger().timestamp();
+    loan.amount_repaid = loan
+        .amount_repaid
+        .checked_add(payment_amount)
+        .ok_or(ContractError::ArithmeticError)?;
+    loan.repayment_timestamp = Some(now);
+
+    // Check if fully repaid
+    let total_owed = loan
+        .amount
+        .checked_add(loan.total_yield)
+        .ok_or(ContractError::ArithmeticError)?;
+    
+    let fully_repaid = loan.amount_repaid >= total_owed;
+    if fully_repaid {
+        loan.status = LoanStatus::Repaid;
+    }
+
+    // Persist updated loan record
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(loan.id), &loan);
+
+    // Emit event with cross-chain metadata
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("cross_chain_repay")),
+        (borrower.clone(), origin_chain, loan_id, payment_amount, fully_repaid),
+    );
+
+    Ok(())
+}

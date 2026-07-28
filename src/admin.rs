@@ -424,8 +424,48 @@ pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
     }
     env.storage()
         .persistent()
-        .set(&DataKey::Blacklisted(borrower), &true);
+        .set(&DataKey::Blacklisted(borrower.clone()), &true);
+    
+    // Emit blacklist event with timestamp
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("blacklist")),
+        (borrower.clone(), env.ledger().timestamp()),
+    );
 }
+
+/// Issue #1073: Set blacklist reason for a borrower with tracking.
+/// Reasons help borrowers understand why they were blacklisted and enable transparency.
+pub fn set_blacklist_reason(
+    env: Env,
+    admin_signers: Vec<Address>,
+    borrower: Address,
+    reason: soroban_sdk::Bytes,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
+        return Err(err);
+    }
+
+    // Store the reason
+    env.storage()
+        .persistent()
+        .set(&DataKey::BlacklistReason(borrower.clone()), &reason);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("blacklist_reason")),
+        (borrower.clone(), env.ledger().timestamp()),
+    );
+
+    Ok(())
+}
+
+/// Issue #1073: Get the blacklist reason for a borrower.
+pub fn get_blacklist_reason(env: Env, borrower: Address) -> Option<soroban_sdk::Bytes> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BlacklistReason(borrower))
+}
+
 
 pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     require_not_paused(&env).expect("contract paused");
