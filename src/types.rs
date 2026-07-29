@@ -166,6 +166,10 @@ pub const DEFERMENT_PERIOD_SECS: u64 = 30 * 24 * 60 * 60;
 /// Penalty applied to partial mid-loan withdrawals, in basis points (1000 = 10%).
 pub const PARTIAL_WITHDRAWAL_PENALTY_BPS: i128 = 1_000;
 
+/// Default reputation score decay per month in basis points (100 = 1% per month).
+/// Encourages active participation and prevents stale scores from granting perpetual benefits.
+pub const DEFAULT_REPUTATION_SCORE_DECAY_BPS: u32 = 100;
+
 /// Yield stream period in seconds (7 days).
 pub const YIELD_STREAM_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 
@@ -510,6 +514,7 @@ pub enum DataKey {
     Timelock(u64),   // proposal_id → TimelockProposal
     TimelockCounter, // u64 monotonically increasing proposal ID
     Blacklisted(Address), // borrower → bool permanently banned
+    BlacklistReason(Address), // borrower → Bytes reason for blacklisting (Issue #1073)
     VoucherWhitelist(Address), // voucher → bool allowed to vouch
     WhitelistEnabled, // bool: true when voucher whitelist is enabled (opt-in)
     ExtensionConsents(Address), // borrower → Vec<Address> vouchers who consented to extension
@@ -1248,6 +1253,8 @@ pub struct CreditScore {
     pub tier: CreditTier,
     /// Ledger timestamp when the score was last updated
     pub last_updated: u64,
+    /// Ledger timestamp when the score was last decayed (Issue #1072)
+    pub last_decay_timestamp: u64,
     /// Total number of loans taken
     pub total_loans: u32,
     /// Number of successfully repaid loans
@@ -1661,6 +1668,9 @@ pub struct Config {
     /// Index 0 = Tier 0 (most liquid, no bonus), 3 = Tier 3 (illiquid, max bonus).
     /// Example: [0, 50, 150, 300] means tier-3 tokens earn +300 bps extra yield.
     pub liquidity_tier_yield_bonus: Vec<i128>,
+    /// Issue #1072: Credit score decay rate per month in basis points (e.g. 100 = 1% per month).
+    /// Applied monthly to encourage active participation and prevent stale scores.
+    pub score_decay_per_month: u32,
     /// Issue #1287: Governance-adjustable cap on withdrawal-queue priority fees,
     /// in basis points of the voucher's own stake (default 1_000 = 10%).
     /// Replaces the compile-time constant `MAX_PRIORITY_FEE_BPS`.
