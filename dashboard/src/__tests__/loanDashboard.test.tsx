@@ -276,6 +276,57 @@ describe("useLoanSocket via LoanStatusDashboard", () => {
     });
     expect(mockSocket.emit).toHaveBeenCalledWith("subscribe", { borrower: "GABC_ADDR" });
   });
+
+  // #1297 — server's connectionQueue backpressure contract: on overflow the oldest
+  // queued "loan:update" is dropped and a "resync_required" control frame is sent
+  // instead (see server/src/ws/loanSocketServer.ts and connectionQueue.ts). The
+  // client must re-subscribe from the given cursor so Redux catches back up rather
+  // than staying stale forever.
+  it("re-subscribes with resumeFrom and catches Redux state up after a forced queue overflow", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC_ADDR" });
+      return null;
+    }
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    // Initial state landed via the normal loan:list reply to the mount-time subscribe.
+    const staleLoan: LoanRecord = { ...activeLoan, amount_repaid: 1_000_000 };
+    await act(async () => {
+      mockSocket.handlers["loan:list"]?.([staleLoan]);
+    });
+    expect(testStore.getState().loans.loans[0].amount_repaid).toBe(1_000_000);
+
+    // Server-side queue overflows: an intermediate loan:update is silently dropped
+    // (never reaches this handler) and the server instead emits resync_required
+    // carrying the cursor the client should resume from.
+    await act(async () => {
+      mockSocket.handlers["resync_required"]?.({ reason: "queue_overflow", resumeFrom: 42 });
+    });
+
+    // Client must ask the server to replay from that cursor.
+    expect(mockSocket.emit).toHaveBeenCalledWith("subscribe", {
+      borrower: "GABC_ADDR",
+      since: 42,
+    });
+
+    // Redux still holds the stale value until the server's authoritative reply lands.
+    expect(testStore.getState().loans.loans[0].amount_repaid).toBe(1_000_000);
+
+    // Server responds to the resubscribe with the authoritative, caught-up state
+    // (reflecting the update that was dropped during the overflow).
+    const caughtUpLoan: LoanRecord = { ...activeLoan, amount_repaid: 10_000_000, status: "Repaid" };
+    await act(async () => {
+      mockSocket.handlers["loan:list"]?.([caughtUpLoan]);
+    });
+
+    expect(testStore.getState().loans.loans).toHaveLength(1);
+    expect(testStore.getState().loans.loans[0].amount_repaid).toBe(10_000_000);
+    expect(testStore.getState().loans.loans[0].status).toBe("Repaid");
+  });
 });
 
 // ---------------------------------------------------------------------------

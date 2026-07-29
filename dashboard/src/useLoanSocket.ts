@@ -19,9 +19,12 @@ export interface UseLoanSocketOptions {
  * Redux actions as the server pushes events.
  *
  * Events handled:
- *  - "loan:update"    → upsertLoan
- *  - "loan:list"      → setLoans
- *  - "reputation"     → setReputation
+ *  - "loan:update"       → upsertLoan
+ *  - "loan:list"         → setLoans
+ *  - "reputation"        → setReputation
+ *  - "resync_required"   → re-subscribes with `since: resumeFrom` to recover
+ *                          any state dropped by the server's connectionQueue
+ *                          backpressure policy (see server/src/ws/connectionQueue.ts)
  */
 export function useLoanSocket({ url, borrower, apiKey }: UseLoanSocketOptions): void {
   const dispatch = useDispatch<AppDispatch>();
@@ -44,6 +47,14 @@ export function useLoanSocket({ url, borrower, apiKey }: UseLoanSocketOptions): 
     socket.on("loan:update", (loan: LoanRecord) => dispatch(upsertLoan(loan)));
     socket.on("loan:list", (loans: LoanRecord[]) => dispatch(setLoans(loans)));
     socket.on("reputation", (rep: ReputationInfo) => dispatch(setReputation(rep)));
+
+    // The server drops the oldest queued message on backpressure overflow and
+    // emits this control frame instead of leaving the client to silently operate
+    // on a gap. Re-subscribing with `since: resumeFrom` triggers a fresh
+    // "loan:list" reply covering everything from that cursor forward.
+    socket.on("resync_required", (payload: { reason: string; resumeFrom: number }) => {
+      socket.emit("subscribe", { borrower, since: payload.resumeFrom });
+    });
 
     return () => {
       socket.disconnect();
