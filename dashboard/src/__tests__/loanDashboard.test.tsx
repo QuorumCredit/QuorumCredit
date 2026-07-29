@@ -361,3 +361,95 @@ describe("LoanCard", () => {
     expect(screen.getByRole("article", { name: "Loan 1" })).toBeInTheDocument();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Error Boundary — #1303
+// ---------------------------------------------------------------------------
+
+import { LoanCardErrorBoundary, DashboardErrorBoundary } from "../ErrorBoundary";
+
+// A component that unconditionally throws during render.
+const ThrowingComponent: React.FC<{ message?: string }> = ({ message = "render error" }) => {
+  throw new Error(message);
+};
+
+describe("LoanCardErrorBoundary", () => {
+  // Suppress the expected React error output so test logs stay clean.
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders children normally when no error is thrown", () => {
+    render(
+      <LoanCardErrorBoundary>
+        <span>healthy content</span>
+      </LoanCardErrorBoundary>
+    );
+    expect(screen.getByText("healthy content")).toBeInTheDocument();
+  });
+
+  it("shows the card-level fallback when a child throws", () => {
+    render(
+      <LoanCardErrorBoundary>
+        <ThrowingComponent />
+      </LoanCardErrorBoundary>
+    );
+    expect(screen.getByRole("alert", { name: "Loan card error" })).toBeInTheDocument();
+    expect(screen.getByText(/Unable to display this loan/i)).toBeInTheDocument();
+  });
+
+  it("one broken LoanCard does not crash sibling cards (#1303)", () => {
+    // Verify that a boundary around a throwing component leaves its sibling
+    // boundaries (and their children) completely unaffected.
+    render(
+      <div>
+        {/* Healthy sibling — must remain visible */}
+        <LoanCardErrorBoundary>
+          <span data-testid="healthy-card">Healthy card</span>
+        </LoanCardErrorBoundary>
+        {/* Broken sibling — simulates a malformed WebSocket payload causing a render crash */}
+        <LoanCardErrorBoundary>
+          <ThrowingComponent message="malformed payload" />
+        </LoanCardErrorBoundary>
+      </div>
+    );
+
+    // Healthy card still visible — the crash is isolated
+    expect(screen.getByTestId("healthy-card")).toBeInTheDocument();
+    // Broken card shows fallback, not a blank screen
+    expect(screen.getByRole("alert", { name: "Loan card error" })).toBeInTheDocument();
+    expect(screen.getByText(/Unable to display this loan/i)).toBeInTheDocument();
+  });
+});
+
+describe("DashboardErrorBoundary", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders children normally when no error is thrown", () => {
+    render(
+      <DashboardErrorBoundary>
+        <span>dashboard content</span>
+      </DashboardErrorBoundary>
+    );
+    expect(screen.getByText("dashboard content")).toBeInTheDocument();
+  });
+
+  it("shows the dashboard-level fallback when a child throws", () => {
+    render(
+      <DashboardErrorBoundary>
+        <ThrowingComponent message="fatal dashboard error" />
+      </DashboardErrorBoundary>
+    );
+    expect(screen.getByRole("alert", { name: "Dashboard error" })).toBeInTheDocument();
+    expect(screen.getByText(/Dashboard Error/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Reload/i })).toBeInTheDocument();
+  });
+});
