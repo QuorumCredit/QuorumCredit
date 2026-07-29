@@ -122,13 +122,13 @@ const LoanCard: React.FC<LoanCardProps> = ({ loan, accessibility }) => {
           <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
             Principal
           </div>
-          <div style={{ fontWeight: 700, fontSize: 16, color: "#3b82f6" }}>{principal.toFixed(2)} XLM</div>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "#3b82f6" }}>{principal} XLM</div>
         </div>
         <div>
           <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
             Yield Earned
           </div>
-          <div style={{ fontWeight: 700, fontSize: 16, color: "#10b981" }}>+{yieldEarned.toFixed(4)} XLM</div>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "#10b981" }}>+{yieldEarned} XLM</div>
         </div>
         <div>
           <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
@@ -176,7 +176,7 @@ const LoanCard: React.FC<LoanCardProps> = ({ loan, accessibility }) => {
 
       {/* Loan amount repaid details */}
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#94a3b8", padding: "8px 0", borderTop: "1px solid rgba(148, 163, 184, 0.1)" }}>
-        <span>Repaid: {stroopsToXlm(loan.amount_repaid).toFixed(2)} / {principal.toFixed(2)} XLM</span>
+        <span>Repaid: {stroopsToXlm(loan.amount_repaid)} / {principal} XLM</span>
         <span>ID: #{loan.id}</span>
       </div>
     </article>
