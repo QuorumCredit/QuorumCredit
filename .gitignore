@@ -8,12 +8,14 @@
 .env.local
 .env.*.local
 
-# Test snapshots (Issue #1283-1286: keep test snapshots out of repo)
+# Test snapshots (keep all snapshot formats out of repo)
 test_snapshots/
 **/test_snapshots/
 **/*.snap
 **/__snapshots__/
 **/snapshots/
+**/*.snapshot
+**/snapshot_tests/
 
 # WASM build artifacts
 *.wasm
@@ -67,6 +69,7 @@ services/*/dist/
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
+mutants.out.lock
 
 # Runtime backup archives/snapshots (scripts/backup.sh, scripts/test_backup_restore.sh)
 /backups/
@@ -87,3 +90,27 @@ services/indexer/dist/
 
 # Restore-drill state files (scripts/restore.sh idempotent/resumable scenario 6)
 *.state.json
+
+# TypeScript build output
+*.tsbuildinfo
+*.d.ts.map
+
+# Temporary / OS files
+*.tmp
+*.temp
+.DS_Store
+ehthumbs.db
+
+# Kiro agent scratch files
+.kiro/agents/
+
+# Benchmark / profiling output
+perf.data
+perf.data.old
+flamegraph.svg
+*.perf
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo

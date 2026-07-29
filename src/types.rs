@@ -29,8 +29,9 @@ pub const BPS_DENOMINATOR: i128 = 10_000;
 /// the default 2% rate. Amounts below this truncate to zero yield.
 /// 1 XLM = 10,000,000 stroops.
 pub const DEFAULT_MIN_YIELD_STAKE: i128 = 50;
-/// Referral bonus paid to the referrer on full repayment, in basis points (100 = 1% of loan amount).
-pub const DEFAULT_REFERRAL_BONUS_BPS: u32 = 100; // 1% of loan amount
+/// Referral bonus paid to the referrer on full repayment, in basis points.
+/// Issue #1247 specifies 10% of the referrer's first interest earned (1000 bps).
+pub const DEFAULT_REFERRAL_BONUS_BPS: u32 = 1000; // 10% of first loan interest
 /// Minimum age of a vouch before it can be used for a loan, in seconds (60 = 1 minute).
 pub const MIN_VOUCH_AGE: u64 = 60; // 1 minute
 /// Default minimum vouch age before loan eligibility, in seconds (24 hours).
@@ -123,6 +124,16 @@ pub const MAX_EXTENSIONS_PER_LOAN: u32 = 2;
 
 /// Default liquidity mining reward rate in basis points per epoch (50 = 0.5% per 7 days).
 pub const DEFAULT_LIQUIDITY_MINING_RATE_BPS: u32 = 50;
+
+/// Issue #1238: Precision scalar used in yield-per-token accounting (10^12).
+/// Yield-per-token is stored multiplied by this factor to preserve sub-stroop precision.
+pub const YIELD_PER_TOKEN_PRECISION: i128 = 1_000_000_000_000;
+
+/// Issue #1238: Default staking pool yield rate in basis points per year (500 = 5% APY).
+pub const DEFAULT_STAKING_POOL_APY_BPS: u32 = 500;
+
+/// Issue #1238: Minimum unstake queue delay in seconds (24 hours).
+pub const STAKING_UNSTAKE_DELAY_SECS: u64 = 24 * 60 * 60;
 
 /// Default dynamic slash threshold setting (false = disabled by default).
 pub const DEFAULT_DYNAMIC_SLASH_THRESHOLD: bool = false;
@@ -835,6 +846,24 @@ pub enum DataKey {
     MiningClaimed(u64, Address),
     /// (campaign_id, participant) → i128 total participation (stake-seconds accumulated)
     MiningParticipation(u64, Address),
+    // ── Issue #1238: Staking Pool with Yield Farming ──────────────────────────
+    /// pool_id → StakingPool record
+    StakingPool(u64),
+    /// Monotonically increasing staking pool ID counter
+    StakingPoolCounter,
+    /// (pool_id, staker) → i128 amount staked (stake tokens minted to staker)
+    StakingPoolStake(u64, Address),
+    /// (pool_id, staker) → u64 timestamp of last stake/claim
+    StakingPoolLastClaim(u64, Address),
+    // ── Issue #1247: Referral Rewards ─────────────────────────────────────────
+    /// referrer → u64 number of completed referral conversions
+    ReferralCount(Address),
+    /// referrer → i128 total referral rewards earned (in stroops)
+    ReferralRewardsEarned(Address),
+    /// referrer → Bytes referral code (hex-encoded address prefix)
+    ReferralCode(Address),
+    /// code_hash → Address referrer (reverse mapping for code lookup)
+    ReferralCodeOwner(soroban_sdk::BytesN<32>),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -909,6 +938,88 @@ pub struct MiningCampaign {
     pub total_participation: i128,
     /// Number of unique participants who have recorded participation.
     pub participant_count: u64,
+}
+
+// ── Issue #1238: Staking Pool with Yield Farming ──────────────────────────────
+
+/// Lifecycle state of a staking pool.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StakingPoolStatus {
+    /// Pool is open and accepting stakes.
+    Active,
+    /// Pool is processing withdrawals; no new stakes accepted.
+    Draining,
+    /// Pool is closed; all stakes have been returned.
+    Closed,
+}
+
+/// Issue #1238: A yield-bearing staking pool that lets capital holders earn
+/// returns sourced from the protocol's lending operations.
+///
+/// Stakers deposit tokens and receive a proportional share of yield accrued
+/// from the lending yield reserve over time.  Withdrawals are queued to
+/// prevent bank-run dynamics; the queue is drained when yield is collected.
+#[contracttype]
+#[derive(Clone)]
+pub struct StakingPool {
+    /// Unique pool identifier (1-indexed monotonic counter).
+    pub pool_id: u64,
+    /// Token staked in this pool (must be the protocol token or an allowed token).
+    pub token: Address,
+    /// Total tokens currently deposited by all stakers, in stroops.
+    pub total_staked: i128,
+    /// Accumulated yield per stroop (scaled by 1e12 for precision).
+    /// Updated each time yield is distributed from the lending reserve.
+    pub yield_per_token_scaled: i128,
+    /// Annual Percentage Yield in basis points, computed lazily on each distribution.
+    pub current_apy_bps: u32,
+    /// Total yield distributed to stakers since pool creation, in stroops.
+    pub total_yield_distributed: i128,
+    /// Timestamp of the last yield distribution event.
+    pub last_yield_timestamp: u64,
+    /// Pool lifecycle status.
+    pub status: StakingPoolStatus,
+    /// Timestamp when the pool was created.
+    pub created_at: u64,
+}
+
+/// Issue #1238: Per-staker position in a staking pool.
+/// Stored under `DataKey::StakingPoolStake(pool_id, staker)`.
+#[contracttype]
+#[derive(Clone)]
+pub struct StakerPosition {
+    /// Staker address.
+    pub staker: Address,
+    /// Amount currently staked, in stroops.
+    pub amount: i128,
+    /// Snapshot of `yield_per_token_scaled` at time of last claim/stake.
+    /// Used to compute pending rewards: (current - snapshot) * amount / 1e12.
+    pub yield_snapshot_scaled: i128,
+    /// Accumulated rewards not yet withdrawn, in stroops.
+    pub pending_rewards: i128,
+    /// Timestamp of the staker's last action (stake/unstake/claim).
+    pub last_action_timestamp: u64,
+    /// Whether there is a pending unstake in the withdrawal queue.
+    pub pending_unstake: bool,
+    /// Amount queued for unstaking (0 when `pending_unstake` is false).
+    pub queued_unstake_amount: i128,
+}
+
+// ── Issue #1247: Referral Rewards Program ─────────────────────────────────────
+
+/// Issue #1247: Referral leaderboard entry for a single referrer.
+#[contracttype]
+#[derive(Clone)]
+pub struct ReferralStats {
+    /// The referrer's address.
+    pub referrer: Address,
+    /// Number of referred borrowers who have completed at least one loan.
+    pub conversion_count: u64,
+    /// Total referral rewards earned (in stroops).
+    pub total_rewards_earned: i128,
+    /// Timestamp of the most recent referral conversion.
+    pub last_conversion_at: u64,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
