@@ -93,6 +93,26 @@ describe("stroopsToXlm", () => {
   it("STROOPS_PER_XLM constant equals 10_000_000", () => {
     expect(STROOPS_PER_XLM).toBe(10_000_000);
   });
+
+  // #1302 — precision beyond Number.MAX_SAFE_INTEGER
+  // Number.MAX_SAFE_INTEGER = 9_007_199_254_740_991 stroops ≈ 900,719,925 XLM
+  // Values beyond this silently lose precision via Number() cast.
+  // With BigInt arithmetic the result must be exact.
+  it("handles stroops beyond Number.MAX_SAFE_INTEGER exactly (no precision loss)", () => {
+    // 9_007_199_254_740_993n is Number.MAX_SAFE_INTEGER + 2, which collapses to
+    // Number.MAX_SAFE_INTEGER + 1 (an even number) when cast to a float — i.e.
+    // Number(9_007_199_254_740_993n) === 9_007_199_254_740_992 (off by 1).
+    const stroops = 9_007_199_254_740_993n;
+    // whole = 900_719_925 XLM, frac = stroops % 10_000_000n = 4_740_993 stroops
+    // Expected: "900719925.4740993"
+    expect(stroopsToXlm(stroops)).toBe("900719925.4740993");
+  });
+
+  it("handles a large round bigint value exactly", () => {
+    // 1 trillion XLM in stroops = 10^19
+    const oneTrillionXlmInStroops = 10_000_000_000_000_000_000n;
+    expect(stroopsToXlm(oneTrillionXlmInStroops)).toBe("1000000000000.0000000");
+  });
 });
 
 describe("xlmToStroops", () => {
@@ -272,14 +292,16 @@ describe("LoanCard", () => {
     );
   }
 
-  it("renders borrower address", () => {
+  it("renders borrower address (truncated)", () => {
     renderCard(activeLoan);
-    expect(screen.getByText("GABC1234BORROWER")).toBeInTheDocument();
+    // LoanCard truncates the borrower address: first 10 + "..." + last 10
+    expect(screen.getByText(/GABC1234BO/)).toBeInTheDocument();
   });
 
   it("renders loan purpose", () => {
     renderCard(activeLoan);
-    expect(screen.getByText("Business expansion")).toBeInTheDocument();
+    // LoanCard wraps the purpose in quotes
+    expect(screen.getByText(/"Business expansion"/)).toBeInTheDocument();
   });
 
   it("renders principal in XLM (7 decimal places)", () => {
@@ -290,8 +312,8 @@ describe("LoanCard", () => {
 
   it("renders yield in XLM", () => {
     renderCard(activeLoan);
-    // 200_000 stroops = 0.0200000 XLM
-    expect(screen.getByText("0.0200000 XLM")).toBeInTheDocument();
+    // 200_000 stroops = 0.0200000 XLM; LoanCard prefixes yield with "+"
+    expect(screen.getByText("+0.0200000 XLM")).toBeInTheDocument();
   });
 
   it("shows Active status badge", () => {
