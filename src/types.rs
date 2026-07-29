@@ -866,6 +866,19 @@ pub enum DataKey {
     MiningClaimed(u64, Address),
     /// (campaign_id, participant) → i128 total participation (stake-seconds accumulated)
     MiningParticipation(u64, Address),
+    // ── Issue #1070: Circuit Breaker for Rapid Default Cascade ─────────────────
+    /// Timestamp (u64) when the circuit breaker was last triggered (activated).
+    /// Used to enforce cooldown between successive circuit-breaker activations.
+    CircuitBreakerLastTriggered,
+    /// Default rate threshold (u32) in basis points at which the circuit breaker activates.
+    /// Stored separately to allow runtime updates via governance.
+    DefaultRateThreshold,
+    // ── Issue #1071: Insurance Fund Mechanism ──────────────────────────────────
+    /// Balance of the protocol's dedicated insurance fund (i128 stroops).
+    /// Pre-funded by admin or protocol fees; drawn down to cover slash shortfalls.
+    InsuranceFund,
+    /// Timestamp (u64) of the most recent insurance fund contribution.
+    InsuranceFundLastContribution,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1675,6 +1688,17 @@ pub struct Config {
     /// in basis points of the voucher's own stake (default 1_000 = 10%).
     /// Replaces the compile-time constant `MAX_PRIORITY_FEE_BPS`.
     pub max_priority_fee_cap_bps: i128,
+    /// Issue #1070: Default rate threshold (in basis points) that triggers circuit breaker.
+    /// Default: 10_000 = 100 basis points = 10% of total loans defaulted.
+    /// When `(default_count / total_loan_count) * 10_000 >= default_rate_threshold`,
+    /// the circuit breaker automatically pauses the protocol.
+    pub default_rate_threshold: u32,
+    /// Issue #1071: Insurance fund configuration — premium percentage of loan principal
+    /// to be collected and routed to the insurance pool (in basis points, e.g. 50 = 0.5%).
+    pub insurance_fund_premium_bps: u32,
+    /// Issue #1071: Maximum insurance payout as a percentage of total slashed amount
+    /// (in basis points, e.g. 2500 = 25%).
+    pub insurance_max_payout_bps: u32,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────

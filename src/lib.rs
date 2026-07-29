@@ -31,6 +31,7 @@ pub mod audit;
 pub mod batch_transfer;
 pub mod bridge;
 pub mod cache;
+pub mod circuit_breaker;
 pub mod cooldown_bypass;
 pub mod credit_score;
 pub mod cross_chain;
@@ -44,6 +45,7 @@ pub mod guarantor;
 pub mod helpers;
 pub mod insurance;
 pub mod invariants;
+pub mod lazy_default_detection;
 pub mod lazy_slash;
 pub mod liquidity_farming;
 pub mod loan;
@@ -84,6 +86,10 @@ mod multi_asset_test;
 mod referral_test;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod fuzz_stake_testing;
+#[cfg(test)]
+mod circuit_breaker_insurance_integration_test;
 // #[cfg(test)]
 // mod rbac_enforcement_test; // private API drift — blocks unrelated tests
 #[cfg(test)]
