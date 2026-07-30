@@ -363,10 +363,12 @@ pub fn calculate_credit_score(
     let total_borrowed = calculate_total_borrowed(env, borrower);
     let total_repaid = calculate_total_repaid(env, borrower);
 
+    let now = env.ledger().timestamp();
     let credit_score = CreditScore {
         score,
         tier,
-        last_updated: env.ledger().timestamp(),
+        last_updated: now,
+        last_decay_timestamp: now,
         total_loans,
         successful_repayments,
         defaults,
@@ -525,4 +527,90 @@ pub fn apply_tier_rewards_to_fee(
     let rewards = get_tier_rewards(env.clone(), credit_score.tier);
     let discount = base_fee_bps * rewards.fee_discount_bps as u32 / 10000;
     base_fee_bps - discount
+}
+
+/// Issue #1072: Apply monthly reputation score decay to incentivize active participation.
+///
+/// Reputation scores never decrease unless default. This function applies monthly decay
+/// to encourage active borrowing and prevent stale scores from granting perpetual benefits.
+///
+/// **Decay mechanics:**
+/// - Reads the borrower's current credit score and last_decay_timestamp
+/// - Calculates months elapsed since last decay
+/// - For each month elapsed, applies decay_bps percentage reduction
+/// - Updates last_decay_timestamp and stores updated score
+/// - Emits event with decay amount applied
+///
+/// **Example:** With score=700 and decay_bps=100 (1% per month):
+/// - After 1 month: 700 * (10000 - 100) / 10000 = 693
+/// - After 12 months: 700 * (9900/10000)^12 ≈ 616.5
+pub fn apply_reputation_decay(env: &Env, borrower: &Address) -> Result<(), ContractError> {
+    let cfg = crate::helpers::config(&env);
+    
+    // If decay is disabled (0 bps), skip
+    if cfg.score_decay_per_month == 0 {
+        return Ok(());
+    }
+
+    let mut credit_score = match get_credit_score(env.clone(), borrower.clone()) {
+        Some(score) => score,
+        None => return Ok(()), // No score to decay
+    };
+
+    let now = env.ledger().timestamp();
+    let elapsed_secs = now.saturating_sub(credit_score.last_decay_timestamp);
+    let secs_per_month = 30 * 24 * 60 * 60; // Simplified: 30-day month
+    
+    if elapsed_secs < secs_per_month {
+        return Ok(()); // Not yet time for monthly decay
+    }
+
+    let months_elapsed = (elapsed_secs / secs_per_month) as u32;
+    if months_elapsed == 0 {
+        return Ok(());
+    }
+
+    let original_score = credit_score.score;
+    
+    // Apply decay for each month: score *= (10000 - decay_bps) / 10000
+    // Simplified: apply total decay = score - (score * decay_bps * months / 10000)
+    let decay_per_month_bps = cfg.score_decay_per_month as i128;
+    let total_decay_basis = decay_per_month_bps * months_elapsed as i128;
+    
+    // Cap total decay at 100% (10000 bps) to prevent negative scores
+    let capped_decay = total_decay_basis.min(10000);
+    let decay_amount = (credit_score.score as i128 * capped_decay / 10000) as u32;
+    
+    credit_score.score = credit_score.score.saturating_sub(decay_amount);
+    credit_score.last_decay_timestamp = now;
+    
+    // Recalculate tier based on new score
+    credit_score.tier = calculate_tier(credit_score.score);
+
+    // Store updated credit score
+    env.storage()
+        .persistent()
+        .set(&DataKey::CreditScore(borrower.clone()), &credit_score);
+
+    env.events().publish(
+        (symbol_short!("credit"), symbol_short!("decay")),
+        (borrower.clone(), original_score, credit_score.score, decay_amount, months_elapsed),
+    );
+
+    Ok(())
+}
+
+/// Issue #1072: Batch apply reputation decay to multiple borrowers.
+/// Useful for monthly cron jobs that decay all active borrower scores.
+pub fn apply_reputation_decay_batch(
+    env: &Env,
+    borrowers: Vec<Address>,
+) -> Result<u32, ContractError> {
+    let mut count = 0u32;
+    for i in 0..borrowers.len() {
+        if let Ok(()) = apply_reputation_decay(env, &borrowers.get(i).unwrap()) {
+            count += 1;
+        }
+    }
+    Ok(count)
 }

@@ -23,6 +23,7 @@ import {
   metricsToCSV,
 } from "./analytics";
 import { useMetricsSocket } from "./useMetricsSocket";
+import { DashboardErrorBoundary } from "./ErrorBoundary";
 
 const XLM = 10_000_000;
 const fmt = (stroops: number) => (stroops / XLM).toFixed(2);
@@ -392,3 +393,18 @@ const KpiCard: React.FC<{
 );
 
 export default AnalyticsDashboard;
+
+// ---------------------------------------------------------------------------
+// Re-export wrapped in DashboardErrorBoundary for direct page-level use
+// ---------------------------------------------------------------------------
+
+/**
+ * AnalyticsDashboardWithBoundary — the AnalyticsDashboard wrapped in a
+ * DashboardErrorBoundary so any catastrophic render error degrades
+ * gracefully instead of blanking the page.
+ */
+export const AnalyticsDashboardWithBoundary: React.FC<AnalyticsDashboardProps> = (props) => (
+  <DashboardErrorBoundary>
+    <AnalyticsDashboard {...props} />
+  </DashboardErrorBoundary>
+);

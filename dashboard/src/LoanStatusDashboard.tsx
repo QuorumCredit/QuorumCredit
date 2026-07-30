@@ -4,6 +4,7 @@ import { store, RootState } from "./store";
 import { useLoanSocket } from "./useLoanSocket";
 import LoanCard, { type AccessibilitySettings } from "./LoanCard";
 import { Logo } from "./Logo";
+import { LoanCardErrorBoundary, DashboardErrorBoundary } from "./ErrorBoundary";
 
 // ---------------------------------------------------------------------------
 // Inner component — must be inside Provider
@@ -238,7 +239,9 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
                     (e.currentTarget as HTMLDivElement).style.boxShadow = "none";
                   }}
                 >
-                  <LoanCard loan={loan} accessibility={accessibility} />
+                  <LoanCardErrorBoundary>
+                    <LoanCard loan={loan} accessibility={accessibility} />
+                  </LoanCardErrorBoundary>
                 </div>
               ))}
             </div>
@@ -276,7 +279,9 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
                     overflow: "hidden",
                   }}
                 >
-                  <LoanCard loan={loan} accessibility={accessibility} />
+                  <LoanCardErrorBoundary>
+                    <LoanCard loan={loan} accessibility={accessibility} />
+                  </LoanCardErrorBoundary>
                 </div>
               ))}
             </div>
@@ -316,11 +321,16 @@ export interface LoanStatusDashboardProps {
  * - borrower: Stellar address of the borrower
  * - wsUrl: socket.io server base URL
  * - apiKey: optional API key for socket auth header
+ *
+ * Wrapped in a DashboardErrorBoundary so any catastrophic render error
+ * degrades gracefully instead of blanking the entire page.
  */
 const LoanStatusDashboard: React.FC<LoanStatusDashboardProps> = (props) => (
-  <Provider store={store}>
-    <DashboardInner {...props} />
-  </Provider>
+  <DashboardErrorBoundary>
+    <Provider store={store}>
+      <DashboardInner {...props} />
+    </Provider>
+  </DashboardErrorBoundary>
 );
 
 export default LoanStatusDashboard;

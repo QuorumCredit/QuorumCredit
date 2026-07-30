@@ -177,6 +177,10 @@ pub const DEFERMENT_PERIOD_SECS: u64 = 30 * 24 * 60 * 60;
 /// Penalty applied to partial mid-loan withdrawals, in basis points (1000 = 10%).
 pub const PARTIAL_WITHDRAWAL_PENALTY_BPS: i128 = 1_000;
 
+/// Default reputation score decay per month in basis points (100 = 1% per month).
+/// Encourages active participation and prevents stale scores from granting perpetual benefits.
+pub const DEFAULT_REPUTATION_SCORE_DECAY_BPS: u32 = 100;
+
 /// Yield stream period in seconds (7 days).
 pub const YIELD_STREAM_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 
@@ -521,6 +525,7 @@ pub enum DataKey {
     Timelock(u64),   // proposal_id → TimelockProposal
     TimelockCounter, // u64 monotonically increasing proposal ID
     Blacklisted(Address), // borrower → bool permanently banned
+    BlacklistReason(Address), // borrower → Bytes reason for blacklisting (Issue #1073)
     VoucherWhitelist(Address), // voucher → bool allowed to vouch
     WhitelistEnabled, // bool: true when voucher whitelist is enabled (opt-in)
     ExtensionConsents(Address), // borrower → Vec<Address> vouchers who consented to extension
@@ -837,6 +842,32 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
+    
+    // ── Issue #967: Arbitrage Prevention ──────────────────────────────────
+    /// (token_a, token_b) → ExchangeRate
+    ExchangeRate(Address, Address),
+    /// (token_a, token_b) → RateHistory
+    RateHistory(Address, Address),
+    
+    // ── Issue #970: Cross-Chain Governance ────────────────────────────────
+    /// proposal_id → CrossChainProposal
+    CrossChainProposal(u64),
+    /// (proposal_id, voter) → CrossChainVote
+    CrossChainVote(u64, Address),
+    
+    // ── Issue #974: Cross-Chain Auction ───────────────────────────────────
+    /// auction_id → CrossChainAuction
+    CrossChainAuction(u64),
+    /// (auction_id, bidder) → Bid
+    AuctionBid(u64, Address),
+    /// auction_id → AuctionSettlement
+    AuctionSettlement(u64),
+    
+    // ── Issue #978: Liquidity Farming ─────────────────────────────────────
+    /// pool_id → LiquidityFarmPool
+    FarmPool(u64),
+    /// (pool_id, lp_provider) → FarmingPosition
+    FarmingPosition(u64, Address),
     // ── Liquidity Mining Campaigns (Issue #1257) ─────────────────────────────
     /// campaign_id → MiningCampaign
     MiningCampaign(u64),
@@ -846,24 +877,19 @@ pub enum DataKey {
     MiningClaimed(u64, Address),
     /// (campaign_id, participant) → i128 total participation (stake-seconds accumulated)
     MiningParticipation(u64, Address),
-    // ── Issue #1238: Staking Pool with Yield Farming ──────────────────────────
-    /// pool_id → StakingPool record
-    StakingPool(u64),
-    /// Monotonically increasing staking pool ID counter
-    StakingPoolCounter,
-    /// (pool_id, staker) → i128 amount staked (stake tokens minted to staker)
-    StakingPoolStake(u64, Address),
-    /// (pool_id, staker) → u64 timestamp of last stake/claim
-    StakingPoolLastClaim(u64, Address),
-    // ── Issue #1247: Referral Rewards ─────────────────────────────────────────
-    /// referrer → u64 number of completed referral conversions
-    ReferralCount(Address),
-    /// referrer → i128 total referral rewards earned (in stroops)
-    ReferralRewardsEarned(Address),
-    /// referrer → Bytes referral code (hex-encoded address prefix)
-    ReferralCode(Address),
-    /// code_hash → Address referrer (reverse mapping for code lookup)
-    ReferralCodeOwner(soroban_sdk::BytesN<32>),
+    // ── Issue #1070: Circuit Breaker for Rapid Default Cascade ─────────────────
+    /// Timestamp (u64) when the circuit breaker was last triggered (activated).
+    /// Used to enforce cooldown between successive circuit-breaker activations.
+    CircuitBreakerLastTriggered,
+    /// Default rate threshold (u32) in basis points at which the circuit breaker activates.
+    /// Stored separately to allow runtime updates via governance.
+    DefaultRateThreshold,
+    // ── Issue #1071: Insurance Fund Mechanism ──────────────────────────────────
+    /// Balance of the protocol's dedicated insurance fund (i128 stroops).
+    /// Pre-funded by admin or protocol fees; drawn down to cover slash shortfalls.
+    InsuranceFund,
+    /// Timestamp (u64) of the most recent insurance fund contribution.
+    InsuranceFundLastContribution,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -1333,6 +1359,8 @@ pub struct CreditScore {
     pub tier: CreditTier,
     /// Ledger timestamp when the score was last updated
     pub last_updated: u64,
+    /// Ledger timestamp when the score was last decayed (Issue #1072)
+    pub last_decay_timestamp: u64,
     /// Total number of loans taken
     pub total_loans: u32,
     /// Number of successfully repaid loans
@@ -1746,10 +1774,24 @@ pub struct Config {
     /// Index 0 = Tier 0 (most liquid, no bonus), 3 = Tier 3 (illiquid, max bonus).
     /// Example: [0, 50, 150, 300] means tier-3 tokens earn +300 bps extra yield.
     pub liquidity_tier_yield_bonus: Vec<i128>,
+    /// Issue #1072: Credit score decay rate per month in basis points (e.g. 100 = 1% per month).
+    /// Applied monthly to encourage active participation and prevent stale scores.
+    pub score_decay_per_month: u32,
     /// Issue #1287: Governance-adjustable cap on withdrawal-queue priority fees,
     /// in basis points of the voucher's own stake (default 1_000 = 10%).
     /// Replaces the compile-time constant `MAX_PRIORITY_FEE_BPS`.
     pub max_priority_fee_cap_bps: i128,
+    /// Issue #1070: Default rate threshold (in basis points) that triggers circuit breaker.
+    /// Default: 10_000 = 100 basis points = 10% of total loans defaulted.
+    /// When `(default_count / total_loan_count) * 10_000 >= default_rate_threshold`,
+    /// the circuit breaker automatically pauses the protocol.
+    pub default_rate_threshold: u32,
+    /// Issue #1071: Insurance fund configuration — premium percentage of loan principal
+    /// to be collected and routed to the insurance pool (in basis points, e.g. 50 = 0.5%).
+    pub insurance_fund_premium_bps: u32,
+    /// Issue #1071: Maximum insurance payout as a percentage of total slashed amount
+    /// (in basis points, e.g. 2500 = 25%).
+    pub insurance_max_payout_bps: u32,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
