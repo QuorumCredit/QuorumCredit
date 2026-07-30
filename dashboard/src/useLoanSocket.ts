@@ -83,6 +83,14 @@ export function useLoanSocket({ url, borrower, apiKey }: UseLoanSocketOptions): 
 
     socket.on("reputation", (rep: ReputationInfo) => dispatch(setReputation(rep)));
 
+    // The server drops the oldest queued message on backpressure overflow and
+    // emits this control frame instead of leaving the client to silently operate
+    // on a gap. Re-subscribing with `since: resumeFrom` triggers a fresh
+    // "loan:list" reply covering everything from that cursor forward.
+    socket.on("resync_required", (payload: { reason: string; resumeFrom: number }) => {
+      socket.emit("subscribe", { borrower, since: payload.resumeFrom });
+    });
+
     return () => {
       socket.disconnect();
       dispatch(setConnected(false));
