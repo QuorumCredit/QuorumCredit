@@ -899,15 +899,45 @@ pub fn default_count(env: Env, borrower: Address) -> u32 {
 }
 
 pub fn register_referral(
-    _env: Env,
-    _borrower: Address,
-    _referrer: Address,
+    env: Env,
+    borrower: Address,
+    referrer: Address,
 ) -> Result<(), ContractError> {
-    Err(ContractError::InvalidStateTransition)
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    // Prevent self-referral.
+    if borrower == referrer {
+        return Err(ContractError::SelfReferralNotAllowed);
+    }
+
+    // Prevent double registration.
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, Address>(&DataKey::ReferredBy(borrower.clone()))
+        .is_some()
+    {
+        return Err(ContractError::ReferralAlreadyRegistered);
+    }
+
+    // Record the referrer for this borrower.
+    env.storage()
+        .persistent()
+        .set(&DataKey::ReferredBy(borrower.clone()), &referrer);
+
+    env.events().publish(
+        (symbol_short!("referral"), symbol_short!("register")),
+        (borrower, referrer),
+    );
+
+    Ok(())
 }
 
-pub fn get_referrer(_env: Env, _borrower: Address) -> Option<Address> {
-    None
+pub fn get_referrer(env: Env, borrower: Address) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ReferredBy(borrower))
 }
 
 // ── Issue #880: Co-Borrower Support ──────────────────────────────────────────

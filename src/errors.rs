@@ -261,4 +261,16 @@ EmergencyBypassNotAuthorised = 131,
     /// A large-loan approval was proposed for an amount at or below the
     /// configured large-loan threshold, so it does not require multi-sig.
     BelowLargeLoanThreshold = 186,
+    // ── Issue #1238: Staking Pool ─────────────────────────────────────────────
+    /// No staking pool found for the given pool_id.
+    StakingPoolNotFound = 187,
+    /// Operation requires an Active staking pool, but the pool is Draining or Closed.
+    StakingPoolNotActive = 188,
+    // ── Issue #1247: Referral Rewards ─────────────────────────────────────────
+    /// Referral code not found or does not correspond to any registered referrer.
+    ReferralCodeNotFound = 189,
+    /// Caller cannot refer themselves.
+    SelfReferralNotAllowed = 190,
+    /// This borrower already has a referrer registered.
+    ReferralAlreadyRegistered = 191,
 }

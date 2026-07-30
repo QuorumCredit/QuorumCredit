@@ -6,6 +6,7 @@ import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { recurringPaymentStore } from "../recurring/recurringPaymentStore.js";
 import { loanCartStore } from "../cart/loanCartStore.js";
+import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -17,6 +18,12 @@ export interface RouteContext {
   partitionGuard?: PartitionGuard;
   /** Issue #1231 — deployed version string, surfaced on /health for canary monitoring. */
   serviceVersion?: string;
+  /** Issue #1292 — JTI denylist store; undefined falls back to no revocation check. */
+  revocationStore?: RevocationStore;
+  /** Issue #1290 — provisioned API key store. */
+  apiKeyStore?: ApiKeyStore;
+  /** Issue #1290 — rate limiter for auth endpoint. */
+  authRateLimiter?: AuthRateLimiter;
 }
 
 /**
@@ -469,6 +476,62 @@ export function handleHttpRequest(
       webhookSecret: ctx.webhookSecret,
     };
     handleWebhookRequest(req, res, webhookCtx);
+    return;
+  }
+
+  // ── Issue #1292: Token revocation admin endpoints ─────────────────────────
+
+  // POST /auth/revoke — revoke a specific JTI
+  if (req.method === "POST" && url.pathname === "/auth/revoke") {
+    if (!ctx.revocationStore) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "token revocation is not configured on this instance" }));
+      return;
+    }
+    readJsonBody<{ jti?: string; expiresAt?: number }>(req)
+      .then(async (body) => {
+        if (!body.jti || typeof body.jti !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "jti (string) required" }));
+          return;
+        }
+        const expiresAt =
+          typeof body.expiresAt === "number" ? body.expiresAt : Date.now() + ctx.tokenTtlSeconds * 1000;
+        await ctx.revocationStore!.revoke(body.jti, expiresAt);
+        metrics.incCounter("qc_tokens_revoked_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ revoked: true, jti: body.jti }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // POST /auth/revoke-subject — revoke all tokens for a subject (apiKey / borrower)
+  if (req.method === "POST" && url.pathname === "/auth/revoke-subject") {
+    if (!ctx.revocationStore) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "token revocation is not configured on this instance" }));
+      return;
+    }
+    readJsonBody<{ subject?: string }>(req)
+      .then(async (body) => {
+        if (!body.subject || typeof body.subject !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "subject (string) required" }));
+          return;
+        }
+        await ctx.revocationStore!.revokeAllForSubject(body.subject);
+        metrics.incCounter("qc_tokens_revoked_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ revoked: true, subject: body.subject }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
     return;
   }
 

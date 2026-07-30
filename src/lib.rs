@@ -67,6 +67,8 @@ pub mod recurring_payment;
 pub mod loan_priority;
 pub mod audit_verification;
 pub mod large_loan_approval;
+pub mod staking_pool;
+pub mod referral;
 
 #[cfg(test)]
 mod governance_test;
@@ -4656,5 +4658,106 @@ impl QuorumCreditContract {
         let days = (duration_secs / interest_rate_options::SECS_PER_DAY).max(1);
         let vol = interest_rate_options::get_implied_volatility(&env);
         interest_rate_options::calculate_premium(notional, strike_bps, days, vol)
+    }
+
+    // ── Issue #1238: Staking Pool with Yield Farming ──────────────────────────
+
+    /// Create a new yield-bearing staking pool for the given token.
+    /// Requires admin approval.
+    pub fn create_staking_pool(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+    ) -> Result<u64, ContractError> {
+        staking_pool::create_staking_pool(env, admin_signers, token)
+    }
+
+    /// Stake `amount` stroops into a pool.
+    /// Returns the staker's new total staked balance.
+    pub fn stake_capital(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+        amount: i128,
+    ) -> Result<i128, ContractError> {
+        staking_pool::stake_capital(env, pool_id, staker, amount)
+    }
+
+    /// Queue an unstake of `amount` stroops from a pool.
+    /// Returns the earliest timestamp at which `process_unstake` may be called.
+    pub fn queue_unstake(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+        amount: i128,
+    ) -> Result<u64, ContractError> {
+        staking_pool::queue_unstake(env, pool_id, staker, amount)
+    }
+
+    /// Process a queued unstake after the 24-hour delay.
+    /// Transfers principal + accrued yield back to the staker.
+    pub fn process_unstake(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+    ) -> Result<i128, ContractError> {
+        staking_pool::process_unstake(env, pool_id, staker)
+    }
+
+    /// Claim accumulated yield rewards without unstaking.
+    pub fn claim_yield(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+    ) -> Result<i128, ContractError> {
+        staking_pool::claim_yield(env, pool_id, staker)
+    }
+
+    /// Distribute yield from the lending yield reserve to all stakers in a pool.
+    /// Requires admin approval.
+    pub fn distribute_yield(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+        yield_amount: i128,
+    ) -> Result<(), ContractError> {
+        staking_pool::distribute_yield(env, admin_signers, pool_id, yield_amount)
+    }
+
+    /// Get a staking pool record (includes current APY and total staked).
+    pub fn get_staking_pool(env: Env, pool_id: u64) -> Result<StakingPool, ContractError> {
+        staking_pool::get_staking_pool(env, pool_id)
+    }
+
+    /// Get a staker's position in a pool (staked amount and pending rewards).
+    pub fn get_staker_position(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+    ) -> Result<StakerPosition, ContractError> {
+        staking_pool::get_staker_position(env, pool_id, staker)
+    }
+
+    // ── Issue #1247: Referral Rewards Program ─────────────────────────────────
+
+    /// Generate (or retrieve) a unique referral code for the caller.
+    pub fn generate_referral_code(env: Env, referrer: Address) -> Result<BytesN<32>, ContractError> {
+        referral::generate_referral_code(env, referrer)
+    }
+
+    /// Look up the referrer who owns a given referral code.
+    pub fn get_referrer_by_code(env: Env, code: BytesN<32>) -> Option<Address> {
+        referral::get_referrer_by_code(env, code)
+    }
+
+    /// Get referral stats (conversion count, total rewards) for a referrer.
+    pub fn get_referral_stats(env: Env, referrer: Address) -> ReferralStats {
+        referral::get_referral_stats(env, referrer)
+    }
+
+    /// Get the referral leaderboard for the provided list of referrers,
+    /// sorted descending by conversion count then total rewards earned.
+    pub fn get_referral_leaderboard(env: Env, referrers: Vec<Address>) -> Vec<ReferralStats> {
+        referral::get_referral_leaderboard(env, referrers)
     }
 }
