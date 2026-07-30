@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useDispatch } from "react-redux";
-import io from "socket.io-client";
+import { io } from "socket.io-client";
 import { AppDispatch } from "./store";
 import { setConnected, upsertLoan, setLoans, setReputation } from "./loanSlice";
 import type { LoanRecord, ReputationInfo } from "./loanSlice";

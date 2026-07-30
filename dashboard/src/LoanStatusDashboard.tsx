@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { Provider, useSelector } from "react-redux";
+import { useTranslation } from "react-i18next";
 import { store, RootState } from "./store";
 import { useLoanSocket } from "./useLoanSocket";
 import LoanCard, { type AccessibilitySettings } from "./LoanCard";
 import { Logo } from "./Logo";
 import { LoanCardErrorBoundary, DashboardErrorBoundary } from "./ErrorBoundary";
+import EmptyState from "./EmptyState";
 
 // ---------------------------------------------------------------------------
 // Inner component — must be inside Provider
@@ -16,14 +18,20 @@ interface DashboardInnerProps {
   apiKey?: string;
 }
 
-const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey }) => {
+/** @internal exported for testing only */
+export const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey }) => {
   useLoanSocket({ url: wsUrl, borrower, apiKey });
+
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language || "en";
 
   const [accessibility, setAccessibility] = useState<AccessibilitySettings>(() => {
     if (typeof window === "undefined") return { colorblindFriendly: false, highContrast: false };
     try {
       const stored = window.localStorage.getItem("quorum-dashboard-accessibility");
-      return stored ? JSON.parse(stored) : { colorblindFriendly: false, highContrast: false };
+      return stored
+        ? JSON.parse(stored)
+        : { colorblindFriendly: false, highContrast: false };
     } catch {
       return { colorblindFriendly: false, highContrast: false };
     }
@@ -31,12 +39,15 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem("quorum-dashboard-accessibility", JSON.stringify(accessibility));
+      window.localStorage.setItem(
+        "quorum-dashboard-accessibility",
+        JSON.stringify(accessibility),
+      );
     }
   }, [accessibility]);
 
-  const { loans, reputation, connected, lastUpdated } = useSelector(
-    (state: RootState) => state.loans
+  const { loans, reputation, connected, loading, lastUpdated } = useSelector(
+    (state: RootState) => state.loans,
   );
 
   const activeLoans = loans.filter((l) => l.status === "Active");
@@ -48,7 +59,7 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
   const accentColor = "#3b82f6";
   const successColor = "#10b981";
 
-  const toggleButtonStyle = (active: boolean) => ({
+  const toggleButtonStyle = (active: boolean): React.CSSProperties => ({
     border: active ? `2px solid ${accentColor}` : "1px solid #475569",
     background: active ? "rgba(59, 130, 246, 0.1)" : "#1e293b",
     color: active ? accentColor : "#cbd5e1",
@@ -60,100 +71,113 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
     fontSize: 13,
   });
 
+  /** Format a timestamp (ms) as a locale-aware time string */
+  const formatTime = (ms: number) =>
+    new Intl.DateTimeFormat(locale, {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(ms));
+
   return (
     <div
-      aria-label="Loan Status Dashboard"
       style={{
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        minHeight: "100vh",
-        background: `linear-gradient(135deg, ${bgColor} 0%, #1a1f2e 100%)`,
+        background: bgColor,
         color: textColor,
-        padding: 0,
-        margin: 0,
+        minHeight: "100vh",
+        fontFamily:
+          "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       }}
     >
       {/* Navigation Bar */}
       <nav
         style={{
-          background: `rgba(15, 23, 42, 0.8)`,
-          backdropFilter: "blur(10px)",
-          borderBottom: `1px solid rgba(52, 211, 153, 0.1)`,
-          padding: "16px 32px",
+          background: cardBg,
+          borderBottom: "1px solid rgba(148, 163, 184, 0.1)",
+          padding: "16px 24px",
           display: "flex",
-          alignItems: "center",
           justifyContent: "space-between",
-          position: "sticky",
-          top: 0,
-          zIndex: 10,
+          alignItems: "center",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <Logo size={40} />
+          <Logo />
           <div>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700, color: "#ffffff" }}>QuorumCredit</h1>
-            <p style={{ margin: "4px 0 0 0", fontSize: 12, color: "#94a3b8" }}>Proof of Trust Lending</p>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: textColor }}>
+              {t("nav.title")}
+            </h1>
+            <p style={{ margin: 0, fontSize: 12, color: "#64748b" }}>
+              {t("nav.tagline")}
+            </p>
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 13,
+            color: connected ? successColor : "#ef4444",
+            fontWeight: 600,
+          }}
+        >
+          <span
             style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              padding: "8px 12px",
-              background: connected ? "rgba(16, 185, 129, 0.1)" : "rgba(239, 68, 68, 0.1)",
-              borderRadius: 6,
-              border: `1px solid ${connected ? "#10b981" : "#ef4444"}`,
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: connected ? successColor : "#ef4444",
+              display: "inline-block",
             }}
-          >
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: connected ? "#10b981" : "#ef4444",
-                animation: connected ? "pulse 2s infinite" : "none",
-              }}
-            />
-            <span style={{ fontSize: 12, fontWeight: 600, color: connected ? "#10b981" : "#ef4444" }}>
-              {connected ? "Live" : "Offline"}
-            </span>
-          </div>
+          />
+          {connected ? t("nav.statusLive") : t("nav.statusOffline")}
         </div>
       </nav>
 
       {/* Main Content */}
-      <div style={{ padding: "32px", maxWidth: 1200, margin: "0 auto" }}>
+      <main style={{ maxWidth: 900, margin: "0 auto", padding: "32px 24px" }}>
         {/* Settings */}
         <div
           style={{
             display: "flex",
-            gap: 12,
-            marginBottom: 32,
+            gap: 8,
+            marginBottom: 24,
             flexWrap: "wrap",
+            alignItems: "center",
           }}
         >
           <button
-            type="button"
-            aria-pressed={Boolean(accessibility.colorblindFriendly)}
-            onClick={() => setAccessibility((prev) => ({ ...prev, colorblindFriendly: !prev.colorblindFriendly }))}
+            onClick={() =>
+              setAccessibility((prev) => ({
+                ...prev,
+                colorblindFriendly: !prev.colorblindFriendly,
+              }))
+            }
             style={toggleButtonStyle(Boolean(accessibility.colorblindFriendly))}
           >
-            🎨 Colorblind-friendly
+            {t("accessibility.colorblindFriendly")}
           </button>
           <button
-            type="button"
-            aria-pressed={Boolean(accessibility.highContrast)}
-            onClick={() => setAccessibility((prev) => ({ ...prev, highContrast: !prev.highContrast }))}
+            onClick={() =>
+              setAccessibility((prev) => ({
+                ...prev,
+                highContrast: !prev.highContrast,
+              }))
+            }
             style={toggleButtonStyle(Boolean(accessibility.highContrast))}
           >
-            ⚡ High Contrast
+            {t("accessibility.highContrast")}
           </button>
           {lastUpdated && (
-            <div style={{ marginLeft: "auto", fontSize: 12, color: "#64748b", display: "flex", alignItems: "center", gap: 8 }}>
-              <span>⏱️</span>
-              Updated {new Date(lastUpdated).toLocaleTimeString()}
-            </div>
+            <span
+              style={{
+                marginLeft: "auto",
+                fontSize: 12,
+                color: "#64748b",
+              }}
+            >
+              ⏱️ {t("loans.updated", { time: formatTime(lastUpdated) })}
+            </span>
           )}
         </div>
 
@@ -161,140 +185,161 @@ const DashboardInner: React.FC<DashboardInnerProps> = ({ borrower, wsUrl, apiKey
         {reputation && (
           <div
             style={{
-              background: `linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(16, 185, 129, 0.1) 100%)`,
-              border: "1px solid rgba(148, 163, 184, 0.2)",
-              borderRadius: 12,
-              padding: 24,
-              marginBottom: 32,
+              background: cardBg,
+              borderRadius: 16,
+              padding: "20px 24px",
+              marginBottom: 24,
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
-              gap: 24,
+              gridTemplateColumns: "repeat(2, 1fr)",
+              gap: 16,
             }}
           >
             <div>
-              <div style={{ fontSize: 12, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
-                Reputation Tier
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: accentColor }}>{reputation.tier}</div>
+              <p
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  margin: "0 0 4px",
+                }}
+              >
+                {t("reputation.tier")}
+              </p>
+              <p style={{ fontSize: 18, fontWeight: 700, color: accentColor, margin: 0 }}>
+                {reputation.tier}
+              </p>
             </div>
             <div>
-              <div style={{ fontSize: 12, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>
-                Credit Score
-              </div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: successColor }}>{reputation.score}</div>
+              <p
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "#64748b",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  margin: "0 0 4px",
+                }}
+              >
+                {t("reputation.creditScore")}
+              </p>
+              <p style={{ fontSize: 18, fontWeight: 700, color: successColor, margin: 0 }}>
+                {new Intl.NumberFormat(locale).format(reputation.score)}
+              </p>
             </div>
           </div>
         )}
 
         {/* Active Loans Section */}
-        <section style={{ marginBottom: 40 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-            <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#ffffff" }}>
-              Active Loans
+        <section aria-labelledby="active-loans-heading" style={{ marginBottom: 32 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              marginBottom: 16,
+            }}
+          >
+            <h2
+              id="active-loans-heading"
+              style={{ margin: 0, fontSize: 18, fontWeight: 700, color: textColor }}
+            >
+              {t("loans.activeHeading")}
             </h2>
             <span
               style={{
                 background: accentColor,
                 color: "#ffffff",
-                padding: "4px 12px",
                 borderRadius: 999,
-                fontSize: 13,
-                fontWeight: 600,
+                padding: "2px 8px",
+                fontSize: 12,
+                fontWeight: 700,
               }}
             >
               {activeLoans.length}
             </span>
           </div>
-          {activeLoans.length === 0 ? (
-            <div
-              style={{
-                background: cardBg,
-                border: "1px dashed rgba(148, 163, 184, 0.2)",
-                borderRadius: 12,
-                padding: 32,
-                textAlign: "center",
-                color: "#64748b",
-              }}
-            >
-              <p style={{ margin: 0, fontSize: 15 }}>No active loans yet</p>
-            </div>
+
+          {/* Loading vs empty vs populated */}
+          {loading ? (
+            <EmptyState
+              variant="loans"
+              loading
+              highContrast={accessibility.highContrast}
+            />
+          ) : activeLoans.length === 0 ? (
+            <EmptyState variant="loans" highContrast={accessibility.highContrast} />
           ) : (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 16 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {activeLoans.map((loan) => (
-                <div
-                  key={loan.id}
-                  style={{
-                    background: cardBg,
-                    border: `1px solid rgba(148, 163, 184, 0.2)`,
-                    borderRadius: 12,
-                    overflow: "hidden",
-                    transition: "all 0.2s ease",
-                  }}
-                  onMouseEnter={(e) => {
-                    (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(148, 163, 184, 0.4)";
-                    (e.currentTarget as HTMLDivElement).style.boxShadow = "0 8px 24px rgba(59, 130, 246, 0.1)";
-                  }}
-                  onMouseLeave={(e) => {
-                    (e.currentTarget as HTMLDivElement).style.borderColor = "rgba(148, 163, 184, 0.2)";
-                    (e.currentTarget as HTMLDivElement).style.boxShadow = "none";
-                  }}
-                >
-                  <LoanCardErrorBoundary>
+                <LoanCardErrorBoundary key={loan.id}>
+                  <div
+                    style={{
+                      borderRadius: 12,
+                      border: "1px solid rgba(148, 163, 184, 0.2)",
+                      transition: "border-color 0.2s, box-shadow 0.2s",
+                    }}
+                    onMouseEnter={(e) => {
+                      (e.currentTarget as HTMLDivElement).style.borderColor =
+                        "rgba(148, 163, 184, 0.4)";
+                      (e.currentTarget as HTMLDivElement).style.boxShadow =
+                        "0 8px 24px rgba(59, 130, 246, 0.1)";
+                    }}
+                    onMouseLeave={(e) => {
+                      (e.currentTarget as HTMLDivElement).style.borderColor =
+                        "rgba(148, 163, 184, 0.2)";
+                      (e.currentTarget as HTMLDivElement).style.boxShadow = "none";
+                    }}
+                  >
                     <LoanCard loan={loan} accessibility={accessibility} />
-                  </LoanCardErrorBoundary>
-                </div>
+                  </div>
+                </LoanCardErrorBoundary>
               ))}
             </div>
           )}
         </section>
 
         {/* Closed Loans Section */}
-        {closedLoans.length > 0 && (
-          <section>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-              <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#cbd5e1" }}>
-                Closed Loans
+        {!loading && closedLoans.length > 0 && (
+          <section aria-labelledby="closed-loans-heading">
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                marginBottom: 16,
+              }}
+            >
+              <h2
+                id="closed-loans-heading"
+                style={{ margin: 0, fontSize: 18, fontWeight: 700, color: textColor }}
+              >
+                {t("loans.closedHeading")}
               </h2>
               <span
                 style={{
-                  background: "#64748b",
+                  background: "#475569",
                   color: "#ffffff",
-                  padding: "4px 12px",
                   borderRadius: 999,
-                  fontSize: 13,
-                  fontWeight: 600,
+                  padding: "2px 8px",
+                  fontSize: 12,
+                  fontWeight: 700,
                 }}
               >
                 {closedLoans.length}
               </span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 16 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               {closedLoans.map((loan) => (
-                <div
-                  key={loan.id}
-                  style={{
-                    background: "rgba(30, 41, 59, 0.5)",
-                    border: "1px solid rgba(100, 116, 139, 0.2)",
-                    borderRadius: 12,
-                    overflow: "hidden",
-                  }}
-                >
-                  <LoanCardErrorBoundary>
-                    <LoanCard loan={loan} accessibility={accessibility} />
-                  </LoanCardErrorBoundary>
-                </div>
+                <LoanCardErrorBoundary key={loan.id}>
+                  <LoanCard loan={loan} accessibility={accessibility} />
+                </LoanCardErrorBoundary>
               ))}
             </div>
           </section>
         )}
-      </div>
-
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
-      `}</style>
+      </main>
     </div>
   );
 };
@@ -318,9 +363,9 @@ export interface LoanStatusDashboardProps {
  * progress, yield earned, and borrower reputation tier.
  *
  * Props:
- * - borrower: Stellar address of the borrower
- * - wsUrl: socket.io server base URL
- * - apiKey: optional API key for socket auth header
+ *   - borrower: Stellar address of the borrower
+ *   - wsUrl: socket.io server base URL
+ *   - apiKey: optional API key for socket auth header
  *
  * Wrapped in a DashboardErrorBoundary so any catastrophic render error
  * degrades gracefully instead of blanking the entire page.
