@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import type { AccessibilitySettings } from "./LoanCard";
 import {
   LineChart,
@@ -26,7 +27,28 @@ import { useMetricsSocket } from "./useMetricsSocket";
 import { DashboardErrorBoundary } from "./ErrorBoundary";
 
 const XLM = 10_000_000;
-const fmt = (stroops: number) => (stroops / XLM).toFixed(2);
+
+/**
+ * Format stroops as a locale-aware XLM decimal string (2 d.p.).
+ * Replaces the old ad-hoc `(stroops / XLM).toFixed(2)`.
+ */
+function fmtXlm(stroops: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(stroops / XLM);
+}
+
+/**
+ * Format a ratio (0–1) as a locale-aware percentage string (1 d.p.).
+ */
+function fmtPct(ratio: number, locale: string): string {
+  return new Intl.NumberFormat(locale, {
+    style: "percent",
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(ratio);
+}
 
 // ---------------------------------------------------------------------------
 // Props
@@ -49,25 +71,35 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   token,
   thresholds = DEFAULT_THRESHOLDS,
 }) => {
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language || "en";
+
   const [history, setHistory] = useState<ProtocolMetrics[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [filter, setFilter] = useState<MetricsFilter>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accessibility, setAccessibility] = useState<AccessibilitySettings>(() => {
-    if (typeof window === "undefined") return { colorblindFriendly: false, highContrast: false };
+    if (typeof window === "undefined")
+      return { colorblindFriendly: false, highContrast: false };
     try {
       const stored = window.localStorage.getItem("quorum-dashboard-accessibility");
-      return stored ? JSON.parse(stored) : { colorblindFriendly: false, highContrast: false };
+      return stored
+        ? JSON.parse(stored)
+        : { colorblindFriendly: false, highContrast: false };
     } catch {
       return { colorblindFriendly: false, highContrast: false };
     }
   });
+
   const peakTvlRef = useRef(0);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem("quorum-dashboard-accessibility", JSON.stringify(accessibility));
+      window.localStorage.setItem(
+        "quorum-dashboard-accessibility",
+        JSON.stringify(accessibility),
+      );
     }
   }, [accessibility]);
 
@@ -116,16 +148,19 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   const handleExportCSV = () => {
     downloadFile(metricsToCSV(history), "metrics.csv", "text/csv");
   };
-
   const handleExportJSON = () => {
     downloadFile(JSON.stringify(history, null, 2), "metrics.json", "application/json");
   };
 
   const current = history.length > 0 ? history[history.length - 1] : undefined;
 
-  const toggleButtonStyle = (active: boolean) => ({
+  const toggleButtonStyle = (active: boolean): React.CSSProperties => ({
     border: active ? "2px solid #2563eb" : "1px solid #cbd5e1",
-    background: accessibility.highContrast ? "#000000" : active ? "#eff6ff" : "#ffffff",
+    background: accessibility.highContrast
+      ? "#000000"
+      : active
+        ? "#eff6ff"
+        : "#ffffff",
     color: accessibility.highContrast ? "#ffffff" : active ? "#1d4ed8" : "#334155",
     borderRadius: 999,
     padding: "6px 12px",
@@ -134,70 +169,93 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
   });
 
   return (
-    <div style={{ fontFamily: "system-ui", padding: 24, maxWidth: 1200, margin: "0 auto", background: accessibility.highContrast ? "#000000" : "#ffffff", color: accessibility.highContrast ? "#ffffff" : "#0f172a" }}>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+    <div style={{ padding: 24 }}>
+      {/* Accessibility toggles */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
         <button
-          type="button"
-          aria-pressed={Boolean(accessibility.colorblindFriendly)}
-          onClick={() => setAccessibility((prev) => ({ ...prev, colorblindFriendly: !prev.colorblindFriendly }))}
+          onClick={() =>
+            setAccessibility((prev) => ({
+              ...prev,
+              colorblindFriendly: !prev.colorblindFriendly,
+            }))
+          }
           style={toggleButtonStyle(Boolean(accessibility.colorblindFriendly))}
         >
-          Colorblind-friendly mode
+          {t("analytics.colorblindFriendly")}
         </button>
         <button
-          type="button"
-          aria-pressed={Boolean(accessibility.highContrast)}
-          onClick={() => setAccessibility((prev) => ({ ...prev, highContrast: !prev.highContrast }))}
+          onClick={() =>
+            setAccessibility((prev) => ({
+              ...prev,
+              highContrast: !prev.highContrast,
+            }))
+          }
           style={toggleButtonStyle(Boolean(accessibility.highContrast))}
         >
-          High contrast
+          {t("analytics.highContrast")}
         </button>
       </div>
 
       {/* Header */}
-      <header style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
-        <h1 style={{ margin: 0, color: accessibility.highContrast ? "#ffffff" : "#0f172a" }}>QuorumCredit Admin Dashboard</h1>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 20,
+        }}
+      >
+        <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>
+          {t("analytics.pageTitle")}
+        </h1>
         <span
           aria-label={connected ? "WebSocket connected" : "WebSocket disconnected"}
           style={{
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            background: connected ? "#22c55e" : "#ef4444",
-            display: "inline-block",
+            fontSize: 13,
+            fontWeight: 600,
+            color: connected ? "#10b981" : "#ef4444",
           }}
-        />
-        <span style={{ fontSize: 12, color: "#6b7280" }}>
-          {connected ? "Live" : "Disconnected"}
+        >
+          {connected ? t("analytics.statusLive") : t("analytics.statusDisconnected")}
         </span>
-      </header>
+      </div>
 
       {/* Alerts */}
       {alerts.length > 0 && (
-        <section aria-label="Alerts" style={{ marginBottom: 16 }}>
+        <div aria-label="Alerts" style={{ marginBottom: 16 }}>
           {alerts.map((a) => (
             <div
-              key={a.kind}
+              key={a.message}
               role="alert"
               style={{
-                background: accessibility.highContrast ? "#111827" : "#fef2f2",
-                border: accessibility.highContrast ? "1px solid #ffffff" : "1px solid #fca5a5",
-                borderRadius: 6,
-                padding: "8px 12px",
+                background: "#fef3c7",
+                border: "1px solid #f59e0b",
+                borderRadius: 8,
+                padding: "10px 14px",
                 marginBottom: 8,
-                color: accessibility.highContrast ? "#ffffff" : "#991b1b",
+                color: "#92400e",
+                fontSize: 14,
               }}
             >
               ⚠ {a.message}
             </div>
           ))}
-        </section>
+        </div>
       )}
 
       {/* Filters */}
-      <section aria-label="Filters" style={{ display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap" }}>
-        <label>
-          From:{" "}
+      <div
+        aria-label="Filters"
+        style={{
+          display: "flex",
+          gap: 12,
+          marginBottom: 16,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <label style={{ fontSize: 13 }}>
+          {t("analytics.filtersFrom")}{" "}
           <input
             type="date"
             onChange={(e) =>
@@ -210,8 +268,8 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             }
           />
         </label>
-        <label>
-          To:{" "}
+        <label style={{ fontSize: 13 }}>
+          {t("analytics.filtersTo")}{" "}
           <input
             type="date"
             onChange={(e) =>
@@ -224,8 +282,8 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             }
           />
         </label>
-        <label>
-          Loan size:{" "}
+        <label style={{ fontSize: 13 }}>
+          {t("analytics.filterLoanSize")}{" "}
           <select
             onChange={(e) =>
               setFilter((f) => ({
@@ -234,135 +292,191 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
               }))
             }
           >
-            <option value="">All</option>
-            <option value="small">Small (&lt;0.1 XLM)</option>
-            <option value="medium">Medium (0.1–10 XLM)</option>
-            <option value="large">Large (&gt;10 XLM)</option>
+            <option value="">{t("analytics.filterAll")}</option>
+            <option value="small">{t("analytics.filterSmall")}</option>
+            <option value="medium">{t("analytics.filterMedium")}</option>
+            <option value="large">{t("analytics.filterLarge")}</option>
           </select>
         </label>
-        <button onClick={fetchMetrics} disabled={loading}>
-          {loading ? "Loading…" : "Fetch"}
+        <button onClick={fetchMetrics} style={{ fontSize: 13, padding: "4px 12px" }}>
+          {loading ? t("analytics.fetchLoading") : t("analytics.fetchButton")}
         </button>
-      </section>
+      </div>
 
       {error && (
-        <p role="alert" style={{ color: "#dc2626" }}>
-          Error: {error}
+        <p style={{ color: "#ef4444", fontSize: 14 }}>
+          {t("analytics.errorPrefix")} {error}
         </p>
       )}
 
       {/* KPI Cards */}
       {current && (
-        <section
-          aria-label="KPI metrics"
+        <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
-            gap: 12,
-            marginBottom: 32,
+            gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+            gap: 16,
+            marginBottom: 24,
           }}
         >
-          <KpiCard label="TVL (XLM)" value={fmt(current.tvl)} accessibility={accessibility} />
-          <KpiCard label="Active Loans" value={current.active_loans} accessibility={accessibility} />
-          <KpiCard label="Total Loans" value={current.total_loans} accessibility={accessibility} />
           <KpiCard
-            label="Default Rate"
-            value={`${(current.default_rate * 100).toFixed(1)}%`}
+            label={t("analytics.kpiTvl")}
+            value={fmtXlm(current.tvl, locale)}
+            accessibility={accessibility}
+          />
+          <KpiCard
+            label={t("analytics.kpiActiveLoans")}
+            value={new Intl.NumberFormat(locale).format(current.active_loans)}
+            accessibility={accessibility}
+          />
+          <KpiCard
+            label={t("analytics.kpiDefaultRate")}
+            value={fmtPct(current.default_rate, locale)}
             highlight={current.default_rate > thresholds.max_default_rate}
             accessibility={accessibility}
           />
-          <KpiCard label="Yield Distributed (XLM)" value={fmt(current.total_yield_distributed)} accessibility={accessibility} />
-          <KpiCard label="Slash Events" value={current.slash_count} accessibility={accessibility} />
-          <KpiCard label="Fee Revenue (XLM)" value={fmt(current.fee_revenue)} accessibility={accessibility} />
-        </section>
+          <KpiCard
+            label={t("analytics.kpiTotalBorrowers")}
+            value={new Intl.NumberFormat(locale).format(current.total_borrowers)}
+            accessibility={accessibility}
+          />
+          <KpiCard
+            label={t("analytics.kpiTotalVouchers")}
+            value={new Intl.NumberFormat(locale).format(current.total_vouchers)}
+            accessibility={accessibility}
+          />
+          <KpiCard
+            label={t("analytics.kpiAvgLoanSize")}
+            value={fmtXlm(current.avg_loan_size, locale)}
+            accessibility={accessibility}
+          />
+        </div>
       )}
 
       {/* TVL over time chart */}
       {history.length > 1 && (
-        <section style={{ marginBottom: 32 }}>
-          <h2>TVL Over Time</h2>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={history} aria-label="TVL chart">
+        <div style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+            {t("analytics.tvlOverTime")}
+          </h2>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={history}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="timestamp" hide />
-              <YAxis tickFormatter={(v: number) => fmt(v)} />
-              <Tooltip formatter={(v: number) => `${fmt(v)} XLM`} />
+              <YAxis tickFormatter={(v: number) => fmtXlm(v, locale)} />
+              <Tooltip formatter={(v: number) => [`${fmtXlm(v, locale)} XLM`]} />
               <Legend />
-              <Line type="monotone" dataKey="tvl" name="TVL" stroke="#6366f1" dot={false} />
+              <Line type="monotone" dataKey="tvl" dot={false} stroke="#3b82f6" />
             </LineChart>
           </ResponsiveContainer>
-        </section>
+        </div>
       )}
 
       {/* Default rate chart */}
       {history.length > 1 && (
-        <section style={{ marginBottom: 32 }}>
-          <h2>Default Rate Over Time</h2>
+        <div style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+            {t("analytics.defaultRateOverTime")}
+          </h2>
           <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={history} aria-label="Default rate chart">
+            <LineChart data={history}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="timestamp" hide />
-              <YAxis tickFormatter={(v: number) => `${(v * 100).toFixed(1)}%`} />
-              <Tooltip formatter={(v: number) => `${(v * 100).toFixed(1)}%`} />
-              <Line type="monotone" dataKey="default_rate" name="Default Rate" stroke="#ef4444" dot={false} />
+              <YAxis tickFormatter={(v: number) => fmtPct(v, locale)} />
+              <Tooltip formatter={(v: number) => [fmtPct(v, locale)]} />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="default_rate"
+                dot={false}
+                stroke="#ef4444"
+              />
             </LineChart>
           </ResponsiveContainer>
-        </section>
+        </div>
       )}
 
       {/* Top borrowers */}
       {current && current.top_borrowers.length > 0 && (
-        <section style={{ marginBottom: 32 }}>
-          <h2>Top Borrowers</h2>
-          <ResponsiveContainer width="100%" height={220}>
+        <div style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+            {t("analytics.topBorrowers")}
+          </h2>
+          <ResponsiveContainer width="100%" height={200}>
             <BarChart
-              data={current.top_borrowers.map(([addr, amt]: [string, number]) => ({
+              data={current.top_borrowers.map(([addr, amt]) => ({
                 addr: addr.slice(0, 8) + "…",
                 amount: amt / XLM,
               }))}
-              aria-label="Top borrowers chart"
+              aria-label={t("analytics.topBorrowers")}
             >
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="addr" />
-              <YAxis />
-              <Tooltip formatter={(v: number) => `${v.toFixed(2)} XLM`} />
-              <Bar dataKey="amount" name="Borrowed (XLM)" fill="#6366f1" />
+              <YAxis
+                tickFormatter={(v: number) =>
+                  new Intl.NumberFormat(locale, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  }).format(v)
+                }
+              />
+              <Tooltip
+                formatter={(v: number) => [
+                  `${new Intl.NumberFormat(locale, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  }).format(v)} XLM`,
+                ]}
+              />
+              <Bar dataKey="amount" fill="#3b82f6" />
             </BarChart>
           </ResponsiveContainer>
-        </section>
+        </div>
       )}
 
       {/* Top vouchers */}
       {current && current.top_vouchers.length > 0 && (
-        <section style={{ marginBottom: 32 }}>
-          <h2>Top Vouchers</h2>
-          <ResponsiveContainer width="100%" height={220}>
+        <div style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+            {t("analytics.topVouchers")}
+          </h2>
+          <ResponsiveContainer width="100%" height={200}>
             <BarChart
-              data={current.top_vouchers.map(([addr, stake]: [string, number]) => ({
+              data={current.top_vouchers.map(([addr, stake]) => ({
                 addr: addr.slice(0, 8) + "…",
                 stake: stake / XLM,
               }))}
-              aria-label="Top vouchers chart"
+              aria-label={t("analytics.topVouchers")}
             >
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="addr" />
-              <YAxis />
-              <Tooltip formatter={(v: number) => `${v.toFixed(2)} XLM`} />
-              <Bar dataKey="stake" name="Staked (XLM)" fill="#22c55e" />
+              <YAxis
+                tickFormatter={(v: number) =>
+                  new Intl.NumberFormat(locale, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  }).format(v)
+                }
+              />
+              <Tooltip
+                formatter={(v: number) => [
+                  `${new Intl.NumberFormat(locale, {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2,
+                  }).format(v)} XLM`,
+                ]}
+              />
+              <Bar dataKey="stake" fill="#10b981" />
             </BarChart>
           </ResponsiveContainer>
-        </section>
+        </div>
       )}
 
       {/* Export */}
-      <section aria-label="Export" style={{ display: "flex", gap: 8 }}>
-        <button onClick={handleExportCSV} disabled={history.length === 0}>
-          Export CSV
-        </button>
-        <button onClick={handleExportJSON} disabled={history.length === 0}>
-          Export JSON
-        </button>
-      </section>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={handleExportCSV}>{t("analytics.exportCSV")}</button>
+        <button onClick={handleExportJSON}>{t("analytics.exportJSON")}</button>
+      </div>
     </div>
   );
 };
@@ -379,16 +493,40 @@ const KpiCard: React.FC<{
 }> = ({ label, value, highlight, accessibility }) => (
   <div
     style={{
-      padding: "12px 16px",
-      background: accessibility?.highContrast ? "#111827" : highlight ? "#fef2f2" : "#f8fafc",
-      border: `1px solid ${accessibility?.highContrast ? "#ffffff" : highlight ? "#fca5a5" : "#e2e8f0"}`,
-      borderRadius: 8,
+      background: accessibility?.highContrast ? "#111827" : "#f8fafc",
+      border: highlight
+        ? "2px solid #ef4444"
+        : `1px solid ${accessibility?.highContrast ? "#334155" : "#e2e8f0"}`,
+      borderRadius: 12,
+      padding: "16px 20px",
     }}
   >
-    <div style={{ fontSize: 12, color: accessibility?.highContrast ? "#cbd5e1" : "#6b7280", marginBottom: 4 }}>{label}</div>
-    <div style={{ fontSize: 20, fontWeight: 700, color: accessibility?.highContrast ? "#ffffff" : highlight ? "#dc2626" : "#0f172a" }}>
+    <p
+      style={{
+        fontSize: 11,
+        fontWeight: 600,
+        color: "#64748b",
+        textTransform: "uppercase",
+        letterSpacing: "0.08em",
+        margin: "0 0 6px",
+      }}
+    >
+      {label}
+    </p>
+    <p
+      style={{
+        fontSize: 22,
+        fontWeight: 700,
+        color: highlight
+          ? "#ef4444"
+          : accessibility?.highContrast
+            ? "#ffffff"
+            : "#0f172a",
+        margin: 0,
+      }}
+    >
       {value}
-    </div>
+    </p>
   </div>
 );
 
@@ -403,7 +541,9 @@ export default AnalyticsDashboard;
  * DashboardErrorBoundary so any catastrophic render error degrades
  * gracefully instead of blanking the page.
  */
-export const AnalyticsDashboardWithBoundary: React.FC<AnalyticsDashboardProps> = (props) => (
+export const AnalyticsDashboardWithBoundary: React.FC<AnalyticsDashboardProps> = (
+  props,
+) => (
   <DashboardErrorBoundary>
     <AnalyticsDashboard {...props} />
   </DashboardErrorBoundary>
