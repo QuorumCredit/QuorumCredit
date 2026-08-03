@@ -22,13 +22,31 @@ export interface MetricsWsServerOptions {
   connectionQueueMax: number;
   path?: string;
   authExpiryWarningMs?: number;
+  /**
+   * Application-level ping/pong heartbeat interval (ms). The server sends a
+   * WebSocket ping frame at this cadence. Default: 30 000.
+   */
+  heartbeatIntervalMs?: number;
+  /**
+   * How long (ms) after the last pong (or initial connect) before the server
+   * treats the connection as a half-open/idle zombie and tears it down.
+   * Default: 60 000.
+   */
+  idleTimeoutMs?: number;
 }
 
 interface ConnState {
   queue: ConnectionQueue<MetricsServerFrame>;
   token: string;
   authTimer: ReturnType<typeof setInterval>;
+  /** Timer that sends ping frames at heartbeatIntervalMs cadence. */
+  heartbeatTimer: ReturnType<typeof setInterval>;
+  /** Timer that fires idleTimeoutMs after the last pong (or connect). */
+  idleTimer: ReturnType<typeof setTimeout>;
 }
+
+/** Close code sent when a connection is killed for idle/heartbeat timeout. */
+export const WS_CLOSE_IDLE_TIMEOUT = 4008;
 
 /**
  * Raw WebSocket wiring for /ws/metrics, consumed by
@@ -36,12 +54,20 @@ interface ConnState {
  * string at connect time (`?token=...&since=<lastEventId>`) since a plain WebSocket
  * handshake has no room for a custom auth exchange the way socket.io's does; token
  * refresh happens via an in-band `{type:"refresh_auth", token}` client frame.
+ *
+ * Heartbeat / idle timeout: the server sends a WebSocket-level ping frame every
+ * `heartbeatIntervalMs`. The `ws` library automatically responds with a pong, and we
+ * listen for the "pong" event to reset the idle deadline. If no pong arrives within
+ * `idleTimeoutMs` the connection is torn down, its ConnectionQueue and subscription
+ * state are released, and the qc_ws_idle_closed_total counter is incremented.
  */
 export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketServer {
   const path = opts.path ?? "/ws/metrics";
   const wss = new WebSocketServer({ noServer: true });
   const states = new Map<WebSocket, ConnState>();
   const warningMs = opts.authExpiryWarningMs ?? 30_000;
+  const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 30_000;
+  const idleTimeoutMs = opts.idleTimeoutMs ?? 60_000;
 
   const busHandler = (message: string): void => {
     let parsed: BroadcastEvent;
@@ -78,13 +104,40 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
 
     wss.handleUpgrade(req, socket, head, (ws) => {
       const since = Number.parseInt(url.searchParams.get("since") ?? "0", 10) || 0;
+
+      // ── heartbeat / idle-timeout setup ────────────────────────────────────
+      const scheduleIdleTimer = (): ReturnType<typeof setTimeout> =>
+        setTimeout(() => {
+          const s = states.get(ws);
+          if (!s) return;
+          clearInterval(s.heartbeatTimer);
+          clearInterval(s.authTimer);
+          clearTimeout(s.idleTimer);
+          states.delete(ws);
+          opsMetrics.setGauge("qc_broadcast_metrics_connections", states.size);
+          opsMetrics.incCounter("qc_ws_idle_closed_total");
+          ws.close(WS_CLOSE_IDLE_TIMEOUT, "idle_timeout");
+        }, idleTimeoutMs);
+
+      const heartbeatTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.ping();
+      }, heartbeatIntervalMs);
+
       const state: ConnState = {
         queue: new ConnectionQueue(opts.connectionQueueMax),
         token,
         authTimer: setInterval(() => checkAuthExpiry(ws, states, opts.authSecret, warningMs), 5000),
+        heartbeatTimer,
+        idleTimer: scheduleIdleTimer(),
       };
       states.set(ws, state);
       opsMetrics.setGauge("qc_broadcast_metrics_connections", states.size);
+
+      // Pong resets the idle deadline.
+      ws.on("pong", () => {
+        clearTimeout(state.idleTimer);
+        state.idleTimer = scheduleIdleTimer();
+      });
 
       // Metrics are a cumulative gauge, not a per-item list: a reconnecting client
       // needs "the current snapshot", not a replay of every intermediate one, so we
@@ -113,6 +166,8 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
       });
 
       ws.on("close", () => {
+        clearInterval(state.heartbeatTimer);
+        clearTimeout(state.idleTimer);
         clearInterval(state.authTimer);
         states.delete(ws);
         opsMetrics.setGauge("qc_broadcast_metrics_connections", states.size);

@@ -14,6 +14,19 @@ export interface ServerConfig {
   /** Deployed version identifier, surfaced on /health for canary release monitoring
    * (issue #1231) — e.g. a git SHA or semver tag set by the deploy pipeline. */
   serviceVersion: string;
+  /**
+   * Application-level WebSocket heartbeat / idle-timeout settings.
+   * Both loanSocketServer (socket.io) and metricsWsServer (raw ws) use these.
+   */
+  wsHeartbeat: {
+    /** How often the server sends a ping to each connection (ms). Default: 30 000. */
+    intervalMs: number;
+    /**
+     * How long after the last pong (or initial connect) before the server tears
+     * down the connection as a half-open/idle zombie (ms). Default: 60 000.
+     */
+    idleTimeoutMs: number;
+  };
   /** Cost allocation inputs (issue #1227) — see server/src/costs/costAllocator.ts. */
   costAllocation: {
     contractFeeStroopsPerTx: number;
@@ -117,6 +130,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     partitionGuard: {
       failureThreshold: envInt("PARTITION_FAILURE_THRESHOLD", 5),
       maxQueuedWrites: envInt("PARTITION_MAX_QUEUED_WRITES", 500),
+    },
+    wsHeartbeat: {
+      intervalMs: envInt("WS_HEARTBEAT_INTERVAL_MS", 30_000),
+      idleTimeoutMs: envInt("WS_IDLE_TIMEOUT_MS", 60_000),
     },
   };
 }
