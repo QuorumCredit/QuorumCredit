@@ -84,7 +84,7 @@ window and for eyeballing week-over-week trends.
    can strand in-flight loans.
 4. **Gas cost trend up**: correlate with recent contract upgrades — a gas
    regression introduced by an upgrade should show up here quickly. Check
-   [Gas Benchmarking](../GAS_BENCHMARKING_IMPLEMENTATION_SUMMARY.md) results for
+   `src/gas_benchmark_test.rs` and `docs/gas-budgets.md` for
    the same time window.
 5. **Vouch drop**: check whether this coincides with a slashing event or
    a broader market/community event outside the protocol's control before
