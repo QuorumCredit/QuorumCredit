@@ -132,8 +132,7 @@ pub fn get_circuit_breaker_last_triggered(env: &Env) -> u64 {
 pub fn get_default_rate_threshold(env: &Env) -> Result<u32, ContractError> {
     let config: Config = env.storage().instance()
         .get(&DataKey::Config)
-        .ok_or(ContractError::InvalidStateTransition)?
-        .map_err(|_| ContractError::InvalidStateTransition)?;
+        .ok_or(ContractError::InvalidStateTransition)?;
 
     Ok(config.default_rate_threshold)
 }
@@ -150,8 +149,7 @@ pub fn set_default_rate_threshold(
 
     let mut config: Config = env.storage().instance()
         .get(&DataKey::Config)
-        .ok_or(ContractError::InvalidStateTransition)?
-        .map_err(|_| ContractError::InvalidStateTransition)?;
+        .ok_or(ContractError::InvalidStateTransition)?;
 
     config.default_rate_threshold = new_threshold;
     env.storage().instance().set(&DataKey::Config, &config);

@@ -29,7 +29,7 @@
 ///
 /// The reward is sourced from the yield reserve.  If the reserve cannot cover
 /// it, the reward is silently skipped (borrower repayment is never blocked).
-use soroban_sdk::{symbol_short, token, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{symbol_short, token, xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 
 use crate::errors::ContractError;
 use crate::helpers::{require_not_paused};

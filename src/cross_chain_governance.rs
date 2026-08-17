@@ -170,19 +170,20 @@ pub fn submit_cross_chain_vote(
     proposal.total_participated_stake = proposal.total_participated_stake.saturating_add(voter_stake);
 
     // Find or update chain aggregate
-    let mut found = false;
-    for chain_agg in proposal.chain_votes.iter_mut() {
-        if chain_agg.chain_id == chain_id {
+    let found = match proposal.chain_votes.iter().position(|c| c.chain_id == chain_id) {
+        Some(i) => {
+            let mut chain_agg = proposal.chain_votes.get(i as u32).unwrap();
             if approve {
                 chain_agg.approve_stake = chain_agg.approve_stake.saturating_add(voter_stake);
             } else {
                 chain_agg.reject_stake = chain_agg.reject_stake.saturating_add(voter_stake);
             }
             chain_agg.total_voters += 1;
-            found = true;
-            break;
+            proposal.chain_votes.set(i as u32, chain_agg);
+            true
         }
-    }
+        None => false,
+    };
 
     if !found {
         let new_agg = ChainVoteAggregate {

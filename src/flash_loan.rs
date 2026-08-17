@@ -300,7 +300,7 @@ fn add_flash_loan_record(env: &Env, record: &FlashLoanRecord) -> Result<(), Cont
 }
 
 fn update_flash_loan_stats(env: &Env, amount: i128, fee: i128) -> Result<(), ContractError> {
-    let mut stats = env
+    let mut stats: FlashLoanStats = env
         .storage()
         .persistent()
         .get(&DataKey::FlashLoanStats)

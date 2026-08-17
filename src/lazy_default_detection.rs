@@ -45,8 +45,7 @@ pub fn check_and_mark_default(
 ) -> Result<bool, ContractError> {
     let mut loan: LoanRecord = env.storage().persistent()
         .get(&DataKey::Loan(loan_id))
-        .ok_or(ContractError::NoActiveLoan)?
-        .map_err(|_| ContractError::NoActiveLoan)?;
+        .ok_or(ContractError::NoActiveLoan)?;
 
     if !is_loan_defaulted(env, &loan) {
         return Ok(false); // Loan is not defaulted
@@ -112,8 +111,7 @@ pub fn get_default_detection_status(
 ) -> Result<bool, ContractError> {
     let loan: LoanRecord = env.storage().persistent()
         .get(&DataKey::Loan(loan_id))
-        .ok_or(ContractError::NoActiveLoan)?
-        .map_err(|_| ContractError::NoActiveLoan)?;
+        .ok_or(ContractError::NoActiveLoan)?;
 
     Ok(is_loan_defaulted(env, &loan))
 }

@@ -3183,7 +3183,7 @@ impl QuorumCreditContract {
             .set(&DataKey::IdempotencyKey(idempotency_key.clone()), &new_record);
         env.storage()
             .persistent()
-            .extend_ttl(&DataKey::IdempotencyKey(idempotency_key), ttl_24h as u32, ttl_24h as u32);
+            .extend_ttl(&DataKey::IdempotencyKey(idempotency_key.clone()), ttl_24h as u32, ttl_24h as u32);
 
         env.events().publish(
             (symbol_short!("idem"), symbol_short!("new")),
@@ -3197,7 +3197,7 @@ impl QuorumCreditContract {
 
     /// Set up role-based rate limit tiers (admin: unlimited, user: 1000/hr, guest: 100/hr).
     pub fn setup_role_based_rate_limits(env: Env, admin_signers: Vec<Address>) {
-        require_admin_approval(&env, &admin_signers).unwrap();
+        require_admin_approval(&env, &admin_signers);
 
         let mut cfg = config(&env);
         let mut tiers: Vec<RateLimitTier> = Vec::new(&env);

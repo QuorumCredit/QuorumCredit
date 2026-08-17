@@ -227,7 +227,7 @@ pub fn claim_guarantor_coverage(
     let mut stats: GuarantorStats = env
         .storage()
         .persistent()
-        .get(&DataKey::GuarantorStats(guarantor_addr))
+        .get(&DataKey::GuarantorStats(guarantor_addr.clone()))
         .ok_or(ContractError::GuarantorNotFound)?;
 
     stats.triggered_guarantees += 1;
