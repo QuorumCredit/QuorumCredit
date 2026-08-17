@@ -452,7 +452,7 @@ pub fn set_blacklist_reason(
         .set(&DataKey::BlacklistReason(borrower.clone()), &reason);
 
     env.events().publish(
-        (symbol_short!("admin"), symbol_short!("blacklist_reason")),
+        (symbol_short!("admin"), symbol_short!("bl_reason")),
         (borrower.clone(), env.ledger().timestamp()),
     );
 

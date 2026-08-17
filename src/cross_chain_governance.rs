@@ -14,7 +14,7 @@
 use crate::errors::ContractError;
 use crate::helpers::require_admin_approval;
 use crate::types::DataKey;
-use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, String, Vec};
 
 /// Cross-chain governance proposal
 #[contracttype]
@@ -27,7 +27,7 @@ pub struct CrossChainProposal {
     /// Action to execute (e.g., "update_config", "slash_borrower")
     pub action: String,
     /// Encoded action parameters
-    pub action_params: Vec<u8>,
+    pub action_params: Bytes,
     /// Chain where vote results are collected from
     pub origin_chain: u32,
     /// When voting period ends (ledger seconds)
@@ -96,7 +96,7 @@ pub fn create_cross_chain_proposal(
     admin_signers: Vec<Address>,
     description: String,
     action: String,
-    action_params: Vec<u8>,
+    action_params: Bytes,
     origin_chain: u32,
     voting_period_seconds: u64,
 ) -> Result<u64, ContractError> {

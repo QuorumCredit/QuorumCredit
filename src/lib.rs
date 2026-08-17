@@ -65,7 +65,6 @@ pub mod vouch_syndication;
 pub mod vouch_milestones;
 pub mod recurring_payment;
 pub mod loan_priority;
-pub mod audit_verification;
 pub mod large_loan_approval;
 pub mod staking_pool;
 pub mod referral;
@@ -210,6 +209,9 @@ impl QuorumCreditContract {
                 liquidity_tier_yield_bonus: Vec::new(&env),
                 score_decay_per_month: DEFAULT_REPUTATION_SCORE_DECAY_BPS,
                 max_priority_fee_cap_bps: MAX_PRIORITY_FEE_BPS,
+                default_rate_threshold: 0,
+                insurance_fund_premium_bps: 0,
+                insurance_max_payout_bps: 0,
             },
         );
 
@@ -1708,7 +1710,7 @@ impl QuorumCreditContract {
         _token: Address,
     ) -> Result<String, ContractError> {
         // TODO: Implement when audit trail types are defined
-        Ok(String::from(""))
+        Ok(String::from_str(&_env, ""))
     }
 
     /// Retrieve a page of audit events for a vouch (Issue #1179) - NOT YET IMPLEMENTED.
@@ -1734,40 +1736,7 @@ impl QuorumCreditContract {
         _token: Address,
     ) -> Result<String, ContractError> {
         // TODO: Implement when audit trail types are defined
-        Ok(String::from(""))
-    }
-
-    // ── Audit Log Completeness & Integrity Verification ──────────────────────
-
-    /// Run a completeness/consistency check over a vouch's audit trail:
-    /// sequence gaps, timestamp monotonicity, and entry completeness.
-    pub fn verify_audit_log_completeness(
-        env: Env,
-        borrower: Address,
-        voucher: Address,
-        token: Address,
-    ) -> Result<audit_verification::AuditVerificationReport, ContractError> {
-        audit_verification::verify_audit_log_completeness(env, borrower, voucher, token)
-    }
-
-    /// Record a tamper-evidence checksum snapshot of an audit trail's current state.
-    pub fn snapshot_audit_checksum(
-        env: Env,
-        borrower: Address,
-        voucher: Address,
-        token: Address,
-    ) -> Result<audit_verification::AuditChecksumRecord, ContractError> {
-        audit_verification::snapshot_audit_checksum(env, borrower, voucher, token)
-    }
-
-    /// Re-verify a trail against its last checksum snapshot to detect tampering.
-    pub fn verify_audit_immutability(
-        env: Env,
-        borrower: Address,
-        voucher: Address,
-        token: Address,
-    ) -> Result<bool, ContractError> {
-        audit_verification::verify_audit_immutability(env, borrower, voucher, token)
+        Ok(String::from_str(&_env, ""))
     }
 
     // ── Loan Priority / Subordination (senior-junior debt structures) ────────
@@ -1875,7 +1844,7 @@ impl QuorumCreditContract {
         _token: Address,
     ) -> Result<String, ContractError> {
         // TODO: Implement when maturity types are defined
-        Ok(String::from(""))
+        Ok(String::from_str(&_env, ""))
     }
 
     /// Get the current maturity bonus for a vouch in basis points (Issue #1177) - NOT YET IMPLEMENTED.
@@ -1924,7 +1893,7 @@ impl QuorumCreditContract {
         _borrower: Address,
     ) -> Result<String, ContractError> {
         // TODO: Implement when social profile types are defined
-        Ok(String::from(""))
+        Ok(String::from_str(&_env, ""))
     }
 
     /// Set whether borrower consents to share success stories (Issue #1176).
@@ -1969,7 +1938,7 @@ impl QuorumCreditContract {
         _story_id: u64,
     ) -> Result<String, ContractError> {
         // TODO: Implement when social feature types are defined
-        Ok(String::from(""))
+        Ok(String::from_str(&_env, ""))
     }
 
     /// Get all success stories for a borrower (Issue #1176) - NOT YET IMPLEMENTED.
@@ -1988,7 +1957,7 @@ impl QuorumCreditContract {
         _borrower: Address,
     ) -> Result<String, ContractError> {
         // TODO: Implement when social feature types are defined
-        Ok(String::from(""))
+        Ok(String::from_str(&_env, ""))
     }
 
     /// Find similar borrowers for peer discovery (Issue #1176) - NOT YET IMPLEMENTED.
@@ -2109,7 +2078,7 @@ impl QuorumCreditContract {
             let status = helper_loan_status(&env, &borrower);
             results.push_back(BatchLoanStatusResult {
                 borrower: borrower.clone(),
-                status,
+                status: status.clone(),
             });
 
             env.events().publish(
@@ -3187,7 +3156,7 @@ impl QuorumCreditContract {
 
         let key = DataKey::IdempotencyKey(idempotency_key.clone());
         let current_time = env.ledger().timestamp();
-        let ttl_24h = 24 * 60 * 60;
+        let ttl_24h: u64 = 24 * 60 * 60;
 
         if let Some(record) = env
             .storage()
@@ -3214,7 +3183,7 @@ impl QuorumCreditContract {
             .set(&DataKey::IdempotencyKey(idempotency_key.clone()), &new_record);
         env.storage()
             .persistent()
-            .extend_ttl(&DataKey::IdempotencyKey(idempotency_key), ttl_24h, ttl_24h);
+            .extend_ttl(&DataKey::IdempotencyKey(idempotency_key), ttl_24h as u32, ttl_24h as u32);
 
         env.events().publish(
             (symbol_short!("idem"), symbol_short!("new")),

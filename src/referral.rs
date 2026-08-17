@@ -51,7 +51,7 @@ fn derive_code_hash(env: &Env, referrer: &Address) -> BytesN<32> {
     // Encode the address as bytes then hash.
     let mut addr_bytes = Bytes::new(env);
     referrer.to_xdr(env).iter().for_each(|b| addr_bytes.push_back(b));
-    env.crypto().sha256(&addr_bytes)
+    env.crypto().sha256(&addr_bytes).to_bytes()
 }
 
 fn load_referral_stats(env: &Env, referrer: &Address) -> ReferralStats {

@@ -273,4 +273,57 @@ EmergencyBypassNotAuthorised = 131,
     SelfReferralNotAllowed = 190,
     /// This borrower already has a referrer registered.
     ReferralAlreadyRegistered = 191,
+    // ── Guarantor system ────────────────────────────────────────────────────
+    /// No guarantor record found for the given loan.
+    GuarantorNotFound = 192,
+    /// A guarantor has already been assigned to this loan.
+    GuarantorAlreadyAssigned = 193,
+    /// The guarantor's obligation for this loan has already been claimed.
+    GuarantorAlreadyClaimed = 194,
+    /// The provided guarantor address is invalid (e.g. zero address or the borrower itself).
+    InvalidGuarantor = 195,
+    /// The guarantee amount is invalid (e.g. zero or exceeds the loan amount).
+    InvalidGuaranteeAmount = 196,
+    /// The guarantee is not in a status that permits this operation.
+    InvalidGuaranteeStatus = 197,
+    /// An arithmetic overflow or underflow occurred during a checked operation.
+    ArithmeticOverflow = 198,
+    // ── Flash loans ──────────────────────────────────────────────────────────
+    /// The flash loan was not repaid (plus fee) within the same transaction.
+    FlashLoanNotRepaid = 199,
+    /// The requested fee amount is invalid.
+    InvalidFeeAmount = 200,
+    /// The requested flash loan would exceed the per-contract borrow cap.
+    FlashLoanCapExceeded = 201,
+    /// The requested record or resource was not found.
+    NotFound = 202,
+    // ── Vouch syndication ────────────────────────────────────────────────────
+    /// A syndicate pool already exists for this loan.
+    SyndicatePoolExists = 203,
+    /// A syndicate pool cannot be created or operated on with zero members.
+    SyndicateEmpty = 204,
+    /// No syndicate pool was found for the given pool_id.
+    SyndicatePoolNotFound = 205,
+    /// The syndicate pool is not in the Active status required for this operation.
+    SyndicateNotActive = 206,
+    /// Caller is not a member of the specified syndicate pool.
+    NotSyndicateMember = 207,
+    /// Caller has already voted on this syndicate proposal.
+    SyndicateAlreadyVoted = 208,
+    /// No syndicate proposal was found for the given proposal_id.
+    SyndicateProposalNotFound = 209,
+    // ── Vouch milestones ─────────────────────────────────────────────────────
+    /// The milestone condition has not yet been reached.
+    MilestoneNotReached = 210,
+    /// This milestone's release has already been claimed.
+    MilestoneAlreadyReleased = 211,
+    // ── Recurring payments ───────────────────────────────────────────────────
+    /// A recurring payment schedule already exists for this borrower.
+    RecurringPaymentExists = 212,
+    /// No recurring payment schedule was found for this borrower.
+    RecurringPaymentNotFound = 213,
+    /// The recurring payment schedule is not active.
+    RecurringPaymentInactive = 214,
+    /// The next recurring payment is not yet due.
+    RecurringPaymentNotDue = 215,
 }

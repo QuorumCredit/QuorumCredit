@@ -755,7 +755,7 @@ pub fn repay_cross_chain_atomic(
 
     // Emit event with cross-chain metadata
     env.events().publish(
-        (symbol_short!("loan"), symbol_short!("cross_chain_repay")),
+        (symbol_short!("loan"), symbol_short!("xc_repay")),
         (borrower.clone(), origin_chain, loan_id, payment_amount, fully_repaid),
     );
 

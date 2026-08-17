@@ -2429,8 +2429,8 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match token_addrs.iter().position(|t| t == v.token) {
             Some(i) => {
-                let updated = token_stakes.get(i).unwrap().saturating_add(v.stake);
-                token_stakes.set(i, updated);
+                let updated = token_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                token_stakes.set(i as u32, updated);
             }
             None => {
                 token_addrs.push_back(v.token.clone());
@@ -2440,8 +2440,8 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match chain_ids.iter().position(|c| c == v.chain_id) {
             Some(i) => {
-                let updated = chain_stakes.get(i).unwrap().saturating_add(v.stake);
-                chain_stakes.set(i, updated);
+                let updated = chain_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                chain_stakes.set(i as u32, updated);
             }
             None => {
                 chain_ids.push_back(v.chain_id);

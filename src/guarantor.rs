@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    config, get_active_loan_record, require_admin_approval, require_not_paused,
+    config, get_loan_by_id, require_admin_approval, require_not_paused,
 };
 use crate::types::{
     DataKey, GuarantorObligation, GuarantorRecord, GuarantorStats, GuaranteeStatus,
@@ -16,7 +16,7 @@ pub fn request_guarantor_for_loan(
     guarantee_amount: i128,
 ) -> Result<(), ContractError> {
     // Verify the loan exists and is active
-    let loan = get_active_loan_record(&env, &loan_id)?;
+    let loan = get_loan_by_id(&env, &loan_id)?;
     require_not_paused(&env)?;
 
     // Guarantor must be different from borrower

@@ -7,7 +7,7 @@
 /// 3. Percentage of loan disbursement
 ///
 /// Provides insurance pool helpers and claim processing.
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 use crate::types::{Config, DataKey};
 use crate::errors::ContractError;
 
@@ -33,8 +33,7 @@ pub fn collect_insurance_fee(env: &Env, loan_amount: i128, config: &Config) -> R
     // Add fee to insurance fund balance
     let current_balance: i128 = env.storage().instance()
         .get(&DataKey::InsuranceFund)
-        .unwrap_or(Ok(0i128))
-        .unwrap_or(0);
+        .unwrap_or(0i128);
 
     let new_balance = current_balance.saturating_add(fee);
     env.storage().instance().set(&DataKey::InsuranceFund, &new_balance);
@@ -65,8 +64,7 @@ pub fn contribute_to_insurance_fund(
 
     let current_balance: i128 = env.storage().instance()
         .get(&DataKey::InsuranceFund)
-        .unwrap_or(Ok(0i128))
-        .unwrap_or(0);
+        .unwrap_or(0i128);
 
     let new_balance = current_balance.saturating_add(amount);
     env.storage().instance().set(&DataKey::InsuranceFund, &new_balance);
@@ -99,14 +97,13 @@ pub fn claim_insurance_for_shortfall(
 
     let current_balance: i128 = env.storage().instance()
         .get(&DataKey::InsuranceFund)
-        .unwrap_or(Ok(0i128))
-        .unwrap_or(0);
+        .unwrap_or(0i128);
 
     if current_balance == 0 {
         return Err(ContractError::InsurancePoolEmpty);
     }
 
-    let payout = std::cmp::min(current_balance, shortfall);
+    let payout = current_balance.min(shortfall);
     let remaining_balance = current_balance.saturating_sub(payout);
 
     env.storage().instance().set(&DataKey::InsuranceFund, &remaining_balance);
@@ -118,14 +115,12 @@ pub fn claim_insurance_for_shortfall(
 pub fn get_insurance_fund_balance(env: &Env) -> i128 {
     env.storage().instance()
         .get(&DataKey::InsuranceFund)
-        .unwrap_or(Ok(0i128))
-        .unwrap_or(0)
+        .unwrap_or(0i128)
 }
 
 /// Get the timestamp of the most recent insurance fund contribution.
 pub fn get_insurance_fund_last_contribution(env: &Env) -> u64 {
     env.storage().instance()
         .get(&DataKey::InsuranceFundLastContribution)
-        .unwrap_or(Ok(0u64))
-        .unwrap_or(0)
+        .unwrap_or(0u64)
 }

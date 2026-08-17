@@ -17,6 +17,9 @@
 
 use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
 
+use crate::interest_rate_options::OptionType;
+use crate::reputation_nft::BadgeType;
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Yield earned by vouchers on full repayment, in basis points (200 = 2%).
@@ -890,6 +893,166 @@ pub enum DataKey {
     InsuranceFund,
     /// Timestamp (u64) of the most recent insurance fund contribution.
     InsuranceFundLastContribution,
+
+    // ── Issue #1172: Guarantor system ───────────────────────────────────────
+    /// loan_id → GuarantorRecord
+    GuarantorRecord(u64),
+    /// (guarantor, loan_id) → GuarantorObligation
+    GuarantorObligation(Address, u64),
+    /// guarantor → GuarantorStats
+    GuarantorStats(Address),
+
+    // ── Issue #1238: Staking Pool ────────────────────────────────────────────
+    /// pool_id → StakingPool
+    StakingPool(u64),
+    /// u64: monotonically increasing staking pool ID counter
+    StakingPoolCounter,
+    /// (pool_id, staker) → StakerPosition
+    StakingPoolStake(u64, Address),
+
+    // ── Vouch syndication ─────────────────────────────────────────────────────
+    /// pool_id → SyndicatePool
+    SyndicatePool(u64),
+    /// (pool_id, member) → SyndicateMember
+    SyndicateMember(u64, Address),
+    /// pool_id → SyndicatePerformance
+    SyndicatePerformance(u64),
+    /// pool_id → u64: monotonically increasing proposal ID counter for that pool
+    SyndicateProposalCounter(u64),
+    /// (pool_id, proposal_id) → SyndicateProposal
+    SyndicateProposal(u64, u64),
+    /// (pool_id, proposal_id, voter) → bool: has this member voted
+    SyndicateProposalVote(u64, u64, Address),
+
+    // ── Issue #1183: Flash loans ─────────────────────────────────────────────
+    /// Aggregate flash loan statistics (volume, fees, count)
+    FlashLoanStats,
+    /// contract → PerContractCap: per-contract flash-loan borrowing cap state
+    FlashLoanPerContractCap(Address),
+    /// Recent flash loan activity records (bounded ring buffer)
+    FlashLoanHistory,
+
+    // ── Cross-chain / multi-token bridge ─────────────────────────────────────
+    /// token → i128: bridged balance for that token
+    BridgedTokenBalance(Address),
+    /// token → u32: bridge conversion price in basis points
+    BridgeTokenPrice(Address),
+    /// token → TokenBridgeMetadata
+    TokenBridgeMetadata(Address),
+    /// Reentrancy guard lock (u32: 0 = unlocked, 1 = locked)
+    ReentrancyGuard,
+    /// loan_id → TokenSwapConfig
+    LoanTokenSwapConfig(u64),
+    /// Address of the configured DEX contract used for token swaps
+    DexContractAddress,
+    /// token → u32: liquidity tier for that token
+    TokenLiquidityTier(Address),
+    /// Vec<i128>: yield bonus (bps) per liquidity tier
+    LiquidityTierYieldBonuses,
+
+    // ── Weighted vouch reputation ─────────────────────────────────────────────
+    /// vouch_id → weight record
+    VouchReputationWeight(u64),
+    /// (borrower, token) → WeightedVouchDistribution
+    WeightedVouchDistribution(Address, Address),
+
+    // ── Issue #1169: Milestone-based vouch release ───────────────────────────
+    /// (loan_id, voucher, milestone_index) → bool: has this release been paid
+    VouchMilestoneRelease(u64, Address, u32),
+    /// (loan_id, milestone_index) → bool: has this milestone been achieved
+    MilestoneAchieved(u64, u32),
+
+    // ── Recurring payments ────────────────────────────────────────────────────
+    /// borrower → RecurringPaymentConfig
+    RecurringPayment(Address),
+
+    // ── Issue #1247: Referral rewards ─────────────────────────────────────────
+    /// referrer → i128: total referral rewards earned
+    ReferralRewardsEarned(Address),
+    /// referrer → BytesN<32>: referral code hash (lookup by owner)
+    ReferralCode(Address),
+    /// code hash → Address: referrer address (reverse lookup)
+    ReferralCodeOwner(BytesN<32>),
+    /// referrer → u32: number of successful referrals
+    ReferralCount(Address),
+
+    // ── Reputation badges (NFT-style achievements) ───────────────────────────
+    /// (owner, badge_type) → Badge
+    ReputationBadge(Address, BadgeType),
+    /// badge_type → BadgeStats
+    BadgeStats(BadgeType),
+    /// address → u32: reputation score
+    ReputationScore(Address),
+    /// address → u32: number of vouches this address has backed
+    VoucherBackedCount(Address),
+
+    // ── Prediction markets ────────────────────────────────────────────────────
+    /// u64: monotonically increasing prediction market ID counter
+    PredictionMarketCounter,
+    /// market_id → PredictionMarket
+    PredictionMarket(u64),
+    /// (market_id, participant) → MarketPosition
+    MarketPosition(u64, Address),
+    /// participant → PredictionAccuracy
+    PredictionAccuracy(Address),
+
+    // ── Community treasury / DAO ─────────────────────────────────────────────
+    /// i128: current treasury balance
+    TreasuryBalance,
+    /// u64: monotonically increasing treasury proposal ID counter
+    TreasuryProposalCounter,
+    /// proposal_id → TreasuryProposal
+    TreasuryProposal(u64),
+    /// (proposal_id, voter) → bool: has this address voted
+    TreasuryVote(u64, Address),
+    /// month_id → TreasuryReport
+    TreasuryReport(u64),
+
+    // ── Governance token / DAO proposals ─────────────────────────────────────
+    /// Aggregate governance participation metrics
+    GovParticipationMetrics,
+    /// holder → i128: governance token balance
+    GovTokenBalance(Address),
+    /// u64: monotonically increasing DAO proposal ID counter
+    DaoProposalCounter,
+    /// delegator → GovDelegation
+    GovDelegation(Address),
+    /// proposal_id → DaoProposal
+    DaoProposal(u64),
+
+    // ── Interest rate options ─────────────────────────────────────────────────
+    /// u32: implied volatility in basis points per day
+    ImpliedVolatility,
+    /// u64: monotonically increasing option ID counter
+    OptionCounter,
+    /// option_id → InterestRateOption
+    InterestRateOption(u64),
+    /// option_type → OptionOpenInterest
+    OptionOpenInterest(OptionType),
+
+    // ── Dynamic interest rate ─────────────────────────────────────────────────
+    /// Utilization-rate model configuration
+    UtilizationRateConfig,
+    /// Latest computed utilization-rate snapshot
+    UtilizationRateSnapshot,
+
+    // ── Loyalty program ───────────────────────────────────────────────────────
+    /// user → LoyaltyRecord
+    LoyaltyRecord(Address),
+
+    // ── Protocol-wide aggregate counters ─────────────────────────────────────
+    /// u32: total number of currently active loans
+    TotalActiveLoans,
+    /// i128: total value locked across the protocol
+    TotalValueLocked,
+    /// Vec<Address>: registry of all addresses that have ever vouched
+    VoucherRegistry,
+
+    // ── Issue #1080: Request idempotency ─────────────────────────────────────
+    /// idempotency_key → IdempotencyRecord
+    IdempotencyKey(String),
+    /// (user, role) → rate limit tracking state
+    RateLimitByRole(Address, UserRole),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -3613,3 +3776,52 @@ pub fn loyalty_gold_benefits() -> LoyaltyBenefits {
 
 /// Anniversary period in seconds (365 days).
 pub const LOYALTY_ANNIVERSARY_PERIOD_SECS: u64 = 365 * 24 * 60 * 60;
+
+// ── Issue #1075: Non-Stellar token bridge metadata ─────────────────────────────
+
+/// Metadata for a token bridged in from a non-Stellar chain.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenBridgeMetadata {
+    /// The local (Stellar) address representing the bridged token.
+    pub token_address: Address,
+    /// The bridge contract responsible for this token.
+    pub bridge_contract: Address,
+    /// The token's address on its origin chain.
+    pub source_token_address: Address,
+    /// Chain ID of the token's origin chain.
+    pub source_chain_id: u32,
+    /// Conversion price in basis points relative to the primary protocol token.
+    pub price_bps: i128,
+    /// Timestamp of the last price update.
+    pub price_updated_at: u64,
+    /// Whether this bridged token is currently accepted.
+    pub enabled: bool,
+    /// Maximum balance this contract will hold of the bridged token (0 = unlimited).
+    pub max_balance_cap: i128,
+}
+
+// ── Issue #1076: Token swap on repayment mismatch ──────────────────────────────
+
+/// Configuration allowing a borrower to repay a loan in an alternative token via DEX swap.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenSwapConfig {
+    /// Loan this configuration applies to.
+    pub loan_id: u64,
+    /// The loan's primary denomination token.
+    pub primary_token: Address,
+    /// Tokens the borrower may repay with instead of the primary token.
+    pub allowed_swap_tokens: Vec<Address>,
+    /// DEX contract used to perform the swap.
+    pub dex_contract: Address,
+    /// Maximum acceptable slippage, in basis points.
+    pub max_slippage_bps: i128,
+    /// Whether swaps are currently enabled for this loan.
+    pub swaps_enabled: bool,
+    /// Timestamp this configuration was created.
+    pub created_at: u64,
+}
+
+/// Default yield bonus (basis points) per liquidity tier (0 = highest liquidity, 3 = lowest).
+pub const DEFAULT_LIQUIDITY_TIER_BONUSES: [i128; 4] = [0, 50, 100, 200];

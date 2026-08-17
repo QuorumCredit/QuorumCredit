@@ -187,6 +187,13 @@ pub fn get_active_loan_record(env: &Env, borrower: &Address) -> Result<LoanRecor
         .ok_or(ContractError::NoActiveLoan)
 }
 
+pub fn get_loan_by_id(env: &Env, loan_id: &u64) -> Result<LoanRecord, ContractError> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Loan(*loan_id))
+        .ok_or(ContractError::NoActiveLoan)
+}
+
 pub fn get_latest_loan_record(env: &Env, borrower: &Address) -> Option<LoanRecord> {
     if let Some(loan_id) = env
         .storage()

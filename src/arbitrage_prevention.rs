@@ -21,7 +21,7 @@ pub const DEFAULT_MAX_SLIPPAGE_BPS: u32 = 1000;
 
 /// Reference exchange rate between two tokens
 #[contracttype]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ExchangeRate {
     /// Token A address
     pub token_a: Address,

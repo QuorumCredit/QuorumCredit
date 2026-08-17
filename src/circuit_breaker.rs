@@ -11,7 +11,7 @@
 /// 3. Admins must manually unpause after addressing the crisis
 /// 4. Cooldown enforcement prevents rapid trigger-pause-resume cycles
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 use crate::types::{Config, DataKey};
 use crate::errors::ContractError;
 
@@ -40,7 +40,7 @@ pub fn calculate_default_rate(
         .saturating_div(total_loan_count as u128)
         as u32;
 
-    std::cmp::min(rate_bps, 10_000) // Cap at 100%
+    rate_bps.min(10_000) // Cap at 100%
 }
 
 /// Check if the circuit breaker should be triggered based on current default rate.
@@ -93,8 +93,7 @@ pub fn try_trigger_circuit_breaker(
     // Check cooldown to prevent rapid thrashing
     let last_triggered: u64 = env.storage().instance()
         .get(&DataKey::CircuitBreakerLastTriggered)
-        .unwrap_or(Ok(0u64))
-        .unwrap_or(0);
+        .unwrap_or(0u64);
 
     let now = env.ledger().timestamp();
     if now < last_triggered.saturating_add(CIRCUIT_BREAKER_COOLDOWN_SECS) {
@@ -126,8 +125,7 @@ pub fn try_trigger_circuit_breaker(
 pub fn get_circuit_breaker_last_triggered(env: &Env) -> u64 {
     env.storage().instance()
         .get(&DataKey::CircuitBreakerLastTriggered)
-        .unwrap_or(Ok(0u64))
-        .unwrap_or(0)
+        .unwrap_or(0u64)
 }
 
 /// Get the current default rate threshold from config.

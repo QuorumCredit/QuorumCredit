@@ -106,7 +106,7 @@ pub fn create_mining_campaign(
     duration_secs: u64,
     campaign_type: MiningCampaignType,
 ) -> Result<u64, ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     if incentive_pool <= 0 {
         return Err(ContractError::InvalidAmount);
@@ -297,7 +297,7 @@ pub fn end_mining_campaign(
     admin_signers: Vec<Address>,
     campaign_id: u64,
 ) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     let mut campaign = load_campaign(&env, campaign_id)?;
 
@@ -320,7 +320,7 @@ pub fn cancel_mining_campaign(
     admin_signers: Vec<Address>,
     campaign_id: u64,
 ) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     let mut campaign = load_campaign(&env, campaign_id)?;
 
