@@ -69,6 +69,16 @@ pub mod audit_verification;
 pub mod large_loan_approval;
 pub mod staking_pool;
 pub mod referral;
+pub mod loan_cart;
+pub mod reputation_nft;
+pub mod prediction_market;
+pub mod community_treasury;
+pub mod dynamic_interest;
+pub mod governance_token;
+pub mod interest_rate_options;
+pub mod loan_attribution;
+pub mod loyalty;
+pub mod liquidity_mining;
 
 #[cfg(test)]
 mod governance_test;

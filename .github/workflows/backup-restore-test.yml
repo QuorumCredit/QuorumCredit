@@ -23,7 +23,7 @@ jobs:
       - name: Install stellar CLI and jq
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq libdbus-1-dev pkg-config
           if ! command -v stellar &>/dev/null; then
             cargo install --locked stellar-cli || echo "stellar CLI install skipped/failed — drill will report accordingly"
           fi

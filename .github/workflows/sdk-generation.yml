@@ -58,7 +58,6 @@ jobs:
       - name: Type-check TypeScript SDK
         if: hashFiles('sdk/typescript/package.json') != ''
         working-directory: sdk/typescript
-        if: hashFiles('sdk/typescript/package.json') != ''
         run: |
           npm install
           npm run build
@@ -66,7 +65,6 @@ jobs:
       - name: Type-check Python SDK
         if: hashFiles('sdk/python/setup.py') != ''
         working-directory: sdk/python
-        if: hashFiles('sdk/python/setup.py') != ''
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"

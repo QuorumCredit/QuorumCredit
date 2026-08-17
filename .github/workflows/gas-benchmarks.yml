@@ -23,7 +23,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
 
       - uses: actions/setup-python@v6
         with:
@@ -57,11 +57,15 @@ jobs:
               operations.push(`- ${complexity}`);
             }
 
-            const comment = `## Gas Budget Complexity Analysis
-
-${operations.length > 0 ? `Detected complexity classes:\n${operations.join('\n')}` : 'Running complexity analysis...'}
-
-[View full report](benchmark_report.html) (attached to this run)`;
+            const comment = [
+              '## Gas Budget Complexity Analysis',
+              '',
+              operations.length > 0
+                ? `Detected complexity classes:\n${operations.join('\n')}`
+                : 'Running complexity analysis...',
+              '',
+              '[View full report](benchmark_report.html) (attached to this run)'
+            ].join('\n');
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
