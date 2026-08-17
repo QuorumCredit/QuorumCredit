@@ -62,8 +62,7 @@ pub fn check_and_mark_default(
     // Increment default count for the borrower
     let current_count: u32 = env.storage().instance()
         .get(&DataKey::DefaultCount(loan.borrower.clone()))
-        .unwrap_or(Ok(0u32))
-        .unwrap_or(0);
+        .unwrap_or(0u32);
 
     env.storage().instance().set(
         &DataKey::DefaultCount(loan.borrower.clone()),
