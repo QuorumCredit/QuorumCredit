@@ -101,6 +101,8 @@ mod tests;
 mod fuzz_stake_testing;
 #[cfg(test)]
 mod circuit_breaker_insurance_integration_test;
+#[cfg(test)]
+mod insurance_fund_test;
 // #[cfg(test)]
 // mod rbac_enforcement_test; // private API drift — blocks unrelated tests
 #[cfg(test)]
@@ -876,6 +878,12 @@ impl QuorumCreditContract {
         }
 
         helpers::add_slash_balance(&env, total_slashed);
+
+        // Issue #1071: Claim insurance for shortfall when slashed amount < loan amount
+        let shortfall = loan.amount.saturating_sub(total_slashed);
+        if shortfall > 0 {
+            let _ = insurance::claim_insurance_for_shortfall(&env, shortfall, &cfg);
+        }
 
         let count: u32 = env
             .storage()
@@ -3063,8 +3071,29 @@ impl QuorumCreditContract {
 
     // ── Issue #882: Loan Insurance Integration ──────────────────────────────
 
+    pub fn set_insurance_fund_premium_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        premium_bps: u32,
+    ) {
+        admin::set_insurance_fund_premium_bps(env, admin_signers, premium_bps)
+    }
 
+    pub fn set_insurance_max_payout_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        max_payout_bps: u32,
+    ) {
+        admin::set_insurance_max_payout_bps(env, admin_signers, max_payout_bps)
+    }
 
+    pub fn set_insurance_premium_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        premium_bps: u32,
+    ) {
+        admin::set_insurance_premium_bps(env, admin_signers, premium_bps)
+    }
 
 
 
@@ -3351,8 +3380,8 @@ pub fn get_insurance_fee_bps_pub(_env: Env) -> u32 {
     0
 }
 
-pub fn get_insurance_pool_balance(_env: Env) -> i128 {
-    0
+pub fn get_insurance_pool_balance(env: Env) -> i128 {
+    insurance::get_insurance_fund_balance(&env)
 }
 
 pub fn set_insurance_coverage_bps(_env: Env, _admin_signers: Vec<Address>, _bps: u32) -> Result<(), ContractError> {
