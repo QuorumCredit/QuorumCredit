@@ -56,3 +56,49 @@ fn loan_proof_is_verified_for_the_correct_borrower_token_pair() {
     let other_borrower = Address::generate(&env);
     assert!(zk_snarks::verify_loan_proof(&env, &proof, &other_borrower, &token, 1_000_000, 500_000, true, false).is_err());
 }
+
+#[test]
+fn vouch_proof_rejects_mismatched_balance_ok() {
+    let env = Env::default();
+    let voucher = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    let token = Address::generate(&env);
+    let proof = zk_snarks::create_vouch_proof(&env, &voucher, &borrower, &token, 500_000, false, false);
+
+    assert!(zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, 500_000, false, false).is_ok());
+    assert!(zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, 500_000, true, false).is_err());
+}
+
+#[test]
+fn vouch_proof_rejects_mismatched_blacklisted() {
+    let env = Env::default();
+    let voucher = Address::generate(&env);
+    let borrower = Address::generate(&env);
+    let token = Address::generate(&env);
+    let proof = zk_snarks::create_vouch_proof(&env, &voucher, &borrower, &token, 500_000, true, true);
+
+    assert!(zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, 500_000, true, true).is_ok());
+    assert!(zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, 500_000, true, false).is_err());
+}
+
+#[test]
+fn loan_proof_rejects_mismatched_eligibility_ok() {
+    let env = Env::default();
+    let borrower = Address::generate(&env);
+    let token = Address::generate(&env);
+    let proof = zk_snarks::create_loan_proof(&env, &borrower, &token, 1_000_000, 500_000, false, true);
+
+    assert!(zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, 1_000_000, 500_000, false, true).is_ok());
+    assert!(zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, 1_000_000, 500_000, true, true).is_err());
+}
+
+#[test]
+fn loan_proof_rejects_mismatched_sufficient_vouches() {
+    let env = Env::default();
+    let borrower = Address::generate(&env);
+    let token = Address::generate(&env);
+    let proof = zk_snarks::create_loan_proof(&env, &borrower, &token, 1_000_000, 500_000, true, false);
+
+    assert!(zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, 1_000_000, 500_000, true, false).is_ok());
+    assert!(zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, 1_000_000, 500_000, true, true).is_err());
+}

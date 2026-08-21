@@ -508,20 +508,25 @@ impl QuorumCreditContract {
         env: Env,
         voucher: Address,
         borrower: Address,
+        stake_amount: i128,
         commitment: ConfidentialCommitment,
         proof: ZkProof,
         token: Address,
         chain_id: Option<u32>,
     ) -> Result<(), ContractError> {
-        // Verify the zk-SNARK proof against the provided proof context.
-        zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, 0, true, false)?;
+        voucher.require_auth();
 
-        // Store the commitment for this vouch
+        let token_client = crate::helpers::require_allowed_token(&env, &token)?;
+        let voucher_balance = token_client.balance(&voucher);
+        let balance_ok = voucher_balance >= stake_amount;
+        let blacklisted = crate::admin::is_blacklisted(env.clone(), borrower.clone());
+
+        zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, stake_amount, balance_ok, blacklisted)?;
+
         env.storage()
             .persistent()
             .set(&DataKey::VouchCommitment(voucher.clone(), borrower.clone()), &commitment);
 
-        // Record the proof for audit trail
         let proof_id: u64 = env
             .storage()
             .instance()
@@ -545,10 +550,7 @@ impl QuorumCreditContract {
             .persistent()
             .set(&DataKey::ZkProofRecord(proof_id), &proof_record);
 
-        // For now, we still need to call the regular vouch function
-        // In a full implementation, this would use the commitment instead of the actual amount
-        // The actual amount would be revealed off-chain to authorized parties
-        vouch::vouch(env, voucher, borrower, 0, token, chain_id)
+        vouch::vouch(env, voucher, borrower, stake_amount, token, chain_id)
     }
     pub fn batch_vouch(
         env: Env,
@@ -773,16 +775,35 @@ impl QuorumCreditContract {
     pub fn request_loan_confidential(
         env: Env,
         borrower: Address,
-        _commitment: ConfidentialCommitment,
+        amount: i128,
+        commitment: ConfidentialCommitment,
         proof: ZkProof,
         threshold: i128,
         loan_purpose: soroban_sdk::String,
         token: Address,
     ) -> Result<(), ContractError> {
-        // Verify the zk-SNARK proof against the provided loan context.
-        zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, 0, threshold, true, false)?;
+        borrower.require_auth();
 
-        // Record the proof for audit trail
+        let vouches: Vec<crate::types::VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let total_vouches = vouches.len();
+        let sufficient_vouches = total_vouches > 0;
+        let eligibility_ok = vouches
+            .iter()
+            .filter(|v| v.token == token)
+            .map(|v| v.stake)
+            .sum::<i128>() >= threshold;
+
+        zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, amount, threshold, eligibility_ok, sufficient_vouches)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanCommitment(borrower.clone()), &commitment);
+
         let proof_id: u64 = env
             .storage()
             .instance()
@@ -806,10 +827,7 @@ impl QuorumCreditContract {
             .instance()
             .set(&DataKey::ZkProofRecord(proof_id), &proof_record);
 
-        // For now, we still need to call the regular request_loan function
-        // In a full implementation, this would use the commitment instead of the actual amount
-        // The actual amount would be revealed off-chain to authorized parties
-        loan::request_loan(env, borrower, 0, threshold, loan_purpose, token)
+        loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
     }
 
 
