@@ -2841,6 +2841,28 @@ impl QuorumCreditContract {
         admin::rotate_admin(env, admin_signers, old_admin, new_admin)
     }
 
+    // ── Cross-Chain Relay Pipeline (Issue #1361) ──────────────────────────────
+
+    /// Admin: register an Ed25519 public key for a source chain's relay attestations.
+    pub fn set_relay_key(
+        env: Env,
+        admin_signers: Vec<Address>,
+        source_chain: u32,
+        public_key: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        crate::set_relay_key(env, admin_signers, source_chain, public_key)
+    }
+
+    /// Admin: emit an outbound relay event (to be signed and relayed to dest_chain).
+    pub fn relay_emit(
+        env: Env,
+        admin_signers: Vec<Address>,
+        dest_chain: u32,
+        event_type: soroban_sdk::Symbol,
+        payload: soroban_sdk::Bytes,
+    ) -> Result<u64, ContractError> {
+        crate::relay_emit(env, admin_signers, dest_chain, event_type, payload)
+    }
 
     /// Canonical bytes the source chain's relay key must sign for an event.
     pub fn relay_attestation_message(
@@ -3394,54 +3416,168 @@ pub fn get_voucher_yield_claim(_env: Env, _loan_id: u64, _voucher: Address) -> O
     None
 }
 
-pub fn set_relay_key(_env: Env, _admin_signers: Vec<Address>, _source_chain: u32, _public_key: BytesN<32>) -> Result<(), ContractError> {
+pub fn set_relay_key(env: Env, admin_signers: Vec<Address>, source_chain: u32, public_key: BytesN<32>) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if source_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::RelayPublicKey(source_chain), &public_key);
     Ok(())
 }
 
-pub fn relay_emit(_env: Env, _admin_signers: Vec<Address>, _dest_chain: u32, _event_type: soroban_sdk::Symbol, _payload: soroban_sdk::Bytes) -> Result<u64, ContractError> {
-    Ok(0)
+pub fn relay_emit(env: Env, admin_signers: Vec<Address>, dest_chain: u32, event_type: soroban_sdk::Symbol, payload: soroban_sdk::Bytes) -> Result<u64, ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if dest_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    let current_seq = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::OutboundRelaySeq(dest_chain))
+        .unwrap_or(0);
+    let next_seq = current_seq.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+
+    let event = RelayEvent {
+        source_chain: 0,
+        dest_chain,
+        event_type,
+        payload,
+        seq: next_seq,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::OutboundRelayEvent(dest_chain, next_seq), &event);
+    env.storage()
+        .persistent()
+        .set(&DataKey::OutboundRelaySeq(dest_chain), &next_seq);
+
+    Ok(next_seq)
 }
 
 pub fn relay_attestation_message(
     env: &Env,
-    _event: &RelayEvent,
-    _nonce: u64,
-    _timestamp: u64,
+    event: &RelayEvent,
+    nonce: u64,
+    timestamp: u64,
 ) -> soroban_sdk::Bytes {
-    soroban_sdk::Bytes::new(env)
+    let payload = (event.clone(), nonce, timestamp);
+    let encoded = payload.to_xdr(env);
+    env.crypto().sha256(&encoded).into()
 }
 
-pub fn relay_message(_env: Env, _event: RelayEvent, _attestation: RelayAttestation) -> Result<(), ContractError> {
+pub fn relay_message(env: Env, event: RelayEvent, attestation: RelayAttestation) -> Result<(), ContractError> {
+    if event.source_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    let public_key: BytesN<32> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RelayPublicKey(event.source_chain))
+        .ok_or(ContractError::RelayKeyNotConfigured)?;
+
+    if is_relay_processed(env.clone(), event.source_chain, event.seq) {
+        return Err(ContractError::RelayEventAlreadyProcessed);
+    }
+
+    if is_relay_nonce_used(env.clone(), event.source_chain, attestation.nonce) {
+        return Err(ContractError::RelayReplayDetected);
+    }
+
+    let now = env.ledger().timestamp();
+    if attestation.timestamp > now {
+        if attestation.timestamp.saturating_sub(now) > 60 {
+            return Err(ContractError::RelayEventFromFuture);
+        }
+    } else if now.saturating_sub(attestation.timestamp) > 600 {
+        return Err(ContractError::RelayEventExpired);
+    }
+
+    let message = relay_attestation_message(&env, &event, attestation.nonce, attestation.timestamp);
+
+    env.crypto().ed25519_verify(&public_key, &message, &attestation.signature);
+
+    env.storage().persistent().set(
+        &DataKey::RelayEventProcessed(event.source_chain, event.seq),
+        &true,
+    );
+
+    env.storage().persistent().set(
+        &DataKey::RelayNonceUsed(event.source_chain, attestation.nonce),
+        &true,
+    );
+
     Ok(())
 }
 
 pub fn acknowledge_relay(
-    _env: Env,
-    _admin_signers: Vec<Address>,
-    _dest_chain: u32,
-    _up_to_seq: u64,
+    env: Env,
+    admin_signers: Vec<Address>,
+    dest_chain: u32,
+    up_to_seq: u64,
 ) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if dest_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    let last_acked = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::LastAcknowledgedRelaySeq(dest_chain))
+        .unwrap_or(0);
+
+    if up_to_seq < last_acked {
+        return Err(ContractError::RelayAckRegression);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::LastAcknowledgedRelaySeq(dest_chain), &up_to_seq);
+
     Ok(())
 }
 
-pub fn get_outbound_event(_env: Env, _dest_chain: u32, _seq: u64) -> Option<RelayEvent> {
-    None
+pub fn get_outbound_event(env: Env, dest_chain: u32, seq: u64) -> Option<RelayEvent> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OutboundRelayEvent(dest_chain, seq))
 }
 
-pub fn latest_outbound_seq(_env: Env, _dest_chain: u32) -> u64 {
-    0
+pub fn latest_outbound_seq(env: Env, dest_chain: u32) -> u64 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::OutboundRelaySeq(dest_chain))
+        .unwrap_or(0)
 }
 
-pub fn last_acknowledged_seq(_env: Env, _dest_chain: u32) -> u64 {
-    0
+pub fn last_acknowledged_seq(env: Env, dest_chain: u32) -> u64 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::LastAcknowledgedRelaySeq(dest_chain))
+        .unwrap_or(0)
 }
 
-pub fn is_relay_processed(_env: Env, _source_chain: u32, _seq: u64) -> bool {
-    false
+pub fn is_relay_processed(env: Env, source_chain: u32, seq: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RelayEventProcessed(source_chain, seq))
+        .unwrap_or(false)
 }
 
-pub fn is_relay_nonce_used(_env: Env, _source_chain: u32, _nonce: u64) -> bool {
-    false
+pub fn is_relay_nonce_used(env: Env, source_chain: u32, nonce: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RelayNonceUsed(source_chain, nonce))
+        .unwrap_or(false)
 }
 
 /// Issue #1282: Maximum number of custom attributes a single caller may store.

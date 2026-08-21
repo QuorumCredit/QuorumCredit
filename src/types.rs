@@ -1053,6 +1053,20 @@ pub enum DataKey {
     IdempotencyKey(String),
     /// (user, role) → rate limit tracking state
     RateLimitByRole(Address, UserRole),
+
+    // ── Issue #1361: Cross-Chain Relay Pipeline ──────────────────────────────
+    /// source_chain → Ed25519 public key trusted to sign relay messages
+    RelayPublicKey(u32),
+    /// (source_chain, nonce) → bool: has this nonce been consumed
+    RelayNonceUsed(u32, u64),
+    /// (dest_chain, seq) → RelayEvent: outbound event stored for retrieval
+    OutboundRelayEvent(u32, u64),
+    /// dest_chain → u64: latest outbound sequence number for that chain
+    OutboundRelaySeq(u32),
+    /// dest_chain → u64: last acknowledged outbound sequence (for delivery tracking)
+    LastAcknowledgedRelaySeq(u32),
+    /// (source_chain, seq) → bool: has this inbound event been processed
+    RelayEventProcessed(u32, u64),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -3227,13 +3241,19 @@ pub struct PeriodicPaymentStatus {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayEvent {
+    pub source_chain: u32,
+    pub dest_chain: u32,
+    pub event_type: soroban_sdk::Symbol,
+    pub payload: Bytes,
     pub seq: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayAttestation {
-    pub signature: Bytes,
+    pub signature: BytesN<64>,
+    pub nonce: u64,
+    pub timestamp: u64,
 }
 
 #[contracttype]
