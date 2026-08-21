@@ -35,6 +35,12 @@ INDEXER_DB_PATH=../tools/indexer/indexer.db npm run dev
 
 Without `REDIS_URL` set, it falls back to an in-process `LocalBus` — fine for a single
 instance locally, **not** safe for more than one replica (a loud warning is logged).
+The same applies to the `/api/auth/token` failed-login rate limiter
+(`src/auth/rateLimiter.ts`, issue #1374): without `REDIS_URL` it falls back to an
+in-process `LocalAuthRateLimiter` whose counters are private to that one instance, so
+a credential-stuffing attacker gets `maxAttempts` free attempts *per replica* rather
+than per deployment. Set `REDIS_URL` in any multi-replica deployment so
+`RedisAuthRateLimiter` enforces one shared count across all instances.
 For real multi-instance behavior:
 
 ```bash
