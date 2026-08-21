@@ -1,5 +1,6 @@
 {
   "contract_id": "CCONTRACTIDEXAMPLE00000000000000000000000000000000000000",
+  "network_passphrase": "Test SDF Future Network ; October 2022",
   "checks": ["get_config", "get_fee_treasury", "get_slash_treasury"],
   "validators": [
     { "name": "sdf-1", "endpoint": "https://soroban-testnet.stellar.org" },
