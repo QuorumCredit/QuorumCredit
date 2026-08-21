@@ -1,3 +1,31 @@
+//! **Commitment-based Self-Attestation with On-Chain Verification**
+//!
+//! This module provides **commitment-based self-attestation** with on-chain input verification,
+//! NOT a zero-knowledge proof system. Proofs are deterministic hashes of claimed values bound
+//! to the caller's identity, token, and amount. Verification succeeds if the hash matches and
+//! the claimed values satisfy on-chain constraints (balance, blacklist, eligibility, vouch count).
+//!
+//! **Key Properties:**
+//! - **Binding:** Proofs are deterministically derived from the voucher/borrower identity, token, amount, and boolean flags.
+//! - **Verifiable:** On-chain code checks that the proof hash is correctly formed and claimed values satisfy constraints.
+//! - **Commitment-based:** A separate `ConfidentialCommitment` can be stored and later opened against the amount/blinding factor
+//!   to prove that the self-attested values match the committed values (preventing commitment-proofs mismatch attacks).
+//! - **Not Private:** The claimed values (balance_ok, blacklisted, eligibility_ok, sufficient_vouches) are boolean
+//!   assertions verified at call time; they do not hide the underlying amounts or identity of the voucher/borrower.
+//!
+//! **Current Limitations:**
+//! - This is NOT a real zk-SNARK system and provides no cryptographic privacy. The voucher's balance, blacklist status,
+//!   borrower's eligibility, and vouch count are revealed to anyone who observes the on-chain call.
+//! - The commitment is stored but the reveal/settlement phase (to verify commitment ↔ proof matching) is not yet implemented.
+//!   A future upgrade should add a `reveal_commitment()` function to check that the commitment hash matches the amount
+//!   and blinding factor provided at settlement time.
+//!
+//! **Integration Notes:**
+//! - `vouch_confidential()` and `request_loan_confidential()` now accept explicit amount and compute boolean flags from
+//!   on-chain state (balance, blacklist, eligibility, vouch count).
+//! - These functions call the regular `vouch()` and `request_loan()` with the real amounts, ensuring the loan/vouch
+//!   is recorded with the caller-supplied values.
+
 use crate::errors::ContractError;
 use crate::types::{
     ConfidentialCommitment, DataKey, ZkProof, ZkProofRecord, PROOF_TYPE_LOAN_REQUEST,

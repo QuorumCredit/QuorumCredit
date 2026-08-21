@@ -601,6 +601,8 @@ pub enum DataKey {
     PendingWithdrawal(Address, Address),
     /// Confidential vouch commitment: (voucher, borrower) → commitment record
     VouchCommitment(Address, Address),
+    /// Confidential loan commitment: borrower → commitment record
+    LoanCommitment(Address),
     /// Monotonic counter for confidential proof records
     ZkProofCounter,
     /// Confidential proof record by ID
