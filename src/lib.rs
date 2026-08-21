@@ -12,7 +12,6 @@
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::redundant_field_names)]
 #![allow(clippy::identity_op)]
-#![allow(clippy::clamp_without_iter)]
 #![allow(clippy::if_same_then_else)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::needless_return)]
@@ -20,7 +19,6 @@
 #![allow(clippy::large_enum_variant)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::needless_lifetimes)]
-#![allow(clippy::div_ceil)]
 // Additional clippy lints that exist across the codebase
 #![allow(clippy::unnecessary_cast)]
 #![allow(clippy::needless_borrows_for_generic_args)]
