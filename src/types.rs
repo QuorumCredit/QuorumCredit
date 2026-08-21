@@ -2570,6 +2570,16 @@ pub struct PendingSlashRecord {
     pub executed: bool,
 }
 
+/// A queued slash entry for lazy/deferred batch execution.
+/// Created via `queue_slash`; executed via `execute_queued_slashes`.
+#[contracttype]
+#[derive(Clone)]
+pub struct LazySlashEntry {
+    pub borrower: Address,
+    pub amount: i128,
+    pub queued_at: u64,
+}
+
 /// Controls where redistributable slash funds flow after insurance allocation.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
