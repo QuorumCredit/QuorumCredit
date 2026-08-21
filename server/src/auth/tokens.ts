@@ -86,6 +86,8 @@ export type VerifyResult =
  * The function is intentionally synchronous for the common path (no Redis),
  * and returns a Promise only when a revocation store is supplied.
  */
+export function verifyToken(secret: string, token: string): VerifyResult;
+export function verifyToken(secret: string, token: string, revocationStore: RevocationStore): Promise<VerifyResult>;
 export function verifyToken(
   secret: string,
   token: string,
