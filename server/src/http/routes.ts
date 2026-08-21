@@ -7,6 +7,9 @@ import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { recurringPaymentStore } from "../recurring/recurringPaymentStore.js";
 import { loanCartStore } from "../cart/loanCartStore.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
+import type { CostAllocator } from "../costs/costAllocator.js";
+import type { PartitionGuard } from "../resilience/partitionGuard.js";
+import { handleWebhookRequest, type WebhookRoutesContext } from "./webhookRoutes.js";
 
 export interface RouteContext {
   authSecret: string;
