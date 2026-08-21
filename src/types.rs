@@ -3262,7 +3262,6 @@ pub struct VoucherFraudScore {
 /// Issue #1193: Loan covenant monitoring types
 /// Covenants are financial and operational requirements that borrowers must maintain
 /// throughout the loan lifecycle. Violations trigger escalation protocols.
-
 /// Covenant type enumeration for different monitoring requirements
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

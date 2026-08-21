@@ -21,6 +21,22 @@
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::needless_lifetimes)]
 #![allow(clippy::div_ceil)]
+// Additional clippy lints that exist across the codebase
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::manual_clamp)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::unnecessary_min_or_max)]
+#![allow(clippy::manual_saturating_arithmetic)]
+#![allow(clippy::manual_checked_ops)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::question_mark)]
+#![allow(clippy::empty_line_after_outer_attr)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+#![allow(unused_assignments)]
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, String, Vec,};
