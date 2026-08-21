@@ -383,6 +383,9 @@ export function handleHttpRequest(
   if (req.method === "POST" && url.pathname === "/api/auth/token") {
     // Issue #1290: validate the submitted API key against the provisioned-keys store.
     // Unrecognised keys → 401.  Repeated failures per IP are rate-limited.
+    // Issue #1374: the rate limiter check/record calls are async (Redis-backed in
+    // multi-instance deployments — see auth/rateLimiter.ts), so this handler runs
+    // as an async IIFE rather than the previous synchronous isBlocked() check.
     const keyStore = ctx.apiKeyStore ?? loadApiKeyStore();
     const rateLimiter = ctx.authRateLimiter ?? defaultAuthRateLimiter;
     const sourceIp =
@@ -390,42 +393,46 @@ export function handleHttpRequest(
       req.socket.remoteAddress ??
       "unknown";
 
-    if (rateLimiter.isBlocked(sourceIp)) {
-      res.writeHead(429, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "too many failed attempts — try again later" }));
-      return;
-    }
+    void (async () => {
+      if (await rateLimiter.isBlocked(sourceIp)) {
+        res.writeHead(429, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "too many failed attempts — try again later" }));
+        return;
+      }
 
-    readJsonBody<TokenRequestBody>(req)
-      .then((body) => {
-        if (!body.apiKey) {
-          res.writeHead(400, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: "apiKey required" }));
-          return;
-        }
-
-        if (!keyStore.isValid(body.apiKey)) {
-          const blocked = rateLimiter.recordFailure(sourceIp);
-          metrics.incCounter("qc_auth_failures_total");
-          if (blocked) {
-            res.writeHead(429, { "content-type": "application/json" });
-            res.end(JSON.stringify({ error: "too many failed attempts — try again later" }));
-          } else {
-            res.writeHead(401, { "content-type": "application/json" });
-            res.end(JSON.stringify({ error: "invalid API key" }));
-          }
-          return;
-        }
-
-        const issued = issueToken(ctx.authSecret, body.apiKey, ctx.tokenTtlSeconds, body.borrower);
-        metrics.incCounter("qc_auth_issued_total");
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(issued));
-      })
-      .catch(() => {
+      let body: TokenRequestBody;
+      try {
+        body = await readJsonBody<TokenRequestBody>(req);
+      } catch {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "invalid request body" }));
-      });
+        return;
+      }
+
+      if (!body.apiKey) {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "apiKey required" }));
+        return;
+      }
+
+      if (!keyStore.isValid(body.apiKey)) {
+        const blocked = await rateLimiter.recordFailure(sourceIp);
+        metrics.incCounter("qc_auth_failures_total");
+        if (blocked) {
+          res.writeHead(429, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "too many failed attempts — try again later" }));
+        } else {
+          res.writeHead(401, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid API key" }));
+        }
+        return;
+      }
+
+      const issued = issueToken(ctx.authSecret, body.apiKey, ctx.tokenTtlSeconds, body.borrower);
+      metrics.incCounter("qc_auth_issued_total");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(issued));
+    })();
     return;
   }
 
