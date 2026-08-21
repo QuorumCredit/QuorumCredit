@@ -18,6 +18,8 @@ on:
 jobs:
   gas-benchmarks:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v5
 
@@ -42,6 +44,7 @@ jobs:
       - name: Comment PR with complexity analysis
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
+        continue-on-error: true
         with:
           script: |
             const fs = require('fs');
