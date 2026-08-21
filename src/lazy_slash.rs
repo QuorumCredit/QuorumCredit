@@ -64,7 +64,7 @@ pub fn queue_slash(env: &Env, borrower: Address, amount: i128) -> Result<(), Con
 /// # Returns
 /// The number of slashes executed successfully.
 pub fn execute_queued_slashes(env: &Env) -> Result<u32, ContractError> {
-    let mut queue: Vec<LazySlashEntry> = env
+    let queue: Vec<LazySlashEntry> = env
         .storage()
         .persistent()
         .get(&DataKey::LazySlashQueue)
