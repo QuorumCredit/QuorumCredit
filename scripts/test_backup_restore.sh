@@ -188,19 +188,130 @@ CORRECTNESS="skipped"
 if [ "$STATUS" = "pass" ] && [ "$RESTORE_OK" = "true" ] && [ "$BACKUP_TEST_EXECUTE" = "true" ]; then
     echo ""
     echo "Step 4/4 — Verifying restored state correctness..."
+    
+    CORRECTNESS_CHECKS_PASSED=0
+    CORRECTNESS_CHECKS_FAILED=0
+    
     if command -v stellar &>/dev/null; then
+        # Check 1: Paused state
         BACKUP_PAUSED=$(jq -c . "$LATEST_BACKUP_DIR/paused.json" 2>/dev/null || echo "null")
         STAGING_PAUSED=$(stellar contract invoke --id "$STAGING_CONTRACT_ID" \
             --source "${STAGING_ADMIN_KEY:-$ADMIN_KEY}" --network "$NETWORK" \
             -- get_paused 2>/dev/null || echo "null")
         if [ "$BACKUP_PAUSED" = "$STAGING_PAUSED" ]; then
-            CORRECTNESS="true"
+            CORRECTNESS_CHECKS_PASSED=$((CORRECTNESS_CHECKS_PASSED + 1))
             echo "  [OK] restored paused-state matches backup"
         else
-            CORRECTNESS="false"
+            CORRECTNESS_CHECKS_FAILED=$((CORRECTNESS_CHECKS_FAILED + 1))
             STATUS="fail"
             FAILURE_REASON="${FAILURE_REASON:+$FAILURE_REASON; }restored state diverges from backup (get_paused mismatch)"
             echo "  [ERR] restored state mismatch: backup=$BACKUP_PAUSED staging=$STAGING_PAUSED" >&2
+        fi
+        
+        # Check 2-5: Loan and vouch records for sampled borrowers
+        # Determine which borrowers to sample: use env var BACKUP_TEST_SAMPLE_BORROWERS if set,
+        # otherwise sample all borrowers from the backed-up derived_addresses.txt
+        SAMPLE_BORROWERS_FILE="${BACKUP_TEST_SAMPLE_BORROWERS:-$LATEST_BACKUP_DIR/derived_addresses.txt}"
+        
+        if [ -f "$SAMPLE_BORROWERS_FILE" ]; then
+            SAMPLE_COUNT=0
+            LOANS_DIR="$LATEST_BACKUP_DIR/loans"
+            VOUCHES_DIR="$LATEST_BACKUP_DIR/vouches"
+            
+            while IFS= read -r borrower; do
+                [ -z "$borrower" ] && continue
+                SAMPLE_COUNT=$((SAMPLE_COUNT + 1))
+                
+                safe_name=$(echo -n "$borrower" | sha256sum | cut -c1-16)
+                
+                # Check loan record
+                if [ -f "$LOANS_DIR/${safe_name}.json" ]; then
+                    BACKUP_LOAN=$(jq -c . "$LOANS_DIR/${safe_name}.json" 2>/dev/null || echo "null")
+                    STAGING_LOAN=$(stellar contract invoke --id "$STAGING_CONTRACT_ID" \
+                        --source "${STAGING_ADMIN_KEY:-$ADMIN_KEY}" --network "$NETWORK" \
+                        -- get_loan --borrower "$borrower" 2>/dev/null | jq -c . || echo "null")
+                    
+                    if [ "$BACKUP_LOAN" = "$STAGING_LOAN" ]; then
+                        CORRECTNESS_CHECKS_PASSED=$((CORRECTNESS_CHECKS_PASSED + 1))
+                    else
+                        CORRECTNESS_CHECKS_FAILED=$((CORRECTNESS_CHECKS_FAILED + 1))
+                        STATUS="fail"
+                        FAILURE_REASON="${FAILURE_REASON:+$FAILURE_REASON; }loan record mismatch for borrower $borrower"
+                        echo "  [ERR] loan record mismatch for $borrower" >&2
+                        echo "        backup: $BACKUP_LOAN" >&2
+                        echo "        staging: $STAGING_LOAN" >&2
+                    fi
+                fi
+                
+                # Check vouch records
+                if [ -f "$VOUCHES_DIR/${safe_name}.json" ]; then
+                    BACKUP_VOUCHES=$(jq -c . "$VOUCHES_DIR/${safe_name}.json" 2>/dev/null || echo "null")
+                    STAGING_VOUCHES=$(stellar contract invoke --id "$STAGING_CONTRACT_ID" \
+                        --source "${STAGING_ADMIN_KEY:-$ADMIN_KEY}" --network "$NETWORK" \
+                        -- get_vouches --borrower "$borrower" 2>/dev/null | jq -c . || echo "null")
+                    
+                    if [ "$BACKUP_VOUCHES" = "$STAGING_VOUCHES" ]; then
+                        CORRECTNESS_CHECKS_PASSED=$((CORRECTNESS_CHECKS_PASSED + 1))
+                    else
+                        CORRECTNESS_CHECKS_FAILED=$((CORRECTNESS_CHECKS_FAILED + 1))
+                        STATUS="fail"
+                        FAILURE_REASON="${FAILURE_REASON:+$FAILURE_REASON; }vouch records mismatch for borrower $borrower"
+                        echo "  [ERR] vouch records mismatch for $borrower" >&2
+                        echo "        backup: $BACKUP_VOUCHES" >&2
+                        echo "        staging: $STAGING_VOUCHES" >&2
+                    fi
+                fi
+                
+                # Check loan status
+                if [ -f "$LOANS_DIR/${safe_name}_status.json" ]; then
+                    BACKUP_STATUS=$(jq -c . "$LOANS_DIR/${safe_name}_status.json" 2>/dev/null || echo "null")
+                    STAGING_STATUS=$(stellar contract invoke --id "$STAGING_CONTRACT_ID" \
+                        --source "${STAGING_ADMIN_KEY:-$ADMIN_KEY}" --network "$NETWORK" \
+                        -- loan_status --borrower "$borrower" 2>/dev/null | jq -c . || echo "null")
+                    
+                    if [ "$BACKUP_STATUS" = "$STAGING_STATUS" ]; then
+                        CORRECTNESS_CHECKS_PASSED=$((CORRECTNESS_CHECKS_PASSED + 1))
+                    else
+                        CORRECTNESS_CHECKS_FAILED=$((CORRECTNESS_CHECKS_FAILED + 1))
+                        STATUS="fail"
+                        FAILURE_REASON="${FAILURE_REASON:+$FAILURE_REASON; }loan_status mismatch for borrower $borrower"
+                        echo "  [ERR] loan_status mismatch for $borrower" >&2
+                        echo "        backup: $BACKUP_STATUS" >&2
+                        echo "        staging: $STAGING_STATUS" >&2
+                    fi
+                fi
+                
+                # Check total vouched amount
+                if [ -f "$VOUCHES_DIR/${safe_name}_total.json" ]; then
+                    BACKUP_TOTAL=$(jq -c . "$VOUCHES_DIR/${safe_name}_total.json" 2>/dev/null || echo "null")
+                    STAGING_TOTAL=$(stellar contract invoke --id "$STAGING_CONTRACT_ID" \
+                        --source "${STAGING_ADMIN_KEY:-$ADMIN_KEY}" --network "$NETWORK" \
+                        -- total_vouched --borrower "$borrower" 2>/dev/null | jq -c . || echo "null")
+                    
+                    if [ "$BACKUP_TOTAL" = "$STAGING_TOTAL" ]; then
+                        CORRECTNESS_CHECKS_PASSED=$((CORRECTNESS_CHECKS_PASSED + 1))
+                    else
+                        CORRECTNESS_CHECKS_FAILED=$((CORRECTNESS_CHECKS_FAILED + 1))
+                        STATUS="fail"
+                        FAILURE_REASON="${FAILURE_REASON:+$FAILURE_REASON; }total_vouched mismatch for borrower $borrower"
+                        echo "  [ERR] total_vouched mismatch for $borrower" >&2
+                        echo "        backup: $BACKUP_TOTAL" >&2
+                        echo "        staging: $STAGING_TOTAL" >&2
+                    fi
+                fi
+            done < "$SAMPLE_BORROWERS_FILE"
+            
+            echo "  Sampled $SAMPLE_COUNT borrower(s): $CORRECTNESS_CHECKS_PASSED checks passed, $CORRECTNESS_CHECKS_FAILED failed"
+        fi
+        
+        # Determine overall correctness
+        if [ "$CORRECTNESS_CHECKS_FAILED" -eq 0 ] && [ "$CORRECTNESS_CHECKS_PASSED" -gt 0 ]; then
+            CORRECTNESS="true"
+        elif [ "$CORRECTNESS_CHECKS_PASSED" -eq 0 ] && [ "$CORRECTNESS_CHECKS_FAILED" -eq 0 ]; then
+            CORRECTNESS="skipped"
+            echo "  [WARN] No correctness checks were performed — no borrowers in backup to sample" >&2
+        else
+            CORRECTNESS="false"
         fi
     fi
 else
