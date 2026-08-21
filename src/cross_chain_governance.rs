@@ -13,8 +13,8 @@
 
 use crate::errors::ContractError;
 use crate::helpers::require_admin_approval;
-use crate::types::DataKey;
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, String, Vec};
+use crate::types::{DataKey, VOTE_ATTESTATION_MAX_AGE_SECS, VOTE_ATTESTATION_MAX_SKEW_SECS};
+use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec};
 
 /// Cross-chain governance proposal
 #[contracttype]
@@ -88,6 +88,38 @@ pub struct CrossChainVote {
     pub stake: i128,
     pub chain_id: u32,
     pub timestamp: u64,
+}
+
+/// Canonical bytes a vote attestor key must sign for this attestation.
+fn vote_attestation_message(
+    env: &Env,
+    origin_chain: u32,
+    proposal_id: u64,
+    approve_stake: i128,
+    reject_stake: i128,
+    voter_count: u32,
+    attested_at: u64,
+    nonce: u64,
+) -> Bytes {
+    let payload = (
+        origin_chain,
+        proposal_id,
+        approve_stake,
+        reject_stake,
+        voter_count,
+        attested_at,
+        nonce,
+    );
+    let encoded = payload.to_xdr(env);
+    env.crypto().sha256(&encoded).into()
+}
+
+/// Check if a vote attestation nonce has already been used.
+fn is_vote_attestation_nonce_used(env: Env, origin_chain: u32, nonce: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VoteAttestationNonceUsed(origin_chain, nonce))
+        .unwrap_or(false)
 }
 
 /// Admin: Create a new cross-chain governance proposal
@@ -226,10 +258,53 @@ pub fn aggregate_remote_votes(
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
 
-    // Verify attestation (in production, would verify Ed25519 signature from bridge)
+    // Verify proposal ID matches
     if attestation.proposal_id != proposal_id {
         return Err(ContractError::InvalidStateTransition);
     }
+
+    // Verify nonce has not been used (replay protection)
+    if is_vote_attestation_nonce_used(env.clone(), attestation.origin_chain, attestation.nonce) {
+        return Err(ContractError::VoteAttestationNonceReused);
+    }
+
+    // Check attestation freshness
+    let now = env.ledger().timestamp();
+    if attestation.attested_at > now {
+        if attestation.attested_at - now > VOTE_ATTESTATION_MAX_SKEW_SECS {
+            return Err(ContractError::VoteAttestationExpired);
+        }
+    } else if now - attestation.attested_at > VOTE_ATTESTATION_MAX_AGE_SECS {
+        return Err(ContractError::VoteAttestationExpired);
+    }
+
+    // Get bridge public key for signature verification
+    let public_key: BytesN<32> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::BridgePublicKey(attestation.origin_chain))
+        .ok_or(ContractError::BridgeNotConfigured)?;
+
+    // Construct message and verify signature
+    let message = vote_attestation_message(
+        &env,
+        attestation.origin_chain,
+        attestation.proposal_id,
+        attestation.approve_stake,
+        attestation.reject_stake,
+        attestation.voter_count,
+        attestation.attested_at,
+        attestation.nonce,
+    );
+
+    env.crypto()
+        .ed25519_verify(&public_key, &message, &attestation.signature);
+
+    // Mark nonce as used (after successful verification)
+    env.storage().persistent().set(
+        &DataKey::VoteAttestationNonceUsed(attestation.origin_chain, attestation.nonce),
+        &true,
+    );
 
     let mut proposal: CrossChainProposal = env
         .storage()
@@ -238,7 +313,7 @@ pub fn aggregate_remote_votes(
         .ok_or(ContractError::ProposalNotFound)?;
 
     // Check voting period
-    if env.ledger().timestamp() > proposal.voting_ends_at {
+    if now > proposal.voting_ends_at {
         return Err(ContractError::VotingPeriodEnded);
     }
 
