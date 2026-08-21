@@ -17,6 +17,7 @@
     "loadtest": "tsx scripts/loadtest.ts"
   },
   "dependencies": {
+    "@stellar/stellar-sdk": "^12.3.0",
     "better-sqlite3": "^11.3.0",
     "ioredis": "^5.4.1",
     "socket.io": "^4.8.1",
