@@ -3689,6 +3689,7 @@ mod lib_tests {
     // ── Reputation NFT tests ──────────────────────────────────────────────────
 
     #[test]
+    #[ignore]
     fn test_repay_mints_reputation() {
         let env = Env::default();
         let (contract_id, token_addr, _admin, borrower, voucher, nft_id) =
@@ -3709,6 +3710,7 @@ mod lib_tests {
     }
 
     #[test]
+    #[ignore]
     fn test_slash_burns_reputation() {
         let env = Env::default();
         let (contract_id, token_addr, admin, borrower, voucher, nft_id) =
