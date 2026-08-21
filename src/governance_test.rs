@@ -12,7 +12,9 @@ mod governance_tests {
         env: Env,
         client: QuorumCreditContractClient<'static>,
         token: Address,
+        #[allow(dead_code)]
         contract_id: Address,
+        #[allow(dead_code)]
         deployer: Address,
         admins: Vec<Address>,
     }
@@ -49,6 +51,7 @@ mod governance_tests {
         }
     }
 
+    #[allow(dead_code)]
     fn single_admin_signers(env: &Env, admin: &Address) -> Vec<Address> {
         Vec::from_array(env, [admin.clone()])
     }
