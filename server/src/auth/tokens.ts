@@ -135,12 +135,11 @@ async function checkRevocation(
     }
   }
 
-  // Check subject-level revocation (revokeAllForSubject).
-  // Only RedisRevocationStore exposes isSubjectRevokedBefore; fall back
-  // gracefully when using LocalRevocationStore.
-  if ("isSubjectRevokedBefore" in store && payload.sub && payload.iat) {
-    const redisStore = store as import("./jtiRevocationStore.js").RedisRevocationStore;
-    if (await redisStore.isSubjectRevokedBefore(payload.sub, payload.iat)) {
+  // Check subject-level revocation (revokeAllForSubject) — part of the
+  // RevocationStore interface, so this covers both Local and Redis stores,
+  // including tokens whose JTI was never individually revoke()'d.
+  if (payload.sub && payload.iat) {
+    if (await store.isSubjectRevokedBefore(payload.sub, payload.iat)) {
       return { valid: false, reason: "revoked" };
     }
   }

@@ -30,11 +30,19 @@ export interface RevocationStore {
   isRevoked(jti: string): Promise<boolean>;
 
   /**
-   * Revoke all tokens issued to `subject` (apiKey / borrower sub) whose JTI
-   * is tracked.  In the Redis implementation this requires a secondary index;
-   * in the local implementation it is a linear scan.
+   * Revoke all tokens issued to `subject` (apiKey / borrower sub), including
+   * ones whose JTI was never individually tracked, by recording a cutoff
+   * timestamp rather than requiring a secondary JTI index.
    */
   revokeAllForSubject(subject: string): Promise<void>;
+
+  /**
+   * True when `subject` had `revokeAllForSubject` called at-or-after the
+   * given token issuance time (`iatSeconds`, Unix seconds). Called by
+   * `verifyToken` alongside the per-JTI `isRevoked` check so subject-wide
+   * revocation also catches tokens whose JTI was never individually revoked.
+   */
+  isSubjectRevokedBefore(subject: string, iatSeconds: number): Promise<boolean>;
 
   /** Close / clean up underlying connections. */
   close(): Promise<void>;
@@ -54,6 +62,8 @@ interface LocalEntry {
 export class LocalRevocationStore implements RevocationStore {
   /** jti → { subject, expiresAtMs } */
   private readonly denied = new Map<string, LocalEntry>();
+  /** subject → Unix-seconds cutoff; tokens issued at-or-before this are revoked. */
+  private readonly subjectRevokedAt = new Map<string, number>();
 
   async revoke(jti: string, expiresAtMs: number, subject = ""): Promise<void> {
     this.purgeExpired();
@@ -72,16 +82,17 @@ export class LocalRevocationStore implements RevocationStore {
 
   async revokeAllForSubject(subject: string): Promise<void> {
     this.purgeExpired();
-    // Mark all JTIs owned by this subject as immediately expired so they are
-    // rejected on the next isRevoked check.
-    for (const [jti, entry] of this.denied) {
-      if (entry.subject === subject) {
-        this.denied.set(jti, { ...entry, expiresAtMs: 0 });
-      }
-    }
-    // Also store a sentinel so *future* tokens for this subject are rejected
-    // until their natural expiry.  We use a special "wildcard" key.
-    this.denied.set(`sub:${subject}`, { subject, expiresAtMs: Date.now() + 365 * 24 * 60 * 60 * 1000 });
+    // Record a cutoff timestamp (mirrors RedisRevocationStore's sentinel key)
+    // rather than trying to mark each already-tracked JTI revoked in place:
+    // this also catches tokens whose JTI was never individually revoke()'d,
+    // and isSubjectRevokedBefore is checked on every verify regardless.
+    this.subjectRevokedAt.set(subject, Math.floor(Date.now() / 1000));
+  }
+
+  async isSubjectRevokedBefore(subject: string, iatSeconds: number): Promise<boolean> {
+    const cutoff = this.subjectRevokedAt.get(subject);
+    if (cutoff === undefined) return false;
+    return iatSeconds <= cutoff;
   }
 
   private purgeExpired(): void {
@@ -93,6 +104,7 @@ export class LocalRevocationStore implements RevocationStore {
 
   async close(): Promise<void> {
     this.denied.clear();
+    this.subjectRevokedAt.clear();
   }
 }
 
