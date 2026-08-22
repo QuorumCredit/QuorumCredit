@@ -68,6 +68,7 @@ pub fn check_and_mark_default(
         &DataKey::DefaultCount(loan.borrower.clone()),
         &(current_count + 1),
     );
+    crate::helpers::increment_total_default_count(env);
 
     // Emit event
     env.events().publish(

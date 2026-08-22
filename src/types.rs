@@ -521,6 +521,9 @@ pub enum DataKey {
     RepaymentCount(Address), // borrower → u32 total successful repayments
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
+    /// Issue #1371: protocol-wide total default count, incremented alongside every
+    /// per-borrower `DefaultCount` update. Feeds `circuit_breaker::get_current_default_rate`.
+    TotalDefaultCount,
     ProtocolFeeBps,  // u32: protocol fee in basis points
     FeeTreasury,     // Address: recipient of collected protocol fees
     LastVouchTimestamp(Address), // voucher → u64 last vouch timestamp

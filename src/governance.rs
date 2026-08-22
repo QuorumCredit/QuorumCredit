@@ -654,6 +654,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     env.storage()
         .persistent()
         .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+    crate::helpers::increment_total_default_count(&env);
 
     if remaining_vouches.is_empty() {
         env.storage()
