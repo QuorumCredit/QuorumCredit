@@ -822,6 +822,52 @@ impl QuorumCreditContract {
         vouch::dispute_vouch(env, voucher, borrower, evidence_hash)
     }
 
+    /// Issue #1056/#1372: request an emergency admin-voted waiver of the vouch cooldown.
+    pub fn request_cooldown_bypass(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::request_cooldown_bypass(env, voucher, borrower, reason)
+    }
+
+    /// Issue #1056/#1372: admin vote on a pending cooldown bypass request.
+    pub fn vote_bypass(
+        env: Env,
+        approver: Address,
+        voucher: Address,
+        borrower: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::vote_bypass(env, approver, voucher, borrower, approve)
+    }
+
+    /// Issue #1056/#1372: whether `voucher` currently has an approved cooldown
+    /// bypass for `borrower`.
+    pub fn has_cooldown_bypass(env: Env, voucher: Address, borrower: Address) -> bool {
+        cooldown_bypass::has_cooldown_bypass(&env, &voucher, &borrower)
+    }
+
+    /// Issue #1056/#1372: fetch the raw cooldown bypass request record, if any.
+    pub fn get_cooldown_bypass_request(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Option<crate::types::CooldownBypassRequest> {
+        cooldown_bypass::get_cooldown_bypass_request(env, voucher, borrower)
+    }
+
+    /// Issue #1056/#1372: admin cleanup of a resolved/no-longer-needed bypass record.
+    pub fn clear_cooldown_bypass(
+        env: Env,
+        admin_signers: Vec<Address>,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::clear_cooldown_bypass(env, admin_signers, voucher, borrower)
+    }
+
     pub fn slash(env: Env, admin_signers: Vec<Address>, borrower: Address) {
         helpers::require_admin_approval(&env, &admin_signers);
         helpers::require_not_paused(&env).expect("contract is paused");
