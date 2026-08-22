@@ -70,6 +70,14 @@ pub const MAX_HOT_VOUCH_HISTORY_ENTRIES: u32 = 20;
 /// oldest entries are cut over into a single `ArchivedVouchHistory` batch,
 /// bringing the hot window back down to `MAX_HOT_VOUCH_HISTORY_ENTRIES`.
 pub const VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
+/// Issue #1179: target size of the "hot" per-(borrower, voucher, token)
+/// vouch audit-trail window kept after an archival cutover. Mirrors the
+/// `MAX_HOT_VOUCH_HISTORY_ENTRIES` bounding strategy used for `VouchHistory`.
+pub const MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES: u32 = 20;
+/// Issue #1179: once the hot vouch audit-trail window reaches this length,
+/// the oldest entries are cut over into a single `ArchivedVouchAuditTrail`
+/// batch, bringing the hot window back down to `MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES`.
+pub const VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
 /// Issue #1146: maximum number of items returned by a single page of any
 /// `*_page` read function, regardless of the caller-requested `limit`.
 pub const MAX_PAGE_SIZE: u32 = 50;
@@ -827,6 +835,19 @@ pub enum DataKey {
     /// created so far for this relationship's vouch history. The index needed
     /// to enumerate `ArchivedVouchHistory` batches in order (0..count).
     VouchHistoryArchiveCount(Address, Address, Address),
+    // ── Vouch audit trail (Issue #1179) ──────────────────────────────────────
+    /// (borrower, voucher, token) → Vec<VouchAuditEvent>: bounded "hot" window
+    /// of audit events (created / stake increased / stake decreased /
+    /// withdrawn) for this vouch relationship.
+    VouchAuditTrail(Address, Address, Address),
+    /// Archived vouch audit trail: (borrower, voucher, token, batch_id) →
+    /// Vec<VouchAuditEvent>. Old audit events are moved here when the hot
+    /// window grows beyond `VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES`.
+    ArchivedVouchAuditTrail(Address, Address, Address, u32),
+    /// (borrower, voucher, token) → u32 number of archive batches created so
+    /// far for this relationship's audit trail. The index needed to
+    /// enumerate `ArchivedVouchAuditTrail` batches in order (0..count).
+    VouchAuditTrailArchiveCount(Address, Address, Address),
     // ── Vouch splitting (Issue #1167) ────────────────────────────────────────
     /// borrower → Vec<VouchSplitRecord> genealogy of every split performed
     /// against a vouch for this borrower (parent voucher → child voucher).
@@ -2525,6 +2546,37 @@ pub struct VouchHistoryEntry {
     pub stake_amount: i128,
     /// Optional delegate address if this is a delegation event.
     pub delegate: Option<Address>,
+}
+
+/// Issue #1179: kind of event recorded in a vouch's audit trail.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VouchAuditEventType {
+    /// The vouch was first created.
+    Created,
+    /// The voucher increased their stake on an existing vouch.
+    StakeIncreased,
+    /// The voucher decreased their stake on an existing vouch.
+    StakeDecreased,
+    /// The vouch was fully withdrawn.
+    Withdrawn,
+}
+
+/// Issue #1179: a single immutable audit-trail entry for a (borrower,
+/// voucher, token) vouch relationship, suitable for compliance and
+/// transparency reporting.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchAuditEvent {
+    /// Kind of event this entry records.
+    pub event_type: VouchAuditEventType,
+    /// Ledger timestamp at which the event occurred.
+    pub timestamp: u64,
+    /// Amount involved in the event: the stake for `Created`, the delta for
+    /// `StakeIncreased`/`StakeDecreased`, and the returned stake for `Withdrawn`.
+    pub amount: i128,
+    /// The vouch's total stake immediately after this event (0 after `Withdrawn`).
+    pub resulting_stake: i128,
 }
 
 #[contracttype]
