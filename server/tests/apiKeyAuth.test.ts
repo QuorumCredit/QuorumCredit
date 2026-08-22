@@ -65,42 +65,42 @@ describe("createAuthRateLimiter", () => {
     limiter = createAuthRateLimiter({ maxAttempts: 3, windowMs: 5_000 });
   });
 
-  it("does not block on first failure", () => {
-    const blocked = limiter.recordFailure("1.2.3.4");
+  it("does not block on first failure", async () => {
+    const blocked = await limiter.recordFailure("1.2.3.4");
     expect(blocked).toBe(false);
-    expect(limiter.isBlocked("1.2.3.4")).toBe(false);
+    expect(await limiter.isBlocked("1.2.3.4")).toBe(false);
   });
 
-  it("blocks IP after maxAttempts failures", () => {
-    limiter.recordFailure("1.2.3.4");
-    limiter.recordFailure("1.2.3.4");
-    const blocked = limiter.recordFailure("1.2.3.4"); // 3rd = threshold
+  it("blocks IP after maxAttempts failures", async () => {
+    await limiter.recordFailure("1.2.3.4");
+    await limiter.recordFailure("1.2.3.4");
+    const blocked = await limiter.recordFailure("1.2.3.4"); // 3rd = threshold
     expect(blocked).toBe(true);
-    expect(limiter.isBlocked("1.2.3.4")).toBe(true);
+    expect(await limiter.isBlocked("1.2.3.4")).toBe(true);
   });
 
-  it("does not block a different IP", () => {
-    limiter.recordFailure("1.2.3.4");
-    limiter.recordFailure("1.2.3.4");
-    limiter.recordFailure("1.2.3.4");
-    expect(limiter.isBlocked("9.9.9.9")).toBe(false);
+  it("does not block a different IP", async () => {
+    await limiter.recordFailure("1.2.3.4");
+    await limiter.recordFailure("1.2.3.4");
+    await limiter.recordFailure("1.2.3.4");
+    expect(await limiter.isBlocked("9.9.9.9")).toBe(false);
   });
 
-  it("clears all entries", () => {
-    limiter.recordFailure("1.2.3.4");
-    limiter.recordFailure("1.2.3.4");
-    limiter.recordFailure("1.2.3.4");
-    limiter.clear();
-    expect(limiter.isBlocked("1.2.3.4")).toBe(false);
+  it("clears all entries", async () => {
+    await limiter.recordFailure("1.2.3.4");
+    await limiter.recordFailure("1.2.3.4");
+    await limiter.recordFailure("1.2.3.4");
+    await limiter.clear();
+    expect(await limiter.isBlocked("1.2.3.4")).toBe(false);
   });
 
   it("resets count after window expires", async () => {
     limiter = createAuthRateLimiter({ maxAttempts: 2, windowMs: 10 });
-    limiter.recordFailure("5.5.5.5");
-    limiter.recordFailure("5.5.5.5"); // blocked
-    expect(limiter.isBlocked("5.5.5.5")).toBe(true);
+    await limiter.recordFailure("5.5.5.5");
+    await limiter.recordFailure("5.5.5.5"); // blocked
+    expect(await limiter.isBlocked("5.5.5.5")).toBe(true);
     // Wait for window to expire
     await new Promise((r) => setTimeout(r, 20));
-    expect(limiter.isBlocked("5.5.5.5")).toBe(false);
+    expect(await limiter.isBlocked("5.5.5.5")).toBe(false);
   });
 });

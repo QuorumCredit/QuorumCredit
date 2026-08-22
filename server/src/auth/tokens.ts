@@ -86,6 +86,8 @@ export type VerifyResult =
  * The function is intentionally synchronous for the common path (no Redis),
  * and returns a Promise only when a revocation store is supplied.
  */
+export function verifyToken(secret: string, token: string): VerifyResult;
+export function verifyToken(secret: string, token: string, revocationStore: RevocationStore): Promise<VerifyResult>;
 export function verifyToken(
   secret: string,
   token: string,
@@ -133,12 +135,11 @@ async function checkRevocation(
     }
   }
 
-  // Check subject-level revocation (revokeAllForSubject).
-  // Only RedisRevocationStore exposes isSubjectRevokedBefore; fall back
-  // gracefully when using LocalRevocationStore.
-  if ("isSubjectRevokedBefore" in store && payload.sub && payload.iat) {
-    const redisStore = store as import("./jtiRevocationStore.js").RedisRevocationStore;
-    if (await redisStore.isSubjectRevokedBefore(payload.sub, payload.iat)) {
+  // Check subject-level revocation (revokeAllForSubject) — part of the
+  // RevocationStore interface, so this covers both Local and Redis stores,
+  // including tokens whose JTI was never individually revoke()'d.
+  if (payload.sub && payload.iat) {
+    if (await store.isSubjectRevokedBefore(payload.sub, payload.iat)) {
       return { valid: false, reason: "revoked" };
     }
   }
