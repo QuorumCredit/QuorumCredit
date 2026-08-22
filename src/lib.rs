@@ -885,6 +885,7 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
 
         // Burn excellent credit tier badge on default
         reputation::burn_excellent_badge(&env, &borrower);
@@ -908,6 +909,15 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Vouches(borrower.clone()));
+
+        // Issue #1371: check the circuit breaker after each executed slash using
+        // real running default/loan counters instead of never calling it.
+        let _ = circuit_breaker::try_trigger_circuit_breaker(
+            &env,
+            &cfg,
+            helpers::get_total_default_count(&env),
+            helpers::get_total_loan_count(&env),
+        );
     }
 
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
@@ -1196,6 +1206,7 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
 
         if let Some(nft_addr) = env
             .storage()
@@ -1272,6 +1283,7 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
         // Issue #1288: Decrement on-chain TVL / active-loan-count counters on expired claim.
         helpers::decrement_tvl_counters(&env, loan.amount);
     }
