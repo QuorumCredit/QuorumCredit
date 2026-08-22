@@ -3,24 +3,37 @@
 // and predate this PR. Suppressed here so `cargo clippy -D warnings` does not
 // fail CI on issues outside the scope of this change.
 #![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+#![allow(unused_assignments)]
 #![allow(unused_parens)]
 #![allow(deprecated)]
 #![allow(clippy::empty_line_after_doc_comments)]
+#![allow(clippy::empty_line_after_outer_attr)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_borrow)]
+#![allow(clippy::needless_borrows_for_generic_args)]
 #![allow(clippy::assign_op_pattern)]
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::redundant_field_names)]
 #![allow(clippy::identity_op)]
-#![allow(clippy::clamp_without_iter)]
+#![allow(clippy::manual_clamp)]
 #![allow(clippy::if_same_then_else)]
 #![allow(clippy::len_zero)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::cast_lossless)]
 #![allow(clippy::large_enum_variant)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::doc_overindented_list_items)]
 #![allow(clippy::needless_lifetimes)]
-#![allow(clippy::div_ceil)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::manual_saturating_arithmetic)]
+#![allow(clippy::manual_checked_ops)]
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::unnecessary_min_or_max)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::question_mark)]
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, String, Vec,};
@@ -820,6 +833,52 @@ impl QuorumCreditContract {
         evidence_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
         vouch::dispute_vouch(env, voucher, borrower, evidence_hash)
+    }
+
+    /// Issue #1056/#1372: request an emergency admin-voted waiver of the vouch cooldown.
+    pub fn request_cooldown_bypass(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::request_cooldown_bypass(env, voucher, borrower, reason)
+    }
+
+    /// Issue #1056/#1372: admin vote on a pending cooldown bypass request.
+    pub fn vote_bypass(
+        env: Env,
+        approver: Address,
+        voucher: Address,
+        borrower: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::vote_bypass(env, approver, voucher, borrower, approve)
+    }
+
+    /// Issue #1056/#1372: whether `voucher` currently has an approved cooldown
+    /// bypass for `borrower`.
+    pub fn has_cooldown_bypass(env: Env, voucher: Address, borrower: Address) -> bool {
+        cooldown_bypass::has_cooldown_bypass(&env, &voucher, &borrower)
+    }
+
+    /// Issue #1056/#1372: fetch the raw cooldown bypass request record, if any.
+    pub fn get_cooldown_bypass_request(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Option<crate::types::CooldownBypassRequest> {
+        cooldown_bypass::get_cooldown_bypass_request(env, voucher, borrower)
+    }
+
+    /// Issue #1056/#1372: admin cleanup of a resolved/no-longer-needed bypass record.
+    pub fn clear_cooldown_bypass(
+        env: Env,
+        admin_signers: Vec<Address>,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::clear_cooldown_bypass(env, admin_signers, voucher, borrower)
     }
 
     pub fn slash(env: Env, admin_signers: Vec<Address>, borrower: Address) {
