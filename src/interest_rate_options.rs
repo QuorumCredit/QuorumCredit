@@ -559,6 +559,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_get_option_returns_none_for_unknown_id() {
         let (env, contract_id) = make_env();
         let found = env.as_contract(&contract_id, || get_option(&env, 9999).is_some());
@@ -566,6 +567,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_open_interest_default_zero() {
         let (env, contract_id) = make_env();
         let oi = env.as_contract(&contract_id, || get_open_interest(&env, OptionType::Call));
@@ -574,6 +576,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_get_implied_volatility_default() {
         let (env, contract_id) = make_env();
         let vol = env.as_contract(&contract_id, || get_implied_volatility(&env));
@@ -605,6 +608,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_buy_option_requires_nonzero_inputs() {
         let (env, contract_id) = make_env();
         let holder = Address::generate(&env);

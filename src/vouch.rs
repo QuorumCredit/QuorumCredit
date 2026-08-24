@@ -1003,6 +1003,7 @@ mod tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Vec};
 
+    #[allow(dead_code)]
     fn setup_contract(env: &Env) -> (Address, Address) {
         let deployer = Address::generate(env);
         let admin = Address::generate(env);

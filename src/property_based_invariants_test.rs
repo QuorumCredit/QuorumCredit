@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Property-based invariant testing for QuorumCredit (Issue #1180).
 //!
 //! This module implements comprehensive property-based testing using proptest

@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 /// Issue #942: Fuzz Testing for Stake Calculations
 /// 
 /// Property-based and fuzz testing to verify correctness of stake calculations
