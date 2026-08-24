@@ -1,8 +1,8 @@
+#![cfg(test)]
+
 //! Tests for Arbitrage Prevention Module (Issue #967)
 //!
 //! Tests for exchange rate tracking, slippage validation, and arbitrage detection.
-
-#[cfg(test)]
 mod tests {
     use crate::arbitrage_prevention::*;
     use crate::types::ContractError;

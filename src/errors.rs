@@ -326,4 +326,6 @@ EmergencyBypassNotAuthorised = 131,
     RecurringPaymentInactive = 214,
     /// The next recurring payment is not yet due.
     RecurringPaymentNotDue = 215,
+    /// The lazy slash queue has reached its maximum capacity.
+    QueueFull = 216,
 }
