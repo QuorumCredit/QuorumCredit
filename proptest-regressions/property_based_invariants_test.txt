@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc de92359d5f88fdf7b1d1261661f5c1cbe3ddfba97f7d88e73d6ddefc8dd1f9a1 # shrinks to config = InvariantTestConfig { borrower_count: 1, voucher_count: 1, max_stake: 1000000, max_loan_amount: 1000000, transaction_count: 5 }, seed = 5
+cc 7900fd56baedee77558743dd40ace7e63903b78a5fe301eed562c7f3cc078a79 # shrinks to config = InvariantTestConfig { borrower_count: 8, voucher_count: 1, max_stake: 343305845, max_loan_amount: 28529223, transaction_count: 38 }, seed = 754

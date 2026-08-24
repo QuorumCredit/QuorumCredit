@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod contingent_loan_tests {
-    use crate::types::{Config, DataKey, LoanCondition, ContingentLoanStatus, OracleDataPoint};
+    use crate::types::{Config, DataKey};
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -70,7 +70,7 @@ mod contingent_loan_tests {
             &s.token,
         );
 
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
     }
 
@@ -95,7 +95,7 @@ mod contingent_loan_tests {
         );
 
         // Verify loan exists and can be tracked
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
         let loan_data = loan.unwrap();
         assert_eq!(loan_data.amount, 5_000_000);
@@ -123,7 +123,7 @@ mod contingent_loan_tests {
         );
 
         // Verify oracle condition is tracked
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
     }
 
@@ -178,9 +178,9 @@ mod contingent_loan_tests {
         );
 
         // Verify all loans are tracked
-        let loan1 = s.client.get_loan(&borrower1, &0).unwrap();
-        let loan2 = s.client.get_loan(&borrower2, &0).unwrap();
-        let loan3 = s.client.get_loan(&borrower3, &0).unwrap();
+        let loan1 = s.client.get_loan(&borrower1).unwrap();
+        let loan2 = s.client.get_loan(&borrower2).unwrap();
+        let loan3 = s.client.get_loan(&borrower3).unwrap();
 
         assert_eq!(loan1.amount, 10_000_000);
         assert_eq!(loan2.amount, 8_000_000);
@@ -208,7 +208,7 @@ mod contingent_loan_tests {
             &s.token,
         );
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 5_000_000);
     }
 
@@ -233,10 +233,10 @@ mod contingent_loan_tests {
         );
 
         // Verify loan is created and trackable
-        let loans = s.client.get_loans(&borrower);
-        assert_eq!(loans.len(), 1);
+        let loans = s.client.get_loan(&borrower);
+        assert!(loans.is_some());
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 5_000_000);
     }
 
@@ -261,7 +261,7 @@ mod contingent_loan_tests {
             &s.token,
         );
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 5_000_000);
     }
 
@@ -289,7 +289,7 @@ mod contingent_loan_tests {
         s.env.ledger().with_mut(|l| l.timestamp = 1000);
 
         // Verify loan still exists
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 5_000_000);
     }
 }

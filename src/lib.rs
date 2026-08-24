@@ -232,6 +232,11 @@ impl QuorumCreditContract {
         // instance storage survives for the protocol's expected lifetime.
         helpers::bump_instance(&env);
 
+        // RBAC requires every admin to have a role before they can pass
+        // require_admin_approval_for_action; grant SuperAdmin to the initial
+        // admin set so admin functions work immediately after deployment.
+        rbac::migrate_legacy_admins_to_superadmin(&env);
+
         env.events().publish(
             (symbol_short!("contract"), symbol_short!("init")),
             (deployer, admins, admin_threshold, token),
