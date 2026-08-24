@@ -326,10 +326,6 @@ EmergencyBypassNotAuthorised = 131,
     RecurringPaymentInactive = 214,
     /// The next recurring payment is not yet due.
     RecurringPaymentNotDue = 215,
-    /// Vote attestation signature verification failed.
-    InvalidVoteAttestationSignature = 216,
-    /// Vote attestation nonce has already been used (replay attempt).
-    VoteAttestationNonceReused = 217,
-    /// Vote attestation is outside the accepted freshness window.
-    VoteAttestationExpired = 218,
+    /// The lazy slash queue has reached its maximum capacity.
+    QueueFull = 216,
 }
