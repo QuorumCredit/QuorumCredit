@@ -697,6 +697,12 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// Public wrapper for execute_slash used by the lazy_slash queue mechanism.
+/// This allows the lazy_slash module to execute slashes without duplicating logic.
+pub fn execute_slash_for_lazy_queue(env: &Env, borrower: &Address) -> Result<(), ContractError> {
+    execute_slash(env, borrower)
+}
+
 /// â”€â”€ Issue 109: Slash Proposal Confirmation Window â”€â”€
 ///
 /// Implements a two-step slash with timelock pattern:

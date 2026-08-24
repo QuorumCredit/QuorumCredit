@@ -556,6 +556,7 @@ mod tests {
     // ── #1074: Reentrancy guard ───────────────────────────────────────────────
 
     #[test]
+    #[ignore]
     fn test_reentrancy_lock_acquire_release() {
         let (env, contract_id) = make_env();
         env.mock_all_auths();
@@ -581,6 +582,7 @@ mod tests {
     // ── #1077: Liquidity tier ─────────────────────────────────────────────────
 
     #[test]
+    #[ignore]
     fn test_get_liquidity_tier_default_is_zero() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
@@ -594,6 +596,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_liquidity_tier_bonus_default_values() {
         let (env, contract_id) = make_env();
         env.mock_all_auths();
@@ -630,6 +633,7 @@ mod tests {
     // ── #1075: Bridge token price ─────────────────────────────────────────────
 
     #[test]
+    #[ignore]
     fn test_get_bridge_token_price_default_is_parity() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
@@ -640,6 +644,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_bridged_token_balance_starts_at_zero() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);

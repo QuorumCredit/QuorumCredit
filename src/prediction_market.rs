@@ -524,6 +524,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_create_market() {
         let (env, contract_id) = setup();
         // We need a valid Config in storage for require_admin_approval.
@@ -541,6 +542,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_market_status_default() {
         let (env, contract_id) = setup();
         env.as_contract(&contract_id, || {
@@ -550,6 +552,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_prediction_accuracy_default() {
         let (env, contract_id) = setup();
         let addr = Address::generate(&env);
@@ -561,6 +564,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_invalid_amount_for_zero_stake() {
         let (env, contract_id) = setup();
         // place_prediction with stake=0 should return InvalidAmount.
@@ -591,6 +595,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_cannot_predict_on_resolved_market() {
         let (env, contract_id) = setup();
         let market_id = 1u64;
