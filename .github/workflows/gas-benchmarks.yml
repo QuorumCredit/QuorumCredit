@@ -42,6 +42,7 @@ jobs:
       - name: Comment PR with complexity analysis
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
+        continue-on-error: true
         with:
           script: |
             const fs = require('fs');
@@ -67,12 +68,18 @@ jobs:
               '[View full report](benchmark_report.html) (attached to this run)'
             ].join('\n');
 
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
+            // PRs from forks get a read-only GITHUB_TOKEN, so this call is
+            // expected to 403 there — don't fail the job over a best-effort comment.
+            try {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment
+              });
+            } catch (err) {
+              core.warning(`Could not post benchmark comment: ${err.message}`);
+            }
 
       - name: Upload benchmark report
         if: always()
