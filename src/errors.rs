@@ -328,4 +328,11 @@ EmergencyBypassNotAuthorised = 131,
     RecurringPaymentNotDue = 215,
     /// The lazy slash queue has reached its maximum capacity.
     QueueFull = 216,
+    // ── Cross-chain vote attestations ────────────────────────────────────────
+    /// Ed25519 signature verification failed for a cross-chain vote attestation.
+    InvalidVoteAttestationSignature = 217,
+    /// This origin-chain vote attestation nonce has already been consumed.
+    VoteAttestationNonceReused = 218,
+    /// The vote attestation is outside the accepted freshness window.
+    VoteAttestationExpired = 219,
 }
