@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Concurrent loan operation testing for QuorumCredit (Issue #1182).
 //!
 //! This module implements comprehensive concurrent operation testing to verify ACID properties
