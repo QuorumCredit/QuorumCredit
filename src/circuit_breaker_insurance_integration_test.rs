@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 mod integration_tests {
-    use soroban_sdk::testutils::{Address as _, Env as _};
+    use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address, Env, Symbol, Vec};
 
     // ─────────────────────────────────────────────────────────────────────────

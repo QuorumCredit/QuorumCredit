@@ -19,9 +19,15 @@
 
 #![cfg(test)]
 
+extern crate std;
+
 use std::collections::HashMap;
+use std::format;
+use std::string::{String, ToString};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::vec;
+use std::vec::Vec;
 
 /// Simulates a concurrent transaction operation
 #[derive(Clone, Debug)]
@@ -589,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_atomicity_loan_issuance() {
-        let sim = ConcurrentSimulator::new(1_000_000, 150);
+        let sim = ConcurrentSimulator::new(10_000_000, 150);
 
         assert!(sim.create_vouch(1, 1, 500_000).is_ok());
 
@@ -597,6 +603,9 @@ mod tests {
         let result1 = sim.issue_loan(1, 100_000);
         assert!(result1.is_ok()); // This should succeed
 
+        // Borrower 2 needs their own vouch stake before a loan against it can pass
+        // the LTV check.
+        assert!(sim.create_vouch(2, 2, 100_000).is_ok());
         let result2 = sim.issue_loan(2, 100_000);
         assert!(result2.is_ok()); // This might succeed too
 

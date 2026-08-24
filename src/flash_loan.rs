@@ -326,7 +326,7 @@ mod tests {
     fn test_flash_loan_fee_calculation() {
         let principal = 1_000_000;
         let expected_fee = (principal * FLASH_LOAN_FEE_BPS) / 10_000;
-        assert_eq!(expected_fee, 50); // 0.05% of 1 XLM
+        assert_eq!(expected_fee, 500); // 0.05% of 1_000_000 stroops
     }
 
     #[test]

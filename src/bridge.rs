@@ -546,26 +546,38 @@ mod tests {
         Address, Env, Vec,
     };
 
-    /// Helper: create a minimal env with a registered contract.
-    fn make_env() -> Env {
-        Env::default()
+    /// Helper: create an env with a registered, initialized contract, since the
+    /// free functions under test access `env.storage()` (and, for
+    /// `liquidity_tier_bonus_bps`, `config()`) which requires an `as_contract`
+    /// frame around a deployed+initialized contract instance.
+    fn make_env() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
+        (env, contract_id)
     }
 
     // ── #1074: Reentrancy guard ───────────────────────────────────────────────
 
     #[test]
     fn test_reentrancy_lock_acquire_release() {
-        let env = make_env();
-        env.mock_all_auths();
-
-        // Lock should acquire successfully when not locked
-        assert!(acquire_lock(&env).is_ok());
-        // Lock should fail when already locked
-        assert_eq!(acquire_lock(&env), Err(ContractError::Reentrancy));
-        // After release, lock should be available again
-        release_lock(&env);
-        assert!(acquire_lock(&env).is_ok());
-        release_lock(&env);
+        let (env, contract_id) = make_env();
+        env.as_contract(&contract_id, || {
+            // Lock should acquire successfully when not locked
+            assert!(acquire_lock(&env).is_ok());
+            // Lock should fail when already locked
+            assert_eq!(acquire_lock(&env), Err(ContractError::Reentrancy));
+            // After release, lock should be available again
+            release_lock(&env);
+            assert!(acquire_lock(&env).is_ok());
+            release_lock(&env);
+        });
     }
 
     #[test]
@@ -578,53 +590,58 @@ mod tests {
 
     #[test]
     fn test_get_liquidity_tier_default_is_zero() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
         // Not set → tier 0 (most liquid)
-        assert_eq!(
-            get_token_liquidity_tier(env.clone(), token_addr),
-            0u32
-        );
+        let tier = env.as_contract(&contract_id, || {
+            get_token_liquidity_tier(env.clone(), token_addr)
+        });
+        assert_eq!(tier, 0u32);
     }
 
     #[test]
     fn test_liquidity_tier_bonus_default_values() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
 
-        // Tier 0 → 0 bps bonus
-        let t0 = Address::generate(&env);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TokenLiquidityTier(t0.clone()), &0u32);
-        assert_eq!(liquidity_tier_bonus_bps(&env, &t0), 0);
+        env.as_contract(&contract_id, || {
+            // Tier 0 → 0 bps bonus
+            let t0 = Address::generate(&env);
+            env.storage()
+                .persistent()
+                .set(&DataKey::TokenLiquidityTier(t0.clone()), &0u32);
+            assert_eq!(liquidity_tier_bonus_bps(&env, &t0), 0);
 
-        // Tier 3 → 300 bps bonus (DEFAULT_TIER_BONUS_BPS[3])
-        let t3 = Address::generate(&env);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TokenLiquidityTier(t3.clone()), &3u32);
-        // With an empty config vector, falls back to DEFAULT_TIER_BONUS_BPS
-        assert_eq!(liquidity_tier_bonus_bps(&env, &t3), 300);
+            // Tier 3 → 300 bps bonus (DEFAULT_TIER_BONUS_BPS[3])
+            let t3 = Address::generate(&env);
+            env.storage()
+                .persistent()
+                .set(&DataKey::TokenLiquidityTier(t3.clone()), &3u32);
+            // With an empty config vector, falls back to DEFAULT_TIER_BONUS_BPS
+            assert_eq!(liquidity_tier_bonus_bps(&env, &t3), 300);
+        });
     }
 
     // ── #1075: Bridge token price ─────────────────────────────────────────────
 
     #[test]
     fn test_get_bridge_token_price_default_is_parity() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
         // Default price is 10_000 bps (1:1)
-        assert_eq!(get_bridge_token_price(&env, &token_addr), 10_000);
+        let price = env.as_contract(&contract_id, || {
+            get_bridge_token_price(&env, &token_addr)
+        });
+        assert_eq!(price, 10_000);
     }
 
     #[test]
     fn test_bridged_token_balance_starts_at_zero() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
-        assert_eq!(
-            get_bridged_token_balance(env.clone(), token_addr),
-            0i128
-        );
+        let balance = env.as_contract(&contract_id, || {
+            get_bridged_token_balance(env.clone(), token_addr)
+        });
+        assert_eq!(balance, 0i128);
     }
 }
 

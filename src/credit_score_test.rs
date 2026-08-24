@@ -117,6 +117,9 @@ fn test_different_repayment_histories_produce_different_scores() {
     let contract_id = env.register(crate::QuorumCreditContract, ());
     let borrower_early = Address::generate(&env);
     let borrower_late = Address::generate(&env);
+    // Registration time is computed as `now - 30_000_000`, so the ledger clock
+    // must already be past that offset.
+    env.ledger().with_mut(|l| l.timestamp = 40_000_000);
 
     env.as_contract(&contract_id, || {
         env.storage()
@@ -231,7 +234,7 @@ fn test_different_repayment_histories_produce_different_scores() {
             .set(&DataKey::BorrowerRegistered(borrower_late.clone()), &registration_time);
 
         // Compute scores
-        let score_early = crate::credit_score::calculate_credit_score(env.clone(), borrower_early.clone())
+        let score_early = crate::credit_score::calculate_credit_score(&env.clone(), &borrower_early.clone())
             .unwrap_or(crate::types::CreditScore {
                 score: 500,
                 tier: crate::types::CreditTier::Fair,
@@ -246,7 +249,7 @@ fn test_different_repayment_histories_produce_different_scores() {
                 voucher_count: 0,
                 avg_repayment_time: (deadline as i64) - (now as i64 + 10_000),
             });
-        let score_late = crate::credit_score::calculate_credit_score(env.clone(), borrower_late.clone())
+        let score_late = crate::credit_score::calculate_credit_score(&env.clone(), &borrower_late.clone())
             .unwrap_or(crate::types::CreditScore {
                 score: 400,
                 tier: crate::types::CreditTier::Poor,
@@ -374,7 +377,7 @@ fn test_credit_score_total_borrowed() {
             .set(&DataKey::BorrowerRegistered(borrower.clone()), &now);
 
         // Compute credit score
-        let credit_score = crate::credit_score::calculate_credit_score(env.clone(), borrower.clone())
+        let credit_score = crate::credit_score::calculate_credit_score(&env.clone(), &borrower.clone())
             .unwrap_or(crate::types::CreditScore {
                 score: 500,
                 tier: crate::types::CreditTier::Fair,
@@ -463,11 +466,12 @@ fn test_credit_score_total_repaid() {
             .set(&DataKey::BorrowerRegistered(borrower.clone()), &now);
 
         // Compute credit score
-        let credit_score = crate::credit_score::calculate_credit_score(env.clone(), borrower.clone())
+        let credit_score = crate::credit_score::calculate_credit_score(&env.clone(), &borrower.clone())
             .unwrap_or(crate::types::CreditScore {
                 score: 500,
                 tier: crate::types::CreditTier::Fair,
                 last_updated: now,
+                last_decay_timestamp: now,
                 total_loans: 1,
                 successful_repayments: 0,
                 defaults: 0,

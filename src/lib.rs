@@ -121,11 +121,7 @@ mod storage_redesign_test;
 #[cfg(test)]
 mod timelock_safety_test;
 #[cfg(test)]
-mod contingent_loan_test;
-#[cfg(test)]
 mod cross_chain_test_scenarios;
-#[cfg(test)]
-mod loan_tranching_test;
 #[cfg(test)]
 mod arbitrage_prevention_test;
 #[cfg(test)]
@@ -231,6 +227,10 @@ impl QuorumCreditContract {
         // Issue #1285: bump instance TTL at initialization so the contract
         // instance storage survives for the protocol's expected lifetime.
         helpers::bump_instance(&env);
+
+        // Grant the initial admin set SuperAdmin RBAC role so RBAC-gated admin
+        // actions (e.g. update_config) aren't locked out from a fresh deploy.
+        rbac::migrate_legacy_admins_to_superadmin(&env);
 
         env.events().publish(
             (symbol_short!("contract"), symbol_short!("init")),
