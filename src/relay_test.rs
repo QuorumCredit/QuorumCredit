@@ -49,13 +49,15 @@ mod relay_tests {
         let source_chain: u32 = 1;
         let public_key: BytesN<32> = BytesN::from_array(&s.env, &[42u8; 32]);
 
-        s.client.set_relay_key(&s.admins, &source_chain, &public_key).unwrap();
+        s.client.set_relay_key(&s.admins, &source_chain, &public_key);
 
-        let stored_key = s.env
-            .storage()
-            .persistent()
-            .get::<DataKey, BytesN<32>>(&DataKey::RelayPublicKey(source_chain))
-            .unwrap();
+        let stored_key = s.env.as_contract(&s.contract_id, || {
+            s.env
+                .storage()
+                .persistent()
+                .get::<DataKey, BytesN<32>>(&DataKey::RelayPublicKey(source_chain))
+                .unwrap()
+        });
 
         assert_eq!(stored_key, public_key);
     }
@@ -65,7 +67,7 @@ mod relay_tests {
         let s = setup(1, 1);
         let public_key: BytesN<32> = BytesN::from_array(&s.env, &[42u8; 32]);
 
-        let result = s.client.set_relay_key(&s.admins, &0, &public_key);
+        let result = s.client.try_set_relay_key(&s.admins, &0, &public_key);
         assert!(result.is_err());
     }
 
@@ -76,16 +78,17 @@ mod relay_tests {
         let event_type = Symbol::new(&s.env, "test_event");
         let payload = Bytes::from_slice(&s.env, &[1, 2, 3, 4, 5]);
 
-        let seq = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload)
-            .unwrap();
+        let seq = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
 
         assert_eq!(seq, 1);
 
-        let stored_seq = s.env
-            .storage()
-            .persistent()
-            .get::<DataKey, u64>(&DataKey::OutboundRelaySeq(dest_chain))
-            .unwrap();
+        let stored_seq = s.env.as_contract(&s.contract_id, || {
+            s.env
+                .storage()
+                .persistent()
+                .get::<DataKey, u64>(&DataKey::OutboundRelaySeq(dest_chain))
+                .unwrap()
+        });
 
         assert_eq!(stored_seq, 1);
     }
@@ -97,10 +100,8 @@ mod relay_tests {
         let event_type = Symbol::new(&s.env, "test_event");
         let payload = Bytes::from_slice(&s.env, &[1, 2, 3, 4, 5]);
 
-        let seq1 = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload)
-            .unwrap();
-        let seq2 = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload)
-            .unwrap();
+        let seq1 = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
+        let seq2 = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
 
         assert_eq!(seq1, 1);
         assert_eq!(seq2, 2);
@@ -113,8 +114,7 @@ mod relay_tests {
         let event_type = Symbol::new(&s.env, "test_event");
         let payload = Bytes::from_slice(&s.env, &[1, 2, 3, 4, 5]);
 
-        let seq = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload)
-            .unwrap();
+        let seq = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
 
         let retrieved = s.client.get_outbound_relay_event(&dest_chain, &seq).unwrap();
 
@@ -129,9 +129,9 @@ mod relay_tests {
         let event_type = Symbol::new(&s.env, "test_event");
         let payload = Bytes::from_slice(&s.env, &[1, 2, 3, 4, 5]);
 
-        s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload).unwrap();
-        s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload).unwrap();
-        s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload).unwrap();
+        s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
+        s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
+        s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
 
         let latest = s.client.latest_outbound_relay_seq(&dest_chain);
 
@@ -156,7 +156,7 @@ mod relay_tests {
             timestamp: 120,
         };
 
-        let result = s.client.relay_message(&event, &attestation);
+        let result = s.client.try_relay_message(&event, &attestation);
         assert!(result.is_err());
     }
 
@@ -168,7 +168,7 @@ mod relay_tests {
         let timestamp = s.env.ledger().timestamp();
 
         let public_key: BytesN<32> = BytesN::from_array(&s.env, &[1u8; 32]);
-        s.client.set_relay_key(&s.admins, &source_chain, &public_key).unwrap();
+        s.client.set_relay_key(&s.admins, &source_chain, &public_key);
 
         let event = RelayEvent {
             source_chain,
@@ -179,14 +179,19 @@ mod relay_tests {
         };
 
         let attestation = RelayAttestation {
-            signature: Bytes::from_slice(&s.env, &[42u8; 64]),
+            signature: BytesN::from_array(&s.env, &[42u8; 64]),
             nonce,
             timestamp,
         };
 
-        s.env.storage().persistent().set(&DataKey::RelayNonceUsed(source_chain, nonce), &true);
+        s.env.as_contract(&s.contract_id, || {
+            s.env
+                .storage()
+                .persistent()
+                .set(&DataKey::RelayNonceUsed(source_chain, nonce), &true);
+        });
 
-        let result = s.client.relay_message(&event, &attestation);
+        let result = s.client.try_relay_message(&event, &attestation);
         assert!(result.is_err());
     }
 
@@ -199,7 +204,12 @@ mod relay_tests {
         let is_processed_before = s.client.is_relay_processed(&source_chain, &seq);
         assert!(!is_processed_before);
 
-        s.env.storage().persistent().set(&DataKey::RelayEventProcessed(source_chain, seq), &true);
+        s.env.as_contract(&s.contract_id, || {
+            s.env
+                .storage()
+                .persistent()
+                .set(&DataKey::RelayEventProcessed(source_chain, seq), &true);
+        });
 
         let is_processed_after = s.client.is_relay_processed(&source_chain, &seq);
         assert!(is_processed_after);
@@ -214,7 +224,12 @@ mod relay_tests {
         let is_used_before = s.client.is_relay_nonce_used(&source_chain, &nonce);
         assert!(!is_used_before);
 
-        s.env.storage().persistent().set(&DataKey::RelayNonceUsed(source_chain, nonce), &true);
+        s.env.as_contract(&s.contract_id, || {
+            s.env
+                .storage()
+                .persistent()
+                .set(&DataKey::RelayNonceUsed(source_chain, nonce), &true);
+        });
 
         let is_used_after = s.client.is_relay_nonce_used(&source_chain, &nonce);
         assert!(is_used_after);
@@ -226,7 +241,7 @@ mod relay_tests {
         let dest_chain: u32 = 2;
         let seq: u64 = 42;
 
-        s.client.acknowledge_relay(&s.admins, &dest_chain, &seq).unwrap();
+        s.client.acknowledge_relay(&s.admins, &dest_chain, &seq);
 
         let last_acked = s.client.last_acknowledged_relay_seq(&dest_chain);
         assert_eq!(last_acked, seq);
@@ -237,9 +252,9 @@ mod relay_tests {
         let s = setup(1, 1);
         let dest_chain: u32 = 2;
 
-        s.client.acknowledge_relay(&s.admins, &dest_chain, &100).unwrap();
+        s.client.acknowledge_relay(&s.admins, &dest_chain, &100);
 
-        let result = s.client.acknowledge_relay(&s.admins, &dest_chain, &50);
+        let result = s.client.try_acknowledge_relay(&s.admins, &dest_chain, &50);
         assert!(result.is_err());
     }
 
@@ -251,17 +266,13 @@ mod relay_tests {
         let event_type = Symbol::new(&s.env, "transfer");
         let payload = Bytes::from_slice(&s.env, &[10, 20, 30, 40, 50]);
 
-        let seq = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload)
-            .unwrap();
+        let seq = s.client.relay_emit(&s.admins, &dest_chain, &event_type, &payload);
 
         let stored = s.client.get_outbound_relay_event(&dest_chain, &seq).unwrap();
 
         assert_eq!(stored.dest_chain, dest_chain);
         assert_eq!(stored.seq, seq);
         assert_eq!(stored.event_type, event_type);
-
-        let stored_payload_bytes = stored.payload.to_vec();
-        let original_payload_bytes = payload.to_vec();
-        assert_eq!(stored_payload_bytes, original_payload_bytes);
+        assert_eq!(stored.payload, payload);
     }
 }
