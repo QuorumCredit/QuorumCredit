@@ -595,6 +595,10 @@ mod tests {
         });
     }
 
+    // Pre-existing gap, unrelated to this PR: liquidity_tier_bonus_bps() calls
+    // helpers::config(), which panics with "not initialized" unless the contract
+    // has gone through a full initialize() (admins + token), which `make_env()`
+    // does not set up. Disabled rather than expanding this fixture.
     #[test]
     #[ignore]
     fn test_liquidity_tier_bonus_default_values() {

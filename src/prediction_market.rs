@@ -563,6 +563,11 @@ mod tests {
         });
     }
 
+    // Pre-existing gap, unrelated to this PR: place_prediction() calls
+    // require_not_paused(), which calls helpers::config() and panics with
+    // "not initialized" unless the contract has gone through a full
+    // initialize() (admins + token), which `setup()` does not set up.
+    // Disabled rather than expanding this fixture.
     #[test]
     #[ignore]
     fn test_invalid_amount_for_zero_stake() {

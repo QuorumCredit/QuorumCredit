@@ -491,6 +491,11 @@ mod tests {
         });
     }
 
+    // Pre-existing gap, unrelated to this PR: create_proposal() calls
+    // require_not_paused(), which calls helpers::config() and panics with
+    // "not initialized" unless the contract has gone through a full
+    // initialize() (admins + token), which `setup()` does not set up.
+    // Disabled rather than expanding this fixture.
     #[test]
     #[ignore]
     fn test_create_proposal_requires_positive_amount() {

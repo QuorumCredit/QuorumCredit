@@ -542,6 +542,11 @@ mod tests {
         });
     }
 
+    // Pre-existing gap, unrelated to this PR: stake_badge()/list_badge_for_sale()/
+    // purchase_badge() call require_not_paused(), which calls helpers::config()
+    // and panics with "not initialized" unless the contract has gone through a
+    // full initialize() (admins + token), which `setup()` does not set up.
+    // Disabled rather than expanding this fixture.
     #[test]
     #[ignore]
     fn test_stake_and_unstake() {

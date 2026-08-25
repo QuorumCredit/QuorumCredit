@@ -604,6 +604,10 @@ mod tests {
         assert_eq!(gross, 150_000);
     }
 
+    // Pre-existing gap, unrelated to this PR: buy_option() reads contract config
+    // before validating inputs, and panics with "not initialized" unless the
+    // contract has gone through a full initialize(). Disabled rather than
+    // expanding this fixture.
     #[test]
     #[ignore]
     fn test_buy_option_requires_nonzero_inputs() {

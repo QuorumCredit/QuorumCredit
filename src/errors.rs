@@ -214,32 +214,34 @@ EmergencyBypassNotAuthorised = 131,
     RelayEventAlreadyProcessed = 159,
     /// A relay acknowledgement tried to move the cursor backwards.
     RelayAckRegression = 160,
+    /// A relay attestation's signature did not verify against the registered key.
+    InvalidRelaySignature = 161,
     /// Circular delegation chain detected in vote delegation.
-    CircularDelegation = 161,
+    CircularDelegation = 162,
     /// Delegation not found.
-    DelegationNotFound = 162,
+    DelegationNotFound = 163,
     /// Loan has already been fully repaid.
-    AlreadyRepaid = 163,
+    AlreadyRepaid = 164,
     /// Loan amount exceeds the maximum ratio allowed.
-    LoanExceedsMaxRatio = 164,
+    LoanExceedsMaxRatio = 165,
     /// Self-co-borrowing is not allowed.
-    SelfCoBorrowerNotAllowed = 165,
+    SelfCoBorrowerNotAllowed = 166,
     /// Maximum number of co-borrowers exceeded.
-    MaxCoBorrowersExceeded = 166,
+    MaxCoBorrowersExceeded = 167,
     /// Co-borrower is already added to this loan.
-    CoBorrowerAlreadyAdded = 167,
+    CoBorrowerAlreadyAdded = 168,
     /// Operation is not allowed on a loan in forbearance.
-    LoanInForbearance = 168,
+    LoanInForbearance = 169,
     /// No forbearance record found for this loan.
-    ForbearanceNotFound = 169,
+    ForbearanceNotFound = 170,
     /// Forbearance is not currently active.
-    ForbearanceNotActive = 170,
+    ForbearanceNotActive = 171,
     /// Maximum number of forbearance periods reached.
-    MaxForbearanceExceeded = 171,
+    MaxForbearanceExceeded = 172,
     /// Invalid configuration for dynamic interest rate.
-    InvalidDynamicRateConfig = 172,
+    InvalidDynamicRateConfig = 173,
     /// Attestor reported fewer origin-chain confirmations than the required minimum.
-    InsufficientBridgeConfirmations = 173,
+    InsufficientBridgeConfirmations = 220,
     /// A live protocol invariant check failed (see `crate::invariants`).
     InvariantViolation = 178,
     /// The withdrawal queue has reached its maximum size.
