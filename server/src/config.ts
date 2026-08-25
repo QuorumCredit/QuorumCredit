@@ -39,6 +39,11 @@ export interface ServerConfig {
     failureThreshold: number;
     maxQueuedWrites: number;
   };
+  /** Soroban RPC configuration for recurring payment execution (issue #1362). */
+  sorobanRpc: {
+    url: string | undefined;
+    contractId: string | undefined;
+  };
 }
 
 function envInt(name: string, fallback: number): number {
@@ -134,6 +139,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     wsHeartbeat: {
       intervalMs: envInt("WS_HEARTBEAT_INTERVAL_MS", 30_000),
       idleTimeoutMs: envInt("WS_IDLE_TIMEOUT_MS", 60_000),
+    },
+    sorobanRpc: {
+      url: env.SOROBAN_RPC_URL,
+      contractId: env.QUORUM_CREDIT_CONTRACT_ID,
     },
   };
 }

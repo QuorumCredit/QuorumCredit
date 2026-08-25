@@ -4,9 +4,10 @@ import { loadApiKeyStore, type ApiKeyStore } from "../auth/apiKeyStore.js";
 import { defaultAuthRateLimiter, type AuthRateLimiter } from "../auth/rateLimiter.js";
 import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
-import { recurringPaymentStore } from "../recurring/recurringPaymentStore.js";
 import { loanCartStore } from "../cart/loanCartStore.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
+import type { SorobanRpcClient } from "../soroban/rpcClient.js";
+import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -24,6 +25,10 @@ export interface RouteContext {
   apiKeyStore?: ApiKeyStore;
   /** Issue #1290 — rate limiter for auth endpoint. */
   authRateLimiter?: AuthRateLimiter;
+  /** Issue #1362 — Soroban RPC client for on-chain recurring payment execution. */
+  rpcClient?: SorobanRpcClient;
+  /** Issue #1362 — Persistent recurring payment store (Local or Redis-backed). */
+  paymentStore?: RecurringPaymentStore;
 }
 
 /**
@@ -163,10 +168,11 @@ export function handleHttpRequest(
   const recurringPaymentMatch = url.pathname.match(/^\/loans\/([^/]+)\/recurring-payment$/);
   if (recurringPaymentMatch) {
     const loanId = decodeURIComponent(recurringPaymentMatch[1] as string);
+    const store = ctx.paymentStore;
 
     if (req.method === "POST") {
       readJsonBody<RecurringPaymentRequestBody>(req)
-        .then((body) => {
+        .then(async (body) => {
           if (typeof body.amount !== "number" || !Number.isFinite(body.amount) || body.amount <= 0) {
             res.writeHead(400, { "content-type": "application/json" });
             res.end(JSON.stringify({ error: "amount must be a positive number" }));
@@ -186,8 +192,9 @@ export function handleHttpRequest(
               ctx,
               res,
               () => {
-                recurringPaymentStore.setup(loanId, amount, frequencySeconds, startDate);
-                metrics.incCounter("qc_recurring_payments_setup_total");
+                void store?.setup(loanId, amount, frequencySeconds, startDate).then(() => {
+                  metrics.incCounter("qc_recurring_payments_setup_total");
+                });
               },
               { loanId, amount, frequencySeconds, startDate }
             )
@@ -195,7 +202,13 @@ export function handleHttpRequest(
             return;
           }
 
-          const schedule = recurringPaymentStore.setup(loanId, amount, frequencySeconds, startDate);
+          if (!store) {
+            res.writeHead(503, { "content-type": "application/json" });
+            res.end(JSON.stringify({ error: "payment store not configured" }));
+            return;
+          }
+
+          const schedule = await store.setup(loanId, amount, frequencySeconds, startDate);
           metrics.incCounter("qc_recurring_payments_setup_total");
           res.writeHead(201, { "content-type": "application/json" });
           res.end(JSON.stringify(schedule));
@@ -208,16 +221,22 @@ export function handleHttpRequest(
     }
 
     if (req.method === "GET") {
-      const schedule = recurringPaymentStore.get(loanId);
-      if (!schedule) {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "no recurring payment schedule for this loan" }));
+      if (!store) {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "payment store not configured" }));
         return;
       }
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({ ...schedule, successRateBps: recurringPaymentStore.successRateBps(loanId) })
-      );
+      void store.get(loanId).then((schedule) => {
+        if (!schedule) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "no recurring payment schedule for this loan" }));
+          return;
+        }
+        void store.successRateBps(loanId).then((rateBps) => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ...schedule, successRateBps: rateBps }));
+        });
+      });
       return;
     }
 
@@ -228,9 +247,11 @@ export function handleHttpRequest(
           ctx,
           res,
           () => {
-            if (recurringPaymentStore.terminate(loanId)) {
-              metrics.incCounter("qc_recurring_payments_terminated_total");
-            }
+            void store?.terminate(loanId).then((terminated) => {
+              if (terminated) {
+                metrics.incCounter("qc_recurring_payments_terminated_total");
+              }
+            });
           },
           { loanId }
         )
@@ -238,15 +259,22 @@ export function handleHttpRequest(
         return;
       }
 
-      const terminated = recurringPaymentStore.terminate(loanId);
-      if (!terminated) {
-        res.writeHead(404, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "no recurring payment schedule for this loan" }));
+      if (!store) {
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "payment store not configured" }));
         return;
       }
-      metrics.incCounter("qc_recurring_payments_terminated_total");
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ loanId, active: false }));
+
+      void store.terminate(loanId).then((terminated) => {
+        if (!terminated) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "no recurring payment schedule for this loan" }));
+          return;
+        }
+        metrics.incCounter("qc_recurring_payments_terminated_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ loanId, active: false }));
+      });
       return;
     }
   }
@@ -264,7 +292,7 @@ export function handleHttpRequest(
         ctx,
         res,
         () => {
-          void executeRecurringPayment(loanId).then((result) => {
+          void executeRecurringPayment(loanId, ctx).then((result) => {
             metrics.incCounter(result.ok ? "qc_recurring_payments_success_total" : "qc_recurring_payments_failed_total");
           });
         },
@@ -274,7 +302,7 @@ export function handleHttpRequest(
       return;
     }
 
-    executeRecurringPayment(loanId)
+    executeRecurringPayment(loanId, ctx)
       .then((result) => {
         metrics.incCounter(result.ok ? "qc_recurring_payments_success_total" : "qc_recurring_payments_failed_total");
         res.writeHead(200, { "content-type": "application/json" });
@@ -558,27 +586,76 @@ function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 /**
  * Executes a due recurring payment with retry-with-backoff and borrower
  * notification on exhaustion, per issue #1168.
+ * Issue #1362: Now with persistent store and on-chain execution.
  */
-async function executeRecurringPayment(loanId: string) {
-  return recurringPaymentStore.executeWithRetry(
+function executeRecurringPayment(loanId: string, ctx: RouteContext) {
+  const store = ctx.paymentStore;
+  if (!store) {
+    return Promise.resolve({ ok: false, retriesUsed: 0, notifiedBorrower: false });
+  }
+  return store.executeWithRetry(
     loanId,
-    () => submitOnChainRecurringPayment(loanId),
-    (id) => notifyBorrowerOfMissedPayment(id)
+    () => submitOnChainRecurringPayment(loanId, ctx),
+    (id, schedule) => notifyBorrowerOfMissedPayment(id, schedule)
   );
 }
 
-// NOTE: this always reports success — a real deployment must swap in a
-// Soroban RPC call to QuorumCreditContract.execute_recurring_payment
-// (src/recurring_payment.rs) here. Wiring that call is intentionally left as
-// a single, obvious seam (this function) since this service has no chain
-// client wired in yet (see EventStore's read-only-indexer-tailing note).
-async function submitOnChainRecurringPayment(_loanId: string): Promise<boolean> {
-  return true;
+/**
+ * Issue #1362: Invoke execute_recurring_payment on the Soroban contract.
+ * Returns whether the on-chain submission succeeded (contract executed without reverting).
+ * The RPC client emits structured logs for audit trails.
+ */
+async function submitOnChainRecurringPayment(loanId: string, ctx: RouteContext): Promise<boolean> {
+  const rpc = ctx.rpcClient;
+  if (!rpc) {
+    console.warn(`[quorum-credit] No RPC client configured for loan ${loanId}`);
+    metrics.incCounter("qc_recurring_payments_rpc_unconfigured_total");
+    return false;
+  }
+
+  try {
+    // Emit an audit record for the attempt.
+    metrics.incCounter("qc_recurring_payments_chain_attempts_total");
+
+    // Invoke the contract via Soroban RPC with the borrower address.
+    // The borrower address is derived from loanId (which is synthesized from event log).
+    // For now, this is a placeholder since full chain wiring (issue #1322/#1356) is not yet available.
+    // Once chain client is available, this will:
+    // 1. Build a transaction with the RPC call
+    // 2. Sign it with the keeper's keypair
+    // 3. Submit to the network
+    // 4. Poll for confirmation
+    const result = await rpc.executeRecurringPayment(loanId);
+
+    if (result.ok) {
+      metrics.incCounter("qc_recurring_payments_chain_success_total");
+      console.log(
+        `[quorum-credit] execute_recurring_payment succeeded for loan=${loanId} tx=${result.txHash}`
+      );
+      return true;
+    } else {
+      metrics.incCounter("qc_recurring_payments_chain_failed_total");
+      console.warn(
+        `[quorum-credit] execute_recurring_payment failed for loan=${loanId}: ${result.error}`
+      );
+      return false;
+    }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[quorum-credit] submitOnChainRecurringPayment crashed for loan=${loanId}: ${error}`);
+    metrics.incCounter("qc_recurring_payments_chain_errors_total");
+    return false;
+  }
 }
 
-function notifyBorrowerOfMissedPayment(loanId: string): void {
+function notifyBorrowerOfMissedPayment(
+  loanId: string,
+  schedule?: { failureCount?: number; retryCount?: number }
+): void {
+  const failCount = schedule?.failureCount ?? 0;
+  const retryCount = schedule?.retryCount ?? 0;
   console.warn(
-    `[quorum-credit-broadcast-server] recurring payment for loan ${loanId} failed after retries; notifying borrower`
+    `[quorum-credit] recurring payment for loan ${loanId} failed after retries (failures=${failCount}, last_retry_count=${retryCount}); notifying borrower`
   );
   metrics.incCounter("qc_recurring_payments_notifications_total");
 }
