@@ -1,6 +1,6 @@
 # QuorumCredit Event Indexer Service
 
-Event indexing service for QuorumCredit smart contract (#1084).
+Event indexing service for QuorumCredit smart contract (#1084, #1366).
 
 ## Overview
 
@@ -8,12 +8,14 @@ This service indexes on-chain events emitted by the QuorumCredit contract and pr
 
 ## Features
 
-- Real-time event indexing from Soroban RPC
-- Indexes events by type, timestamp, and participant
-- REST API for querying indexed events
-- Event statistics and analytics
-- Persistent storage (JSON file)
-- Health monitoring
+- **Restart-Safe**: Persisted cursor ensures indexing resumes from the last processed ledger after restarts
+- **Atomic Writes**: Write-to-temp-then-rename prevents database corruption on crashes
+- **Event Deduplication**: Prevents duplicate events from re-processed ledgers
+- **Corruption Detection**: Preserves corrupt databases for forensics and requires explicit flag to rebuild
+- **Real-time Indexing**: Continuous indexing from Soroban RPC
+- **REST API**: Query indexed events by type, timestamp, and participant
+- **Event Statistics**: Analytics and monitoring endpoints
+- **Health Monitoring**: Health check endpoint for production deployments
 
 ## Quick Start
 
@@ -52,7 +54,66 @@ npm run dev
 
 # Production mode
 npm start
+
+# Start from a specific ledger
+npm start -- --from-ledger=12345
+
+# Start from genesis (ledger 1)
+npm start -- --from-genesis
+
+# Allow rebuild on corrupt database
+npm start -- --allow-rebuild
 ```
+
+## Command-Line Options
+
+- `--from-ledger=<number>`: Start indexing from a specific ledger (overrides cursor)
+- `--from-genesis`: Start indexing from ledger 1 (equivalent to `--from-ledger=1`)
+- `--allow-rebuild`: Allow starting with an empty database if the existing database is corrupt
+
+## Restart Safety
+
+The indexer maintains a **cursor file** (`cursor.json`) that tracks the last successfully processed ledger. On restart:
+
+1. If a cursor exists, indexing resumes from `lastProcessedLedger + 1`
+2. If no cursor exists, indexing starts from `latest - 1000` ledgers
+3. Explicit `--from-ledger` or `--from-genesis` flags override the cursor
+
+This ensures no events are skipped on restart, even if the process is killed mid-batch.
+
+## Corruption Handling
+
+If the database file (`events.db.json`) is corrupted:
+
+1. The corrupt file is automatically preserved with a `.corrupt.<timestamp>` suffix
+2. An error is logged with instructions
+3. **The service will NOT start** unless `--allow-rebuild` is provided
+4. This prevents silent data loss from unintended database resets
+
+Example:
+```bash
+# If database is corrupt, this will fail:
+npm start
+
+# To explicitly rebuild:
+npm start -- --allow-rebuild
+```
+
+## Atomic Writes
+
+All writes to `events.db.json` and `cursor.json` use atomic write-to-temp-then-rename to prevent corruption:
+
+```
+1. Write data to <file>.tmp
+2. Flush to disk
+3. Atomically rename <file>.tmp to <file>
+```
+
+A crash during step 1 or 2 leaves the original file intact. Only a successful rename updates the file.
+
+## Event Deduplication
+
+Events are identified by a composite key: `<ledger>-<event_index>`. The indexer maintains an in-memory set of seen event IDs. If a ledger is re-processed (e.g., due to cursor recovery), duplicate events are automatically skipped.
 
 ## API Endpoints
 
@@ -61,7 +122,7 @@ npm start
 GET /health
 ```
 
-Returns service health status.
+Returns service health status, database size, and indexing state.
 
 ### Query Events
 ```
@@ -110,19 +171,51 @@ The indexer recognizes the following QuorumCredit event types:
 
 ## Database
 
-Events are stored in a JSON file (`events.db.json`) by default. The file is automatically created and updated as new events are indexed.
+Events are stored in JSON files:
+- `events.db.json`: All indexed events
+- `cursor.json`: Last processed ledger cursor
+
+Both files use atomic writes to prevent corruption.
+
+## Testing
+
+```bash
+# Run tests
+npm test
+
+# Run tests in watch mode
+npm run test:watch
+
+# Run tests with coverage
+npm test -- --coverage
+```
+
+Tests verify:
+- ✅ Restart safety: cursor persistence and resume
+- ✅ Corruption detection: fails startup without `--allow-rebuild`
+- ✅ Atomic writes: no `.tmp` files left after successful writes
+- ✅ Event deduplication: duplicate events are skipped
+- ✅ Database preservation: corrupt files are saved with `.corrupt` suffix
 
 ## Monitoring
 
 The service logs indexing progress and errors to the console. Health checks are available via the `/health` endpoint.
 
+Key metrics to monitor:
+- Events indexed per minute
+- Database size
+- Cursor progression
+- API response times
+
 ## Architecture
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Soroban RPC   │───▶│   Event Indexer  │───▶│     JSON DB      │
+│   Soroban RPC   │───▶│   Event Indexer  │───▶│   events.db.json │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
-                              │
+                              │                 ┌─────────────────┐
+                              └────────────────▶│   cursor.json    │
+                              │                 └─────────────────┘
                               ▼
                        ┌─────────────────┐
                        │   REST API      │
@@ -138,7 +231,12 @@ npm run build
 
 ### Testing
 ```bash
-# No tests implemented yet
+npm test
+```
+
+### Linting
+```bash
+npm run lint  # (if configured)
 ```
 
 ## Deployment
@@ -146,7 +244,10 @@ npm run build
 ### Docker
 ```bash
 docker build -t quorumcredit-indexer .
-docker run -p 3000:3000 quorumcredit-indexer
+docker run -p 3000:3000 \
+  -e CONTRACT_ID=YOUR_CONTRACT_ID \
+  -e RPC_URL=https://soroban-testnet.stellar.org:443 \
+  quorumcredit-indexer
 ```
 
 ### Environment Variables
@@ -157,8 +258,6 @@ docker run -p 3000:3000 quorumcredit-indexer
 | `CONTRACT_ID` | QuorumCredit contract ID | Required |
 | `NETWORK_PASSPHRASE` | Network passphrase | `Test SDF Network ; September 2015` |
 | `PORT` | API server port | `3000` |
-| `START_LEDGER` | Starting ledger number | Latest - 1000 |
-| `DB_PATH` | Database file path | `./events.db.json` |
 
 ## Troubleshooting
 
@@ -169,23 +268,105 @@ docker run -p 3000:3000 quorumcredit-indexer
    - Check RPC URL connectivity
    - Ensure contract is deployed and emitting events
 
-2. **API not responding**
-   - Check if service is running
-   - Verify port is not in use
-   - Check logs for errors
+2. **Database corrupt on startup**
+   - Check `events.db.json.corrupt.<timestamp>` for forensics
+   - Use `--allow-rebuild` to restart with empty database
+   - Verify disk space and permissions
 
-3. **Database not persisting**
-   - Check file permissions
+3. **Cursor not persisting**
+   - Check file permissions on `cursor.json`
    - Verify disk space
-   - Check for JSON parsing errors
+   - Check logs for write errors
+
+4. **Duplicate events after restart**
+   - This should not happen; file a bug report with logs
+
+5. **Indexer falling behind**
+   - Check RPC response times
+   - Reduce polling interval if needed
+   - Monitor system resources
+
+### Recovery Procedures
+
+**Database corruption:**
+```bash
+# 1. Check preserved corrupt file
+ls -la services/indexer/events.db.json.corrupt.*
+
+# 2. Decide: restore or rebuild
+# Option A: Restore from backup (if available)
+cp backup/events.db.json services/indexer/
+
+# Option B: Rebuild from scratch
+npm start -- --allow-rebuild --from-genesis
+```
+
+**Cursor corruption:**
+```bash
+# Cursor corruption is non-critical - indexer will fall back to latest-1000
+# If needed, manually reset cursor:
+echo '{"lastProcessedLedger":12345,"lastUpdated":1234567890}' > services/indexer/cursor.json
+```
+
+**Large gap detection:**
+```bash
+# If indexer missed events (e.g., was down for >1000 ledgers):
+# 1. Stop the indexer
+# 2. Re-index from last known good ledger
+npm start -- --from-ledger=<last_known_ledger>
+```
 
 ### Logs
 
 Check console output for:
-- Indexing progress
+- Indexing progress: `Indexed N new events from ledger X`
+- Cursor updates: `Loaded cursor: last processed ledger X`
+- Deduplication: `Skipping duplicate event: <id>`
 - RPC connection errors
 - Event parsing errors
 - Database save errors
+- Corruption warnings
+
+## Migration from Old Indexer
+
+If upgrading from the previous indexer (without cursor):
+
+1. **Backup existing database:**
+   ```bash
+   cp services/indexer/events.db.json services/indexer/events.db.json.backup
+   ```
+
+2. **Start the new indexer:**
+   ```bash
+   npm start
+   ```
+   
+   The new indexer will load existing events and create a cursor at the latest indexed ledger.
+
+3. **Verify:**
+   ```bash
+   # Check cursor exists
+   cat services/indexer/cursor.json
+   
+   # Check database loaded
+   curl http://localhost:3000/health
+   ```
+
+## Comparison with Rust Indexer
+
+This TypeScript indexer (`services/indexer`) and the Rust indexer (`tools/indexer`) serve different purposes:
+
+| Feature | TypeScript Indexer | Rust Indexer |
+|---------|-------------------|--------------|
+| **Use Case** | Production service with REST API | Development/analytics tool |
+| **Storage** | JSON files | SQLite |
+| **Deduplication** | In-memory set + ID check | `UNIQUE INDEX` on (ledger, tx_hash, category, action) |
+| **Cursor** | `cursor.json` | SQLite `cursor` table |
+| **Reorg Detection** | Not implemented (coming soon) | Full reorg audit trail |
+| **API** | REST API (Express) | None (CLI only) |
+| **Deployment** | Docker, production-ready | Local development |
+
+Both indexers now implement cursor persistence and restart safety as of #1366.
 
 ## License
 

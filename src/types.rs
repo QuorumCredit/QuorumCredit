@@ -70,6 +70,14 @@ pub const MAX_HOT_VOUCH_HISTORY_ENTRIES: u32 = 20;
 /// oldest entries are cut over into a single `ArchivedVouchHistory` batch,
 /// bringing the hot window back down to `MAX_HOT_VOUCH_HISTORY_ENTRIES`.
 pub const VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
+/// Issue #1179: target size of the "hot" per-(borrower, voucher, token)
+/// vouch audit-trail window kept after an archival cutover. Mirrors the
+/// `MAX_HOT_VOUCH_HISTORY_ENTRIES` bounding strategy used for `VouchHistory`.
+pub const MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES: u32 = 20;
+/// Issue #1179: once the hot vouch audit-trail window reaches this length,
+/// the oldest entries are cut over into a single `ArchivedVouchAuditTrail`
+/// batch, bringing the hot window back down to `MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES`.
+pub const VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
 /// Issue #1146: maximum number of items returned by a single page of any
 /// `*_page` read function, regardless of the caller-requested `limit`.
 pub const MAX_PAGE_SIZE: u32 = 50;
@@ -98,6 +106,10 @@ pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 /// Maximum window after `eta` within which a timelocked action must be executed, in seconds (72 hours).
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+/// Cross-chain vote attestations older than this (relative to the ledger clock) are rejected as stale (10 minutes).
+pub const VOTE_ATTESTATION_MAX_AGE_SECS: u64 = 10 * 60;
+/// Cross-chain vote attestations timestamped further than this into the future are rejected, in seconds (60).
+pub const VOTE_ATTESTATION_MAX_SKEW_SECS: u64 = 60;
 /// Minimum lock period for a vouch before it can be withdrawn, in seconds (7 days).
 /// Protects against flash-loan-style attacks where an attacker stakes, borrows, then
 /// immediately withdraws.
@@ -601,6 +613,8 @@ pub enum DataKey {
     PendingWithdrawal(Address, Address),
     /// Confidential vouch commitment: (voucher, borrower) → commitment record
     VouchCommitment(Address, Address),
+    /// Confidential loan commitment: borrower → commitment record
+    LoanCommitment(Address),
     /// Monotonic counter for confidential proof records
     ZkProofCounter,
     /// Confidential proof record by ID
@@ -827,6 +841,19 @@ pub enum DataKey {
     /// created so far for this relationship's vouch history. The index needed
     /// to enumerate `ArchivedVouchHistory` batches in order (0..count).
     VouchHistoryArchiveCount(Address, Address, Address),
+    // ── Vouch audit trail (Issue #1179) ──────────────────────────────────────
+    /// (borrower, voucher, token) → Vec<VouchAuditEvent>: bounded "hot" window
+    /// of audit events (created / stake increased / stake decreased /
+    /// withdrawn) for this vouch relationship.
+    VouchAuditTrail(Address, Address, Address),
+    /// Archived vouch audit trail: (borrower, voucher, token, batch_id) →
+    /// Vec<VouchAuditEvent>. Old audit events are moved here when the hot
+    /// window grows beyond `VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES`.
+    ArchivedVouchAuditTrail(Address, Address, Address, u32),
+    /// (borrower, voucher, token) → u32 number of archive batches created so
+    /// far for this relationship's audit trail. The index needed to
+    /// enumerate `ArchivedVouchAuditTrail` batches in order (0..count).
+    VouchAuditTrailArchiveCount(Address, Address, Address),
     // ── Vouch splitting (Issue #1167) ────────────────────────────────────────
     /// borrower → Vec<VouchSplitRecord> genealogy of every split performed
     /// against a vouch for this borrower (parent voucher → child voucher).
@@ -857,6 +884,8 @@ pub enum DataKey {
     CrossChainProposal(u64),
     /// (proposal_id, voter) → CrossChainVote
     CrossChainVote(u64, Address),
+    /// (origin_chain, nonce) → true once a vote attestation with that nonce has been consumed.
+    VoteAttestationNonceUsed(u32, u64),
     
     // ── Issue #974: Cross-Chain Auction ───────────────────────────────────
     /// auction_id → CrossChainAuction
@@ -2541,6 +2570,37 @@ pub struct VouchHistoryEntry {
     pub delegate: Option<Address>,
 }
 
+/// Issue #1179: kind of event recorded in a vouch's audit trail.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VouchAuditEventType {
+    /// The vouch was first created.
+    Created,
+    /// The voucher increased their stake on an existing vouch.
+    StakeIncreased,
+    /// The voucher decreased their stake on an existing vouch.
+    StakeDecreased,
+    /// The vouch was fully withdrawn.
+    Withdrawn,
+}
+
+/// Issue #1179: a single immutable audit-trail entry for a (borrower,
+/// voucher, token) vouch relationship, suitable for compliance and
+/// transparency reporting.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchAuditEvent {
+    /// Kind of event this entry records.
+    pub event_type: VouchAuditEventType,
+    /// Ledger timestamp at which the event occurred.
+    pub timestamp: u64,
+    /// Amount involved in the event: the stake for `Created`, the delta for
+    /// `StakeIncreased`/`StakeDecreased`, and the returned stake for `Withdrawn`.
+    pub amount: i128,
+    /// The vouch's total stake immediately after this event (0 after `Withdrawn`).
+    pub resulting_stake: i128,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct LoanPoolRecord {
@@ -2582,6 +2642,16 @@ pub struct PendingSlashRecord {
     pub approved_at: u64,
     pub executable_at: u64,
     pub executed: bool,
+}
+
+/// A queued slash entry for lazy/deferred batch execution.
+/// Created via `queue_slash`; executed via `execute_queued_slashes`.
+#[contracttype]
+#[derive(Clone)]
+pub struct LazySlashEntry {
+    pub borrower: Address,
+    pub amount: i128,
+    pub queued_at: u64,
 }
 
 /// Controls where redistributable slash funds flow after insurance allocation.
@@ -3272,7 +3342,6 @@ pub struct VoucherFraudScore {
 /// Issue #1193: Loan covenant monitoring types
 /// Covenants are financial and operational requirements that borrowers must maintain
 /// throughout the loan lifecycle. Violations trigger escalation protocols.
-
 /// Covenant type enumeration for different monitoring requirements
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

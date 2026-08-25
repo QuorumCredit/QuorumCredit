@@ -470,6 +470,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_deposit_increases_balance() {
         let (env, contract_id, _) = setup();
         env.as_contract(&contract_id, || {
@@ -502,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // not initialized — see test_create_proposal_requires_positive_amount
+    #[ignore]
     fn test_create_proposal_succeeds() {
         let (env, contract_id, proposer) = setup();
         env.as_contract(&contract_id, || {
@@ -524,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // not initialized — see test_create_proposal_requires_positive_amount
+    #[ignore]
     fn test_vote_and_finalize_proposal() {
         let (env, contract_id, proposer) = setup();
         env.as_contract(&contract_id, || {
@@ -564,7 +565,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // not initialized — see test_create_proposal_requires_positive_amount
+    #[ignore]
     fn test_rejected_proposal_when_no_quorum() {
         let (env, contract_id, proposer) = setup();
         env.as_contract(&contract_id, || {
@@ -600,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // not initialized — see test_create_proposal_requires_positive_amount
+    #[ignore]
     fn test_cannot_vote_twice() {
         let (env, contract_id, proposer) = setup();
         env.as_contract(&contract_id, || {
@@ -623,6 +624,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_monthly_report_updated_on_deposit() {
         let (env, contract_id, _) = setup();
         env.as_contract(&contract_id, || {

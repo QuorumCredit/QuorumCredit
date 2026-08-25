@@ -1,3 +1,4 @@
+/*
 /// Issue #1178: Differential Testing Implementation
 ///
 /// This module provides infrastructure for differential testing - comparing
@@ -11,10 +12,8 @@
 /// - Using fuzzing to generate diverse test cases
 /// - Documenting any divergences discovered
 
-// API-drifted; excluded so `cargo test --lib` compiles — uses `String`/`Vec`
-// from the std prelude and `Address::from_account_id`, both removed from
-// current soroban-sdk (see also src/tests.rs).
-#[cfg(any())]
+// Disabled: tests use incorrect Soroban API
+#[cfg(test)]
 mod reference_model {
     //! Simple reference implementation for differential testing.
     //! This is a simplified Python-like logic representation for verification.
@@ -266,6 +265,7 @@ mod tests {
         assert!(true, "Repayment state transition verified");
     }
 }
+*/
 
 // # Differential Testing Documentation
 //
