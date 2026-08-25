@@ -1717,42 +1717,71 @@ impl QuorumCreditContract {
 
     // ── Issue #1179: Vouch Audit Trail ────────────────────────────────────────
 
-    /// Get vouch audit trail (Issue #1179) - NOT YET IMPLEMENTED
-    /// This function is a placeholder pending implementation of audit trail types.
+    /// Read the bounded hot-window vouch audit trail (Issue #1179) for
+    /// (borrower, voucher, token), formatted as one newline-separated string
+    /// with the oldest event first. See `get_vouch_audit_trail_page` for
+    /// pagination and `export_vouch_audit_report` for a compliance report.
     pub fn get_vouch_audit_trail(
-        _env: Env,
-        _borrower: Address,
-        _voucher: Address,
-        _token: Address,
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
     ) -> Result<String, ContractError> {
-        // TODO: Implement when audit trail types are defined
-        Ok(String::from_str(&_env, ""))
+        let events = audit::get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
+        Ok(audit::format_audit_trail(&env, &events))
     }
 
-    /// Retrieve a page of audit events for a vouch (Issue #1179) - NOT YET IMPLEMENTED.
-    /// Returns up to `limit` events starting from index `offset`.
+    /// Retrieve a page of formatted audit events for a vouch (Issue #1179).
+    /// Returns up to `limit` events starting from index `offset` over the
+    /// hot-window audit trail.
     pub fn get_vouch_audit_trail_page(
-        _env: Env,
-        _borrower: Address,
-        _voucher: Address,
-        _token: Address,
-        _offset: u32,
-        _limit: u32,
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        offset: u32,
+        limit: u32,
     ) -> Result<Vec<String>, ContractError> {
-        // TODO: Implement when audit trail types are defined
-        Ok(Vec::new(&_env))
+        let events = audit::get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
+        Ok(audit::get_vouch_audit_trail_page_formatted(&env, &events, offset, limit))
     }
 
-    /// Export audit trail data as a formatted report (Issue #1179) - NOT YET IMPLEMENTED.
-    /// Suitable for compliance and transparency reporting.
+    /// Export the vouch audit trail as a formatted report (Issue #1179),
+    /// suitable for compliance and transparency reporting.
     pub fn export_vouch_audit_report(
-        _env: Env,
-        _borrower: Address,
-        _voucher: Address,
-        _token: Address,
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
     ) -> Result<String, ContractError> {
-        // TODO: Implement when audit trail types are defined
-        Ok(String::from_str(&_env, ""))
+        let events = audit::get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
+        Ok(audit::format_audit_report(&env, &events))
+    }
+
+    /// Number of archive batches created so far for this relationship's
+    /// vouch audit trail (Issue #1179). Use with
+    /// `get_archived_vouch_audit_batch` to walk the full historical audit
+    /// log beyond the bounded hot window.
+    pub fn get_vouch_audit_archive_count(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+    ) -> u32 {
+        audit::get_vouch_audit_trail_archive_count(&env, &borrower, &voucher, &token)
+    }
+
+    /// Read one archived vouch audit-trail batch (Issue #1179). `batch_id`
+    /// ranges over `0..get_vouch_audit_archive_count(...)`, oldest batch
+    /// first.
+    pub fn get_archived_vouch_audit_batch(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        batch_id: u32,
+    ) -> Vec<crate::types::VouchAuditEvent> {
+        audit::get_archived_vouch_audit_trail_batch(&env, &borrower, &voucher, &token, batch_id)
     }
 
     // ── Loan Priority / Subordination (senior-junior debt structures) ────────
