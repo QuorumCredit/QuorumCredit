@@ -106,6 +106,10 @@ pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 /// Maximum window after `eta` within which a timelocked action must be executed, in seconds (72 hours).
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+/// Cross-chain vote attestations older than this (relative to the ledger clock) are rejected as stale (10 minutes).
+pub const VOTE_ATTESTATION_MAX_AGE_SECS: u64 = 10 * 60;
+/// Cross-chain vote attestations timestamped further than this into the future are rejected, in seconds (60).
+pub const VOTE_ATTESTATION_MAX_SKEW_SECS: u64 = 60;
 /// Minimum lock period for a vouch before it can be withdrawn, in seconds (7 days).
 /// Protects against flash-loan-style attacks where an attacker stakes, borrows, then
 /// immediately withdraws.
@@ -878,6 +882,8 @@ pub enum DataKey {
     CrossChainProposal(u64),
     /// (proposal_id, voter) → CrossChainVote
     CrossChainVote(u64, Address),
+    /// (origin_chain, nonce) → true once a vote attestation with that nonce has been consumed.
+    VoteAttestationNonceUsed(u32, u64),
     
     // ── Issue #974: Cross-Chain Auction ───────────────────────────────────
     /// auction_id → CrossChainAuction
