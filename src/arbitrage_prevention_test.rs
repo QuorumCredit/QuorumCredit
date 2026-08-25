@@ -5,7 +5,7 @@
 //! Tests for exchange rate tracking, slippage validation, and arbitrage detection.
 mod tests {
     use crate::arbitrage_prevention::*;
-    use crate::types::ContractError;
+    use crate::ContractError;
 
     #[test]
     fn test_percentage_change_calculation() {

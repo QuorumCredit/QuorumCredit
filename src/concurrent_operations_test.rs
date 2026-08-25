@@ -21,9 +21,12 @@
 
 #![cfg(test)]
 
+extern crate std;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::{format, string::String, string::ToString, vec, vec::Vec};
 
 /// Simulates a concurrent transaction operation
 #[derive(Clone, Debug)]
@@ -591,16 +594,18 @@ mod tests {
 
     #[test]
     fn test_atomicity_loan_issuance() {
-        let sim = ConcurrentSimulator::new(1_000_000, 150);
+        let sim = ConcurrentSimulator::new(100_000_000_000, 150);
 
         assert!(sim.create_vouch(1, 1, 500_000).is_ok());
+        assert!(sim.create_vouch(2, 2, 500_000).is_ok());
 
-        // Try to issue a loan that will fail due to insufficient balance
+        // Both borrowers are within their LTV limit and the contract has
+        // ample balance, so both loan issuances should complete atomically.
         let result1 = sim.issue_loan(1, 100_000);
-        assert!(result1.is_ok()); // This should succeed
+        assert!(result1.is_ok());
 
         let result2 = sim.issue_loan(2, 100_000);
-        assert!(result2.is_ok()); // This might succeed too
+        assert!(result2.is_ok());
 
         // Verify that balance was properly tracked
         assert!(sim.verify_solvency().is_ok());

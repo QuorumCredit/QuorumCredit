@@ -518,15 +518,22 @@ mod tests {
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let admin = Address::generate(&env);
+        let deployer = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = token_contract.address();
+        let contract_id = env.register(crate::QuorumCreditContract, ());
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1u32, &token);
         let owner = Address::generate(&env);
-        (env, contract_id, owner)
+        (env, owner, contract_id)
     }
 
     #[test]
     #[ignore]
     fn test_mint_badge_idempotent() {
-        let (env, contract_id, owner) = setup();
+        let (env, owner, contract_id) = setup();
         env.as_contract(&contract_id, || {
             mint_badge(&env, &owner, BadgeType::FirstLoan);
             mint_badge(&env, &owner, BadgeType::FirstLoan); // second call is no-op
@@ -543,15 +550,24 @@ mod tests {
     #[test]
     #[ignore]
     fn test_stake_and_unstake() {
-        let (env, contract_id, owner) = setup();
+        let (env, owner, contract_id) = setup();
+        // Each of stake_badge/unstake_badge calls owner.require_auth(); under
+        // mock_all_auths a given address can only be authorized once per
+        // as_contract frame, so each auth-requiring call gets its own frame.
         env.as_contract(&contract_id, || {
             mint_badge(&env, &owner, BadgeType::TenLoans);
+        });
+        env.as_contract(&contract_id, || {
             stake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap();
-
+        });
+        env.as_contract(&contract_id, || {
             let bonus = get_staked_yield_bonus(&env, &owner, &BadgeType::TenLoans);
             assert_eq!(bonus, TEN_LOANS_BADGE_YIELD_BONUS_BPS);
-
+        });
+        env.as_contract(&contract_id, || {
             unstake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap();
+        });
+        env.as_contract(&contract_id, || {
             let bonus_after = get_staked_yield_bonus(&env, &owner, &BadgeType::TenLoans);
             assert_eq!(bonus_after, 0);
         });
@@ -560,19 +576,23 @@ mod tests {
     #[test]
     #[ignore]
     fn test_cannot_stake_listed_badge() {
-        let (env, contract_id, owner) = setup();
+        let (env, owner, contract_id) = setup();
         env.as_contract(&contract_id, || {
             mint_badge(&env, &owner, BadgeType::Centurion);
-            list_badge_for_sale(&env, owner.clone(), BadgeType::Centurion, 1_000_000).unwrap();
-            let result = stake_badge(&env, owner, BadgeType::Centurion);
-            assert_eq!(result, Err(ContractError::InvalidStateTransition));
         });
+        env.as_contract(&contract_id, || {
+            list_badge_for_sale(&env, owner.clone(), BadgeType::Centurion, 1_000_000).unwrap();
+        });
+        let result = env.as_contract(&contract_id, || {
+            stake_badge(&env, owner, BadgeType::Centurion)
+        });
+        assert_eq!(result, Err(ContractError::InvalidStateTransition));
     }
 
     #[test]
     #[ignore]
     fn test_list_and_purchase_badge() {
-        let (env, contract_id, seller) = setup();
+        let (env, seller, contract_id) = setup();
         let buyer = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
@@ -592,13 +612,18 @@ mod tests {
     #[test]
     #[ignore]
     fn test_total_staked_yield_bonus() {
-        let (env, contract_id, owner) = setup();
+        let (env, owner, contract_id) = setup();
         env.as_contract(&contract_id, || {
             mint_badge(&env, &owner, BadgeType::FirstLoan);
             mint_badge(&env, &owner, BadgeType::TenLoans);
+        });
+        env.as_contract(&contract_id, || {
             stake_badge(&env, owner.clone(), BadgeType::FirstLoan).unwrap();
+        });
+        env.as_contract(&contract_id, || {
             stake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap();
-
+        });
+        env.as_contract(&contract_id, || {
             let total = total_staked_yield_bonus(&env, &owner);
             assert_eq!(
                 total,
@@ -610,7 +635,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_evaluate_and_mint_first_loan_badge() {
-        let (env, contract_id, borrower) = setup();
+        let (env, borrower, contract_id) = setup();
         env.as_contract(&contract_id, || {
             // Set repayment count to 1.
             env.storage()
@@ -625,7 +650,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_evaluate_and_mint_ten_loans_badge() {
-        let (env, contract_id, borrower) = setup();
+        let (env, borrower, contract_id) = setup();
         env.as_contract(&contract_id, || {
             env.storage()
                 .persistent()

@@ -549,7 +549,7 @@ mod tests {
     /// Helper: create a minimal env with a registered contract.
     fn make_env() -> (Env, Address) {
         let env = Env::default();
-        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let contract_id = env.register(crate::QuorumCreditContract, ());
         (env, contract_id)
     }
 
@@ -586,8 +586,8 @@ mod tests {
     fn test_get_liquidity_tier_default_is_zero() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
+        // Not set → tier 0 (most liquid)
         env.as_contract(&contract_id, || {
-            // Not set → tier 0 (most liquid)
             assert_eq!(
                 get_token_liquidity_tier(env.clone(), token_addr),
                 0u32
@@ -603,6 +603,18 @@ mod tests {
     #[ignore]
     fn test_liquidity_tier_bonus_default_values() {
         let (env, contract_id) = make_env();
+        env.mock_all_auths();
+
+        // liquidity_tier_bonus_bps reads Config, so the contract must be
+        // initialized first (not just registered).
+        let deployer = Address::generate(&env);
+        let admins = Vec::from_array(&env, [deployer.clone()]);
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        crate::QuorumCreditContractClient::new(&env, &contract_id)
+            .initialize(&deployer, &admins, &1u32, &token);
 
         env.as_contract(&contract_id, || {
             // Tier 0 → 0 bps bonus
@@ -629,8 +641,8 @@ mod tests {
     fn test_get_bridge_token_price_default_is_parity() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
+        // Default price is 10_000 bps (1:1)
         env.as_contract(&contract_id, || {
-            // Default price is 10_000 bps (1:1)
             assert_eq!(get_bridge_token_price(&env, &token_addr), 10_000);
         });
     }

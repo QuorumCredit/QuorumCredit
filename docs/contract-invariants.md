@@ -137,6 +137,24 @@ update the TVL counter.
 
 ---
 
+## I11 — Circuit Breaker Auto-Pauses on High Default Rate (Issue #1070 / #1371)
+
+If the protocol-wide default rate (`TotalDefaultCount / LoanCounter` in basis points) reaches
+`config.default_rate_threshold`, the contract must auto-pause (`get_paused() == true`) without
+any admin action, subject to a one-hour cooldown between triggers.
+
+```
+get_current_default_rate() >= config.default_rate_threshold  =>  get_paused() == true
+```
+
+**Maintained by:** `circuit_breaker::try_trigger_circuit_breaker`, called from `slash` after
+each executed slash with the live `TotalDefaultCount`/`LoanCounter` figures.
+
+**Violation trigger:** A slash path that updates `DefaultCount` without also calling
+`try_trigger_circuit_breaker`, or a default path that doesn't update `TotalDefaultCount`.
+
+---
+
 ## On-Chain Aggregate View Functions (Issue #1288)
 
 Two new read-only entrypoints expose the TVL and active-loan counters for composability:

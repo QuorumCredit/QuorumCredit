@@ -458,13 +458,25 @@ fn update_monthly_report(env: &Env, deposited: i128, spent: i128) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+    use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::{Env, String};
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let contract_id = env.register(crate::QuorumCreditContract, ());
+
+        // create_proposal/finalize_proposal call require_not_paused, which
+        // reads Config, so the contract must be initialized.
+        let deployer = Address::generate(&env);
+        let admins = Vec::from_array(&env, [deployer.clone()]);
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        crate::QuorumCreditContractClient::new(&env, &contract_id)
+            .initialize(&deployer, &admins, &1u32, &token);
+
         let proposer = Address::generate(&env);
         (env, contract_id, proposer)
     }
@@ -546,15 +558,8 @@ mod tests {
             vote_on_proposal(&env, voter2, id, true).unwrap();
 
             // Advance time past voting period.
-            env.ledger().set(LedgerInfo {
-                timestamp: env.ledger().timestamp() + TREASURY_VOTING_PERIOD_SECS + 1,
-                protocol_version: 22,
-                sequence_number: env.ledger().sequence(),
-                network_id: Default::default(),
-                base_reserve: 10,
-                min_temp_entry_ttl: 1,
-                min_persistent_entry_ttl: 1,
-                max_entry_ttl: u32::MAX,
+            env.ledger().with_mut(|l| {
+                l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1;
             });
 
             finalize_proposal(&env, id).unwrap();
@@ -583,15 +588,8 @@ mod tests {
             let voter1 = Address::generate(&env);
             vote_on_proposal(&env, voter1, id, false).unwrap();
 
-            env.ledger().set(LedgerInfo {
-                timestamp: env.ledger().timestamp() + TREASURY_VOTING_PERIOD_SECS + 1,
-                protocol_version: 22,
-                sequence_number: env.ledger().sequence(),
-                network_id: Default::default(),
-                base_reserve: 10,
-                min_temp_entry_ttl: 1,
-                min_persistent_entry_ttl: 1,
-                max_entry_ttl: u32::MAX,
+            env.ledger().with_mut(|l| {
+                l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1;
             });
 
             finalize_proposal(&env, id).unwrap();
@@ -604,7 +602,13 @@ mod tests {
     #[ignore]
     fn test_cannot_vote_twice() {
         let (env, contract_id, proposer) = setup();
-        env.as_contract(&contract_id, || {
+        let voter = Address::generate(&env);
+        // Each real vote is a separate on-chain transaction/auth context, so
+        // give the two votes on the same voter their own `as_contract` frames
+        // — otherwise the mock auth harness sees a single voter address
+        // re-authorizing within one frame and errors before the contract's
+        // own AlreadyVoted check ever runs.
+        let id = env.as_contract(&contract_id, || {
             deposit_to_treasury(&env, 1_000_000);
             let recipient = Address::generate(&env);
             let id = create_proposal(
@@ -615,9 +619,11 @@ mod tests {
                 String::from_str(&env, "Grant"),
             )
             .unwrap();
-
-            let voter = Address::generate(&env);
             vote_on_proposal(&env, voter.clone(), id, true).unwrap();
+            id
+        });
+
+        env.as_contract(&contract_id, || {
             let result = vote_on_proposal(&env, voter, id, false);
             assert_eq!(result, Err(ContractError::AlreadyVoted));
         });

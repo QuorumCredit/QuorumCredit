@@ -508,7 +508,14 @@ mod tests {
     fn setup() -> (Env, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let admin = Address::generate(&env);
+        let deployer = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = token_contract.address();
+        let contract_id = env.register(crate::QuorumCreditContract, ());
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1u32, &token);
         (env, contract_id)
     }
 
@@ -568,27 +575,28 @@ mod tests {
         // place_prediction with stake=0 should return InvalidAmount.
         // We seed a market manually.
         let market_id = 1u64;
-        let now = env.ledger().timestamp();
-        let market = PredictionMarket {
-            id: market_id,
-            description: make_description(&env),
-            rate_threshold_bps: 300,
-            closes_at: now + 3600,
-            resolves_at: now + 7200,
-            total_yes_stake: 0,
-            total_no_stake: 0,
-            outcome: None,
-            status: MarketStatus::Open,
-        };
         let participant = Address::generate(&env);
         let token = Address::generate(&env);
-        let result = env.as_contract(&contract_id, || {
+        env.as_contract(&contract_id, || {
+            let now = env.ledger().timestamp();
+            let market = PredictionMarket {
+                id: market_id,
+                description: make_description(&env),
+                rate_threshold_bps: 300,
+                closes_at: now + 3600,
+                resolves_at: now + 7200,
+                total_yes_stake: 0,
+                total_no_stake: 0,
+                outcome: None,
+                status: MarketStatus::Open,
+            };
             env.storage()
                 .persistent()
                 .set(&DataKey::PredictionMarket(market_id), &market);
-            place_prediction(&env, participant, market_id, PredictionSide::Yes, 0, token)
+
+            let result = place_prediction(&env, participant, market_id, PredictionSide::Yes, 0, token);
+            assert_eq!(result, Err(ContractError::InvalidAmount));
         });
-        assert_eq!(result, Err(ContractError::InvalidAmount));
     }
 
     #[test]
@@ -596,26 +604,28 @@ mod tests {
     fn test_cannot_predict_on_resolved_market() {
         let (env, contract_id) = setup();
         let market_id = 1u64;
-        let now = env.ledger().timestamp();
-        let market = PredictionMarket {
-            id: market_id,
-            description: make_description(&env),
-            rate_threshold_bps: 300,
-            closes_at: now + 3600,
-            resolves_at: now + 7200,
-            total_yes_stake: 0,
-            total_no_stake: 0,
-            outcome: Some(true),
-            status: MarketStatus::Resolved,
-        };
         let participant = Address::generate(&env);
         let token = Address::generate(&env);
-        let result = env.as_contract(&contract_id, || {
+        env.as_contract(&contract_id, || {
+            let now = env.ledger().timestamp();
+            let market = PredictionMarket {
+                id: market_id,
+                description: make_description(&env),
+                rate_threshold_bps: 300,
+                closes_at: now + 3600,
+                resolves_at: now + 7200,
+                total_yes_stake: 0,
+                total_no_stake: 0,
+                outcome: Some(true),
+                status: MarketStatus::Resolved,
+            };
             env.storage()
                 .persistent()
                 .set(&DataKey::PredictionMarket(market_id), &market);
-            place_prediction(&env, participant, market_id, PredictionSide::Yes, 1000, token)
+
+            let result =
+                place_prediction(&env, participant, market_id, PredictionSide::Yes, 1000, token);
+            assert_eq!(result, Err(ContractError::VotingPeriodEnded));
         });
-        assert_eq!(result, Err(ContractError::VotingPeriodEnded));
     }
 }
