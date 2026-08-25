@@ -69,7 +69,7 @@ mod cross_chain_test_scenarios {
         );
 
         // Verify loan exists on primary chain
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
         assert_eq!(loan.unwrap().amount, 5_000_000);
     }
@@ -97,9 +97,9 @@ mod cross_chain_test_scenarios {
         );
 
         // Perform repayment (message ordering test)
-        s.client.repay_loan(&borrower, &0, &1_000_000);
+        s.client.repay(&borrower, &1_000_000);
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert!(loan.amount_repaid > 0);
     }
 
@@ -154,9 +154,9 @@ mod cross_chain_test_scenarios {
         );
 
         // Verify state consistency
-        let loan1 = s.client.get_loan(&borrower1, &0).unwrap();
-        let loan2 = s.client.get_loan(&borrower2, &0).unwrap();
-        let loan3 = s.client.get_loan(&borrower3, &0).unwrap();
+        let loan1 = s.client.get_loan(&borrower1).unwrap();
+        let loan2 = s.client.get_loan(&borrower2).unwrap();
+        let loan3 = s.client.get_loan(&borrower3).unwrap();
 
         assert_eq!(loan1.amount, 10_000_000);
         assert_eq!(loan2.amount, 8_000_000);
@@ -183,7 +183,7 @@ mod cross_chain_test_scenarios {
         );
 
         // Verify loan persists even if cross-chain operation fails
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
     }
 
@@ -208,7 +208,7 @@ mod cross_chain_test_scenarios {
         );
 
         // Verify loan is secure and consistent
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 5_000_000);
     }
 
@@ -218,23 +218,27 @@ mod cross_chain_test_scenarios {
         let s = setup(1, 1);
 
         // Create multiple concurrent operations
-        let borrowers: Vec<Address> = (0..5).map(|_| Address::generate(&s.env)).collect();
-        let vouchers: Vec<Address> = (0..5).map(|_| Address::generate(&s.env)).collect();
+        let mut borrowers: Vec<Address> = Vec::new(&s.env);
+        let mut vouchers: Vec<Address> = Vec::new(&s.env);
+        for _ in 0..5 {
+            borrowers.push_back(Address::generate(&s.env));
+            vouchers.push_back(Address::generate(&s.env));
+        }
 
         let token_client = StellarAssetClient::new(&s.env, &s.token);
 
         // Fund all vouchers
-        for voucher in &vouchers {
-            token_client.mint(voucher, &20_000_000);
+        for voucher in vouchers.iter() {
+            token_client.mint(&voucher, &20_000_000);
         }
 
         // Create vouches and loans in parallel
         for (borrower, voucher) in borrowers.iter().zip(vouchers.iter()) {
-            s.client.vouch(voucher, borrower, &20_000_000, &s.token, &None);
+            s.client.vouch(&voucher, &borrower, &20_000_000, &s.token, &None);
 
             let amount = 10_000_000 + (vouchers.iter().position(|v| v == voucher).unwrap() as i128 * 1_000_000);
             s.client.request_loan(
-                borrower,
+                &borrower,
                 &amount,
                 &20_000_000,
                 &String::from_str(&s.env, "concurrent"),
@@ -243,8 +247,8 @@ mod cross_chain_test_scenarios {
         }
 
         // Verify all operations succeeded
-        for borrower in &borrowers {
-            let loan = s.client.get_loan(borrower, &0);
+        for borrower in borrowers.iter() {
+            let loan = s.client.get_loan(&borrower);
             assert!(loan.is_some());
         }
     }
@@ -272,11 +276,13 @@ mod cross_chain_test_scenarios {
             &s.token,
         );
 
-        s.client.repay_loan(&borrower, &0, &5_000_000);
+        let loan_initial = s.client.get_loan(&borrower).unwrap();
+        let total_owed = loan_initial.amount + loan_initial.total_yield;
+        s.client.repay(&borrower, &total_owed);
 
-        // Verify loan is repaid and reputation can be tracked
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
-        assert!(loan.repaid);
+        // A fully repaid loan is cleared from active-loan tracking, so this
+        // confirms the loan was repaid and reputation can now be tracked.
+        assert!(s.client.get_loan(&borrower).is_none());
     }
 
     /// Test cross-chain data finality and consistency
@@ -298,13 +304,13 @@ mod cross_chain_test_scenarios {
             &s.token,
         );
 
-        let loan_initial = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_initial = s.client.get_loan(&borrower).unwrap();
 
         // Advance ledger timestamp
         s.env.ledger().with_mut(|l| l.timestamp = 1000);
 
         // Verify loan data remains consistent
-        let loan_later = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_later = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan_initial.amount, loan_later.amount);
         assert_eq!(loan_initial.borrower, loan_later.borrower);
     }

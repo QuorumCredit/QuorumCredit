@@ -21,13 +21,28 @@ own infrastructure) and:
    endpoint that has fallen more than `ledger_tolerance` ledgers behind.
 2. Calls the same set of read-only contract views (`get_config`,
    `get_fee_treasury`, `get_slash_treasury` by default — configurable) on
-   every endpoint and compares the results byte-for-byte.
+   every endpoint. For each call, it builds a proper Soroban 
+   invoke-host-function transaction envelope, submits it via the real 
+   `simulateTransaction` RPC method, and compares the decoded XDR results.
 3. On any mismatch, retries a bounded number of times with a delay
    (`--reconcile-retries` / `--reconcile-delay`) to distinguish transient
    replication lag from a genuine divergence, before alerting.
 4. Sends an alert (webhook, e.g. Slack/PagerDuty-compatible) and exits
    non-zero so it can be wired into a cron job or CI-style scheduler that
    treats a non-zero exit as a page.
+
+## Implementation Details
+
+The monitor builds a proper Soroban transaction using the Python Stellar SDK,
+encoding an `invoke-host-function` operation for each read-only view call.
+The transaction is submitted to each validator's `simulateTransaction` RPC
+endpoint without requiring a signature (simulation mode). The result XDR is
+decoded to extract the contract's return value, which is then compared
+byte-for-byte across validators.
+
+**Network Configuration:** By default, the monitor assumes the `Test SDF Future 
+Network ; October 2022` passphrase. If monitoring Stellar Mainnet, set 
+`network_passphrase` in your config to `"Public Global Stellar Network ; September 2015"`.
 
 ## Configuration
 
@@ -57,6 +72,42 @@ to the webhook — useful when first configuring a new validator set.
 
 Exit codes: `0` = all validators agree, `1` = divergence detected (alert
 sent), `2` = configuration or connectivity error.
+
+## Testing
+
+Unit tests for the monitor are located in `scripts/test_consensus_monitor.py`
+and cover divergence detection, ledger lag reporting, and error handling:
+
+```bash
+cd scripts
+python3 test_consensus_monitor.py -v
+```
+
+For end-to-end validation against a real Stellar testnet RPC endpoint:
+
+```bash
+# 1. Create a test config pointing to testnet validators
+cat > /tmp/testnet-config.json <<'EOF'
+{
+  "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
+  "network_passphrase": "Test SDF Future Network ; October 2022",
+  "validators": [
+    { "name": "sdf-testnet", "endpoint": "https://soroban-testnet.stellar.org" }
+  ]
+}
+EOF
+
+# 2. Run the monitor against testnet (--dry-run avoids alerting)
+./scripts/consensus_monitor.py --config /tmp/testnet-config.json --dry-run --reconcile-retries 1
+
+# 3. Verify the output contains successfully-queried contract state (healthy: true if the 
+#    contract exists and the read-only views are callable)
+```
+
+The monitor will build a real transaction envelope, submit it to the RPC 
+endpoint, and return decoded contract state. If the contract is not deployed 
+or the network passphrase is incorrect, the monitor will log the RPC error 
+and continue polling the next validator.
 
 ## Recommended Deployment
 

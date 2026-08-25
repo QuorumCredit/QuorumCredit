@@ -654,6 +654,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     env.storage()
         .persistent()
         .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+    crate::helpers::increment_total_default_count(&env);
 
     if remaining_vouches.is_empty() {
         env.storage()
@@ -694,6 +695,12 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     crate::vouch::process_withdrawal_queue(env, borrower);
 
     Ok(())
+}
+
+/// Public wrapper for execute_slash used by the lazy_slash queue mechanism.
+/// This allows the lazy_slash module to execute slashes without duplicating logic.
+pub fn execute_slash_for_lazy_queue(env: &Env, borrower: &Address) -> Result<(), ContractError> {
+    execute_slash(env, borrower)
 }
 
 /// â”€â”€ Issue 109: Slash Proposal Confirmation Window â”€â”€
