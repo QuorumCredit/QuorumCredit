@@ -12,10 +12,37 @@ on:
     # Every Sunday at 03:00 UTC.
     - cron: "0 3 * * 0"
   workflow_dispatch: {}
+  pull_request:
+    paths:
+      - "scripts/backup.sh"
+      - "scripts/restore.sh"
+      - "scripts/test_backup_restore.sh"
+      - "scripts/test_backup_restore_correctness.sh"
+      - ".github/workflows/backup-restore-test.yml"
 
 jobs:
+  # The full drill needs a live testnet CONTRACT_ID/ADMIN_KEY, which GitHub
+  # never exposes to pull_request-triggered runs from forks — so PRs only get
+  # a syntax check, and the real drill stays schedule/workflow_dispatch-only.
+  lint:
+    name: Lint backup/restore scripts
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash -n syntax check
+        run: |
+          for f in scripts/backup.sh scripts/restore.sh scripts/test_backup_restore.sh scripts/test_backup_restore_correctness.sh; do
+            if [ -f "$f" ]; then
+              echo "Checking $f"
+              bash -n "$f"
+            fi
+          done
+
   backup-restore-drill:
     name: Weekly backup/restore drill
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
