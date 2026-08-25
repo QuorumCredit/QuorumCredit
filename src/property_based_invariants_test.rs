@@ -236,9 +236,11 @@ impl InvariantState {
                 if *decrease > 0 && self.borrower_stakes[*borrower_idx] >= *decrease {
                     let stake_after = self.borrower_stakes[*borrower_idx] - decrease;
                     let max_loan_after = (stake_after * self.max_loan_to_stake_ratio) / 100;
-                    // A vouch backing an active loan can't be withdrawn below what the
-                    // loan needs to stay collateralized (mirrors the real contract's
-                    // vouch-withdrawal-queue guard for active loans).
+                    // Model-only guard keeping I2 well-defined: a withdrawal that
+                    // would leave an active loan under-collateralized is skipped.
+                    // The live contract does not reject it — decrease_stake reduces
+                    // the stake and queues the payout — so I2 is not enforced
+                    // on-chain at this call site.
                     let would_break_active_loan = self.active_borrowers.contains(borrower_idx)
                         && self.borrower_loans[*borrower_idx] > max_loan_after;
                     if !would_break_active_loan {

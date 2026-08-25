@@ -4,13 +4,20 @@
  * QuorumCredit Event Indexer Service
  * 
  * #1084: Implement On-Chain Event Indexing
+ * #1366: Restart-Safe, Reorg-Aware Event Indexer with Cursor Persistence
  * 
  * This service indexes QuorumCredit contract events by type, timestamp, and participant,
  * and exposes indexed queries via API for efficient event querying.
+ * 
+ * Features:
+ * - Persisted cursor for restart safety
+ * - Atomic write operations
+ * - Event deduplication
+ * - Corruption detection and recovery
  */
 
 import express from 'express';
-import { SorobanRpc, TransactionBuilder, scValToNative, xdr } from '@stellar/stellar-sdk';
+import { rpc, scValToNative } from '@stellar/stellar-sdk';
 import { config } from 'dotenv';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -30,6 +37,11 @@ interface EventData {
   transactionHash: string;
 }
 
+interface CursorData {
+  lastProcessedLedger: number;
+  lastUpdated: number;
+}
+
 interface IndexQuery {
   type?: string;
   startDate?: number;
@@ -45,16 +57,21 @@ class EventIndexer extends EventEmitter {
   private contractId: string;
   private networkPassphrase: string;
   private database: EventData[] = [];
+  private eventSet: Set<string> = new Set(); // For deduplication
   private dbPath: string;
+  private cursorPath: string;
   private isIndexing = false;
+  private allowRebuild: boolean;
 
-  constructor() {
+  constructor(options: { allowRebuild?: boolean } = {}) {
     super();
     
     this.rpcUrl = process.env.RPC_URL || 'https://soroban-testnet.stellar.org:443';
     this.contractId = process.env.CONTRACT_ID || '';
     this.networkPassphrase = process.env.NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
     this.dbPath = path.join(__dirname, 'events.db.json');
+    this.cursorPath = path.join(__dirname, 'cursor.json');
+    this.allowRebuild = options.allowRebuild || false;
     
     this.loadDatabase();
   }
@@ -67,22 +84,106 @@ class EventIndexer extends EventEmitter {
       if (fs.existsSync(this.dbPath)) {
         const data = fs.readFileSync(this.dbPath, 'utf8');
         this.database = JSON.parse(data);
+        
+        // Build deduplication set from loaded events
+        this.eventSet = new Set(this.database.map(event => event.id));
+        
         console.log(`Loaded ${this.database.length} events from database`);
       }
     } catch (error) {
       console.error('Error loading database:', error);
+      
+      // Check if the file is corrupt
+      if (fs.existsSync(this.dbPath)) {
+        const corruptPath = `${this.dbPath}.corrupt.${Date.now()}`;
+        
+        try {
+          // Preserve corrupt file for forensics
+          fs.copyFileSync(this.dbPath, corruptPath);
+          console.error(`Corrupt database preserved at: ${corruptPath}`);
+        } catch (copyError) {
+          console.error('Failed to preserve corrupt database:', copyError);
+        }
+        
+        // Fail startup unless --allow-rebuild is set
+        if (!this.allowRebuild) {
+          console.error('\n==============================================');
+          console.error('CRITICAL: Database is corrupt and cannot be loaded.');
+          console.error(`Corrupt file preserved at: ${corruptPath}`);
+          console.error('');
+          console.error('To proceed with an empty database, restart with:');
+          console.error('  --allow-rebuild');
+          console.error('');
+          console.error('WARNING: This will start indexing from scratch.');
+          console.error('==============================================\n');
+          process.exit(1);
+        }
+        
+        console.warn('--allow-rebuild flag set, starting with empty database');
+      }
+      
       this.database = [];
+      this.eventSet = new Set();
     }
   }
 
   /**
-   * Save events database to file
+   * Save events database to file atomically
+   * Uses write-to-temp-then-rename to prevent corruption on crash
    */
   private saveDatabase(): void {
     try {
-      fs.writeFileSync(this.dbPath, JSON.stringify(this.database, null, 2));
+      const tempPath = `${this.dbPath}.tmp`;
+      
+      // Write to temporary file
+      fs.writeFileSync(tempPath, JSON.stringify(this.database, null, 2));
+      
+      // Atomic rename
+      fs.renameSync(tempPath, this.dbPath);
     } catch (error) {
       console.error('Error saving database:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Load the cursor (last processed ledger)
+   */
+  private loadCursor(): number | null {
+    try {
+      if (fs.existsSync(this.cursorPath)) {
+        const data = fs.readFileSync(this.cursorPath, 'utf8');
+        const cursor: CursorData = JSON.parse(data);
+        console.log(`Loaded cursor: last processed ledger ${cursor.lastProcessedLedger}`);
+        return cursor.lastProcessedLedger;
+      }
+    } catch (error) {
+      console.error('Error loading cursor:', error);
+      // Cursor corruption is less critical - we can fall back to latest-1000
+    }
+    return null;
+  }
+
+  /**
+   * Save the cursor atomically
+   */
+  private saveCursor(ledger: number): void {
+    try {
+      const cursor: CursorData = {
+        lastProcessedLedger: ledger,
+        lastUpdated: Date.now(),
+      };
+      
+      const tempPath = `${this.cursorPath}.tmp`;
+      
+      // Write to temporary file
+      fs.writeFileSync(tempPath, JSON.stringify(cursor, null, 2));
+      
+      // Atomic rename
+      fs.renameSync(tempPath, this.cursorPath);
+    } catch (error) {
+      console.error('Error saving cursor:', error);
+      throw error;
     }
   }
 
@@ -99,11 +200,30 @@ class EventIndexer extends EventEmitter {
     console.log('Starting event indexer...');
 
     try {
-      const server = new SorobanRpc.Server(this.rpcUrl);
+      const server = new rpc.Server(this.rpcUrl);
       
       // Get latest ledger
       const latestLedger = await server.getLatestLedger();
-      let startLedger = fromLedger || Math.max(1, latestLedger.sequence - 1000); // Last 1000 ledgers
+      
+      // Determine starting ledger:
+      // 1. Use explicit fromLedger if provided
+      // 2. Resume from persisted cursor if available
+      // 3. Fall back to latest - 1000
+      let startLedger: number;
+      
+      if (fromLedger !== undefined) {
+        startLedger = fromLedger;
+        console.log(`Using explicit start ledger: ${startLedger}`);
+      } else {
+        const cursorLedger = this.loadCursor();
+        if (cursorLedger !== null) {
+          startLedger = cursorLedger + 1; // Resume from next ledger
+          console.log(`Resuming from cursor: ${startLedger}`);
+        } else {
+          startLedger = Math.max(1, latestLedger.sequence - 1000);
+          console.log(`No cursor found, starting from: ${startLedger} (latest - 1000)`);
+        }
+      }
 
       console.log(`Starting from ledger ${startLedger}, latest is ${latestLedger.sequence}`);
 
@@ -124,14 +244,34 @@ class EventIndexer extends EventEmitter {
           if (events.events && events.events.length > 0) {
             const newEvents = this.processEvents(events.events);
             
-            // Add to database
-            this.database.push(...newEvents);
-            this.saveDatabase();
+            // Deduplicate before adding
+            const deduplicatedEvents = newEvents.filter(event => {
+              if (this.eventSet.has(event.id)) {
+                console.log(`Skipping duplicate event: ${event.id}`);
+                return false;
+              }
+              return true;
+            });
             
-            console.log(`Indexed ${newEvents.length} new events from ledger ${startLedger}`);
-            
-            // Emit event for real-time processing
-            this.emit('newEvents', newEvents);
+            if (deduplicatedEvents.length > 0) {
+              // Add to database
+              this.database.push(...deduplicatedEvents);
+              
+              // Update deduplication set
+              deduplicatedEvents.forEach(event => this.eventSet.add(event.id));
+              
+              // Save database and cursor atomically
+              this.saveDatabase();
+              this.saveCursor(startLedger);
+              
+              console.log(`Indexed ${deduplicatedEvents.length} new events from ledger ${startLedger} (${newEvents.length - deduplicatedEvents.length} duplicates skipped)`);
+              
+              // Emit event for real-time processing
+              this.emit('newEvents', deduplicatedEvents);
+            }
+          } else {
+            // Even if no events, update cursor to mark progress
+            this.saveCursor(startLedger);
           }
 
           // Move to next ledger
@@ -253,12 +393,12 @@ class EventIndexer extends EventEmitter {
       results = results.filter(event => event.type === query.type);
     }
     
-    if (query.startDate) {
-      results = results.filter(event => event.timestamp >= query.startDate);
+    if (query.startDate !== undefined) {
+      results = results.filter(event => event.timestamp >= query.startDate!);
     }
     
-    if (query.endDate) {
-      results = results.filter(event => event.timestamp <= query.endDate);
+    if (query.endDate !== undefined) {
+      results = results.filter(event => event.timestamp <= query.endDate!);
     }
     
     if (query.participant) {
@@ -304,6 +444,20 @@ class EventIndexer extends EventEmitter {
         .slice(0, 30), // Last 30 days
       uniqueParticipants,
     };
+  }
+
+  /**
+   * Get current cursor (for testing/monitoring)
+   */
+  getCursor(): number | null {
+    return this.loadCursor();
+  }
+
+  /**
+   * Get database size (for testing/monitoring)
+   */
+  getDatabaseSize(): number {
+    return this.database.length;
   }
 }
 
@@ -368,8 +522,20 @@ async function main() {
   console.log('QuorumCredit Event Indexer Service');
   console.log('===================================');
 
+  // Parse command-line arguments
+  const allowRebuild = process.argv.includes('--allow-rebuild');
+  const fromGenesisArg = process.argv.find(arg => arg.startsWith('--from-genesis'));
+  const fromLedgerArg = process.argv.find(arg => arg.startsWith('--from-ledger='));
+  
+  let fromLedger: number | undefined;
+  if (fromGenesisArg) {
+    fromLedger = 1;
+  } else if (fromLedgerArg) {
+    fromLedger = parseInt(fromLedgerArg.split('=')[1], 10);
+  }
+
   // Create indexer
-  const indexer = new EventIndexer();
+  const indexer = new EventIndexer({ allowRebuild });
 
   // Create API server
   const app = createAPIServer(indexer);
@@ -384,7 +550,7 @@ async function main() {
   });
 
   // Start indexing
-  await indexer.startIndexing();
+  await indexer.startIndexing(fromLedger);
 
   // Graceful shutdown
   process.on('SIGINT', () => {

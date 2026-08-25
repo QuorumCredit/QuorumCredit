@@ -1357,7 +1357,7 @@ pub fn get_config_update_proposal(env: Env, proposal_id: u64) -> Option<ConfigUp
 // ── Issue #683: Emergency pause ───────────────────────────────────────────────
 
 pub fn emergency_pause(env: Env, admin_signers: Vec<Address>) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
+    crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause)?;
 
     let mut cfg = config(&env);
     cfg.emergency_pause_enabled = true;
@@ -2283,6 +2283,75 @@ pub fn get_effective_approval_threshold(
         cfg.admin_threshold
     }
 }
+
+/// Issue #1071: Set insurance fund premium in basis points.
+/// Percentage of loan principal collected at disbursement.
+pub fn set_insurance_fund_premium_bps(env: Env, admin_signers: Vec<Address>, premium_bps: u32) {
+    require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
+    if premium_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.insurance_fund_premium_bps = premium_bps;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("insur")),
+        (
+            admin_signers.get(0).unwrap(),
+            premium_bps,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
+/// Issue #1071: Set insurance maximum payout in basis points.
+/// Caps insurance payout as percentage of the shortfall.
+pub fn set_insurance_max_payout_bps(env: Env, admin_signers: Vec<Address>, max_payout_bps: u32) {
+    require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
+    if max_payout_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.insurance_max_payout_bps = max_payout_bps;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("insur")),
+        (
+            admin_signers.get(0).unwrap(),
+            max_payout_bps,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
+/// Issue #1071: Set insurance premium rate in basis points (deprecated, use set_insurance_fund_premium_bps).
+pub fn set_insurance_premium_bps(env: Env, admin_signers: Vec<Address>, premium_bps: u32) {
+    require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
+    if premium_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.insurance_premium_bps = premium_bps;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("insur")),
+        (
+            admin_signers.get(0).unwrap(),
+            premium_bps,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
 /// Emergency admin revocation — removes a compromised admin key with N-1 approval.
 ///
 /// This function allows the remaining admins to revoke a compromised key without

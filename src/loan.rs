@@ -284,7 +284,11 @@ pub fn request_loan(
     bump_persistent(&env, &DataKey::LatestLoan(borrower.clone()));
     bump_instance(&env);
 
-    token.transfer(&env.current_contract_address(), &borrower, &amount);
+    // Issue #1071: Collect insurance fee from loan principal
+    let insurance_fee = crate::insurance::collect_insurance_fee(&env, amount, &cfg)?;
+    let disbursed_amount = amount.saturating_sub(insurance_fee);
+
+    token.transfer(&env.current_contract_address(), &borrower, &disbursed_amount);
 
     // Issue #1288: Maintain running on-chain TVL / active-loan-count counters.
     crate::helpers::increment_tvl_counters(&env, amount);

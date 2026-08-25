@@ -130,18 +130,18 @@ mod timelock_safety_tests {
         let loan_before = s.client.get_loan(&borrower).unwrap();
         let amount_before = loan_before.amount;
 
-        // Try to create another loan while first is active: the single-active-loan
-        // invariant should reject it rather than silently mutating state.
-        let second_request = s.client.try_request_loan(
+        // A borrower can only have one active loan at a time, so requesting
+        // a second loan while the first is still active must be rejected.
+        let result = s.client.try_request_loan(
             &borrower,
             &3_000_000,
             &10_000_000,
             &String::from_str(&s.env, "second loan"),
             &s.token,
         );
-        assert!(second_request.is_err());
+        assert_eq!(result, Err(Ok(crate::errors::ContractError::ActiveLoanExists)));
 
-        // The first loan should remain unchanged.
+        // The first loan must remain unmodified.
         let first_loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(first_loan.amount, amount_before);
     }

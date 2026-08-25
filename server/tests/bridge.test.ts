@@ -7,6 +7,18 @@ import { EventStore } from "../src/bridge/eventStore.js";
 import { Bridge } from "../src/bridge/bridge.js";
 import { LocalBus } from "../src/pubsub/LocalBus.js";
 import { EVENTS_CHANNEL, type BroadcastEvent } from "../src/types.js";
+import type { CostAllocatorConfig } from "../src/costs/costAllocator.js";
+import type { PartitionGuardConfig } from "../src/resilience/partitionGuard.js";
+
+const TEST_COST_ALLOCATION: CostAllocatorConfig = {
+  contractFeeStroopsPerTx: 100_000,
+  apiServerMonthlyCostCents: 0,
+  storageMonthlyCostCents: 0,
+};
+const TEST_PARTITION_GUARD: PartitionGuardConfig = {
+  failureThreshold: 5,
+  maxQueuedWrites: 500,
+};
 
 /** Builds a throwaway SQLite file with the same `events` table shape the Rust
  * indexer writes (tools/indexer/src/db.rs::run_migrations), so EventStore/Bridge
@@ -115,6 +127,8 @@ describe("Bridge", () => {
       instanceId: "leader-1",
       pollIntervalMs: 20,
       leaderLockTtlMs: 5000,
+      costAllocation: TEST_COST_ALLOCATION,
+      partitionGuard: TEST_PARTITION_GUARD,
     });
     bridge.start();
 
@@ -140,7 +154,15 @@ describe("Bridge", () => {
     const received: string[] = [];
     await bus.subscribe(EVENTS_CHANNEL, (msg) => received.push(msg));
 
-    const bridge = new Bridge({ bus, store, instanceId: "follower-1", pollIntervalMs: 20, leaderLockTtlMs: 5000 });
+    const bridge = new Bridge({
+      bus,
+      store,
+      instanceId: "follower-1",
+      pollIntervalMs: 20,
+      leaderLockTtlMs: 5000,
+      costAllocation: TEST_COST_ALLOCATION,
+      partitionGuard: TEST_PARTITION_GUARD,
+    });
     bridge.start();
 
     await new Promise((r) => setTimeout(r, 100));

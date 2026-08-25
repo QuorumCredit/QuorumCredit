@@ -168,6 +168,42 @@ pub fn get_admins(env: &Env) -> Vec<Address> {
     config(env).admins
 }
 
+/// Issue #1371: increment the protocol-wide default counter. Call this alongside
+/// every per-borrower `DataKey::DefaultCount` increment so `circuit_breaker::
+/// get_current_default_rate` reflects real state instead of a hardcoded 0.
+pub fn increment_total_default_count(env: &Env) -> u32 {
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalDefaultCount)
+        .unwrap_or(0);
+    let new_count = count + 1;
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalDefaultCount, &new_count);
+    new_count
+}
+
+/// Issue #1371: current protocol-wide default count.
+pub fn get_total_default_count(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalDefaultCount)
+        .unwrap_or(0)
+}
+
+/// Issue #1371: current protocol-wide loan count. `LoanCounter` is a monotonic
+/// counter incremented once per loan created (see `next_loan_id`), so it doubles
+/// as the total loan count the circuit breaker needs.
+pub fn get_total_loan_count(env: &Env) -> u32 {
+    let count: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LoanCounter)
+        .unwrap_or(0u64);
+    count.min(u32::MAX as u64) as u32
+}
+
 pub fn has_active_loan(env: &Env, borrower: &Address) -> bool {
     matches!(
         get_active_loan_record(env, borrower),

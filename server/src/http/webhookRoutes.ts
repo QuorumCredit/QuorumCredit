@@ -55,32 +55,32 @@ export function handleWebhookRequest(
       url.pathname === "/webhooks/subscribe" ||
       url.pathname === "/api/webhooks/subscribe")
   ) {
-    handleRegisterWebhook(req, res);
+    void handleRegisterWebhook(req, res);
     return;
   }
 
   // Delivery success-rate tracking for a subscription.
   if (req.method === "GET" && url.pathname.match(/^\/api\/webhooks\/[^/]+\/deliveries$/)) {
     const id = url.pathname.split("/")[3] as string;
-    handleListDeliveries(res, id);
+    void handleListDeliveries(res, id);
     return;
   }
 
   if (req.method === "GET" && url.pathname.match(/^\/api\/webhooks\/[^/]+\/stats$/)) {
     const id = url.pathname.split("/")[3] as string;
-    handleDeliveryStats(res, id);
+    void handleDeliveryStats(res, id);
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/webhooks") {
-    handleListWebhooks(req, res);
+    void handleListWebhooks(req, res);
     return;
   }
 
   if (req.method === "GET" && url.pathname.startsWith("/api/webhooks/")) {
     const id = url.pathname.split("/").pop();
     if (id && id !== "register") {
-      handleGetWebhook(req, res, id);
+      void handleGetWebhook(req, res, id);
       return;
     }
   }
@@ -88,7 +88,7 @@ export function handleWebhookRequest(
   if (req.method === "PUT" && url.pathname.startsWith("/api/webhooks/")) {
     const id = url.pathname.split("/").pop();
     if (id && id !== "register") {
-      handleUpdateWebhook(req, res, id);
+      void handleUpdateWebhook(req, res, id);
       return;
     }
   }
@@ -96,7 +96,7 @@ export function handleWebhookRequest(
   if (req.method === "DELETE" && url.pathname.startsWith("/api/webhooks/")) {
     const id = url.pathname.split("/").pop();
     if (id && id !== "register") {
-      handleDeleteWebhook(req, res, id);
+      void handleDeleteWebhook(req, res, id);
       return;
     }
   }
@@ -104,14 +104,14 @@ export function handleWebhookRequest(
   if (req.method === "POST" && url.pathname.startsWith("/api/webhooks/") && url.pathname.endsWith("/test")) {
     const id = url.pathname.split("/")[3]; // /api/webhooks/{id}/test
     if (id) {
-      handleTestWebhook(req, res, id);
+      void handleTestWebhook(req, res, id);
       return;
     }
   }
 
   // Webhook verification endpoint (for receiving webhooks)
   if (req.method === "POST" && url.pathname === "/webhook") {
-    handleIncomingWebhook(req, res, ctx);
+    void handleIncomingWebhook(req, res, ctx);
     return;
   }
 
@@ -169,7 +169,7 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse):
     }
 
     // Register webhook
-    const registration = webhookRegistry.registerWebhook(body.url, body.events);
+    const registration = await webhookRegistry.registerWebhook(body.url, body.events);
 
     // Return registration (excluding secret for security)
     const { secret, ...safeRegistration } = registration;
@@ -190,9 +190,9 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse):
 /**
  * List all webhooks
  */
-function handleListWebhooks(_req: IncomingMessage, res: ServerResponse): void {
+async function handleListWebhooks(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
-    const webhooks = webhookRegistry.listWebhooks();
+    const webhooks = await webhookRegistry.listWebhooks();
     
     // Remove secrets from response
     const safeWebhooks = webhooks.map(({ secret, ...rest }) => rest);
@@ -209,9 +209,9 @@ function handleListWebhooks(_req: IncomingMessage, res: ServerResponse): void {
 /**
  * Get a specific webhook
  */
-function handleGetWebhook(_req: IncomingMessage, res: ServerResponse, id: string): void {
+async function handleGetWebhook(_req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
   try {
-    const webhook = webhookRegistry.getWebhook(id);
+    const webhook = await webhookRegistry.getWebhook(id);
     
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
@@ -236,7 +236,7 @@ function handleGetWebhook(_req: IncomingMessage, res: ServerResponse, id: string
  */
 async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
   try {
-    const webhook = webhookRegistry.getWebhook(id);
+    const webhook = await webhookRegistry.getWebhook(id);
     
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
@@ -269,14 +269,14 @@ async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id
 
     if (body.enabled !== undefined) {
       if (body.enabled) {
-        webhookRegistry.enableWebhook(id);
+        await webhookRegistry.enableWebhook(id);
       } else {
-        webhookRegistry.disableWebhook(id);
+        await webhookRegistry.disableWebhook(id);
       }
     }
 
     // Update last used timestamp
-    webhookRegistry.updateLastUsed(id);
+    await webhookRegistry.updateLastUsed(id);
 
     // Return updated webhook (excluding secret)
     const { secret, ...safeWebhook } = webhook;
@@ -293,9 +293,9 @@ async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id
 /**
  * Delete a webhook
  */
-function handleDeleteWebhook(_req: IncomingMessage, res: ServerResponse, id: string): void {
+async function handleDeleteWebhook(_req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
   try {
-    const deleted = webhookRegistry.deleteWebhook(id);
+    const deleted = await webhookRegistry.deleteWebhook(id);
     
     if (!deleted) {
       res.writeHead(404, { "content-type": "application/json" });
@@ -315,9 +315,9 @@ function handleDeleteWebhook(_req: IncomingMessage, res: ServerResponse, id: str
 /**
  * List delivery attempts recorded for a webhook subscription.
  */
-function handleListDeliveries(res: ServerResponse, id: string): void {
+async function handleListDeliveries(res: ServerResponse, id: string): Promise<void> {
   try {
-    const webhook = webhookRegistry.getWebhook(id);
+    const webhook = await webhookRegistry.getWebhook(id);
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
@@ -337,9 +337,9 @@ function handleListDeliveries(res: ServerResponse, id: string): void {
  * Report the delivery success rate for a webhook subscription, per the
  * "track webhook delivery success rates" requirement.
  */
-function handleDeliveryStats(res: ServerResponse, id: string): void {
+async function handleDeliveryStats(res: ServerResponse, id: string): Promise<void> {
   try {
-    const webhook = webhookRegistry.getWebhook(id);
+    const webhook = await webhookRegistry.getWebhook(id);
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
@@ -399,7 +399,7 @@ const sendWebhookOverHttp: WebhookSender = (url, headers, body) => {
  * polling for status.
  */
 export async function dispatchEventToSubscribers(event: string, data: unknown): Promise<void> {
-  const subscribers = webhookRegistry.getWebhooksForEvent(event);
+  const subscribers = await webhookRegistry.getWebhooksForEvent(event);
   await Promise.all(
     subscribers.map((webhook) =>
       webhookDeliveryService.deliver(webhook, event, data, sendWebhookOverHttp)
@@ -412,7 +412,7 @@ export async function dispatchEventToSubscribers(event: string, data: unknown): 
  */
 async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
   try {
-    const webhook = webhookRegistry.getWebhook(id);
+    const webhook = await webhookRegistry.getWebhook(id);
     
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });

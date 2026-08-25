@@ -16,14 +16,12 @@ mod fuzz_testing {
     // Test 1: Stake calculation should never overflow i128
     #[test]
     fn fuzz_stake_accumulation_no_overflow() {
-        let env = Env::default();
-        
-        // Try accumulating large amounts
-        let max_safe_stake = i128::MAX / 2;
-        let result1 = max_safe_stake.saturating_add(max_safe_stake);
-        
-        // Should saturate, not panic
-        assert!(result1 <= i128::MAX);
+        // Accumulate amounts that would overflow a plain `+`.
+        let near_max_stake = i128::MAX - 10;
+        let result1 = near_max_stake.saturating_add(near_max_stake);
+
+        // Should saturate at i128::MAX, not panic or wrap.
+        assert_eq!(result1, i128::MAX);
     }
 
     // Test 2: Yield calculations should be consistent across all valid inputs
