@@ -3230,6 +3230,19 @@ pub struct VouchMerkleRoot {
     pub computed_at: u64,
 }
 
+/// Issue #1056/#1372: emergency governance-voted waiver of the vouch cooldown.
+/// See docs/vouch-cooldown-bypass-1056.md for the full design.
+#[contracttype]
+#[derive(Clone)]
+pub struct CooldownBypassRequest {
+    pub voucher: Address,
+    pub borrower: Address,
+    pub reason: String,
+    pub requested_at: u64,
+    pub approvers: Vec<Address>,
+    pub approved: bool,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AdminActionProposal {

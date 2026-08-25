@@ -24,9 +24,12 @@
 extern crate std;
 
 use std::collections::HashMap;
+use std::format;
+use std::string::{String, ToString};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::{format, string::String, string::ToString, vec, vec::Vec};
+use std::vec;
+use std::vec::Vec;
 
 /// Simulates a concurrent transaction operation
 #[derive(Clone, Debug)]
@@ -594,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_atomicity_loan_issuance() {
-        let sim = ConcurrentSimulator::new(100_000_000_000, 150);
+        let sim = ConcurrentSimulator::new(10_000_000, 150);
 
         assert!(sim.create_vouch(1, 1, 500_000).is_ok());
         assert!(sim.create_vouch(2, 2, 500_000).is_ok());

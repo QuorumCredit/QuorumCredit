@@ -546,21 +546,28 @@ mod tests {
         Address, Env, Vec,
     };
 
-    /// Helper: create a minimal env with a registered contract.
+    /// Helper: create an env with a registered, initialized contract, since the
+    /// free functions under test access `env.storage()` (and, for
+    /// `liquidity_tier_bonus_bps`, `config()`) which requires an `as_contract`
+    /// frame around a deployed+initialized contract instance.
     fn make_env() -> (Env, Address) {
         let env = Env::default();
-        let contract_id = env.register(crate::QuorumCreditContract, ());
+        env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
         (env, contract_id)
     }
 
     // ── #1074: Reentrancy guard ───────────────────────────────────────────────
 
     #[test]
-    #[ignore]
     fn test_reentrancy_lock_acquire_release() {
         let (env, contract_id) = make_env();
-        env.mock_all_auths();
-
         env.as_contract(&contract_id, || {
             // Lock should acquire successfully when not locked
             assert!(acquire_lock(&env).is_ok());
@@ -582,39 +589,19 @@ mod tests {
     // ── #1077: Liquidity tier ─────────────────────────────────────────────────
 
     #[test]
-    #[ignore]
     fn test_get_liquidity_tier_default_is_zero() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
         // Not set → tier 0 (most liquid)
-        env.as_contract(&contract_id, || {
-            assert_eq!(
-                get_token_liquidity_tier(env.clone(), token_addr),
-                0u32
-            );
+        let tier = env.as_contract(&contract_id, || {
+            get_token_liquidity_tier(env.clone(), token_addr)
         });
+        assert_eq!(tier, 0u32);
     }
 
-    // Pre-existing gap, unrelated to this PR: liquidity_tier_bonus_bps() calls
-    // helpers::config(), which panics with "not initialized" unless the contract
-    // has gone through a full initialize() (admins + token), which `make_env()`
-    // does not set up. Disabled rather than expanding this fixture.
     #[test]
-    #[ignore]
     fn test_liquidity_tier_bonus_default_values() {
         let (env, contract_id) = make_env();
-        env.mock_all_auths();
-
-        // liquidity_tier_bonus_bps reads Config, so the contract must be
-        // initialized first (not just registered).
-        let deployer = Address::generate(&env);
-        let admins = Vec::from_array(&env, [deployer.clone()]);
-        let token_admin = Address::generate(&env);
-        let token = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        crate::QuorumCreditContractClient::new(&env, &contract_id)
-            .initialize(&deployer, &admins, &1u32, &token);
 
         env.as_contract(&contract_id, || {
             // Tier 0 → 0 bps bonus
@@ -637,27 +624,24 @@ mod tests {
     // ── #1075: Bridge token price ─────────────────────────────────────────────
 
     #[test]
-    #[ignore]
     fn test_get_bridge_token_price_default_is_parity() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
         // Default price is 10_000 bps (1:1)
-        env.as_contract(&contract_id, || {
-            assert_eq!(get_bridge_token_price(&env, &token_addr), 10_000);
+        let price = env.as_contract(&contract_id, || {
+            get_bridge_token_price(&env, &token_addr)
         });
+        assert_eq!(price, 10_000);
     }
 
     #[test]
-    #[ignore]
     fn test_bridged_token_balance_starts_at_zero() {
         let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
-        env.as_contract(&contract_id, || {
-            assert_eq!(
-                get_bridged_token_balance(env.clone(), token_addr),
-                0i128
-            );
+        let balance = env.as_contract(&contract_id, || {
+            get_bridged_token_balance(env.clone(), token_addr)
         });
+        assert_eq!(balance, 0i128);
     }
 }
 

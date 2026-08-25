@@ -99,46 +99,44 @@ pub mod liquidity_mining;
 mod governance_test;
 #[cfg(test)]
 mod interest_test;
-// Disabling test modules with compilation errors
-// #[cfg(test)]
-// mod invariants_test;
-// Tests requiring std library — moved to tests/ directory or to be refactored
-// #[cfg(test)]
-// mod property_based_invariants_test;
-// #[cfg(test)]
-// mod concurrent_operations_test;
-// #[cfg(test)]
-// mod loan_purpose_test;
-// #[cfg(test)]
-// mod multi_asset_test;
-// #[cfg(test)]
-// mod referral_test;
-// #[cfg(test)]
-// mod tests;
-// #[cfg(test)]
-// mod fuzz_stake_testing; // Tests requiring std library — moved to tests/ or to be refactored
-// #[cfg(test)]
-// mod circuit_breaker_insurance_integration_test; // Soroban SDK API incompatibility
+#[cfg(test)]
+mod invariants_test;
+#[cfg(test)]
+mod property_based_invariants_test;
+#[cfg(test)]
+mod concurrent_operations_test;
+#[cfg(test)]
+mod loan_purpose_test;
+#[cfg(test)]
+mod multi_asset_test;
+#[cfg(test)]
+mod referral_test;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod fuzz_stake_testing;
+#[cfg(test)]
+mod circuit_breaker_insurance_integration_test;
 // #[cfg(test)]
 // mod rbac_enforcement_test; // private API drift — blocks unrelated tests
-// #[cfg(test)]
-// mod storage_redesign_test;
-// #[cfg(test)]
-// mod timelock_safety_test; // API incompatibility
-// #[cfg(test)]
-// mod contingent_loan_test; // Type import errors — moved to tests/ or to be refactored
-// #[cfg(test)]
-// mod cross_chain_test_scenarios;
-// #[cfg(test)]
-// mod loan_tranching_test; // Type import errors — moved to tests/ or to be refactored
-// #[cfg(test)]
-// mod arbitrage_prevention_test; // Type import errors — moved to tests/ or to be refactored
-// #[cfg(test)]
-// mod cross_chain_governance_test;
-// #[cfg(test)]
-// mod cross_chain_auction_test;
-// #[cfg(test)]
-// mod liquidity_farming_test;
+#[cfg(test)]
+mod contingent_loan_test;
+#[cfg(test)]
+mod loan_tranching_test;
+#[cfg(test)]
+mod storage_redesign_test;
+#[cfg(test)]
+mod timelock_safety_test;
+#[cfg(test)]
+mod cross_chain_test_scenarios;
+#[cfg(test)]
+mod arbitrage_prevention_test;
+#[cfg(test)]
+mod cross_chain_governance_test;
+#[cfg(test)]
+mod cross_chain_auction_test;
+#[cfg(test)]
+mod liquidity_farming_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -861,6 +859,52 @@ impl QuorumCreditContract {
         evidence_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
         vouch::dispute_vouch(env, voucher, borrower, evidence_hash)
+    }
+
+    /// Issue #1056/#1372: request an emergency admin-voted waiver of the vouch cooldown.
+    pub fn request_cooldown_bypass(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::request_cooldown_bypass(env, voucher, borrower, reason)
+    }
+
+    /// Issue #1056/#1372: admin vote on a pending cooldown bypass request.
+    pub fn vote_bypass(
+        env: Env,
+        approver: Address,
+        voucher: Address,
+        borrower: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::vote_bypass(env, approver, voucher, borrower, approve)
+    }
+
+    /// Issue #1056/#1372: whether `voucher` currently has an approved cooldown
+    /// bypass for `borrower`.
+    pub fn has_cooldown_bypass(env: Env, voucher: Address, borrower: Address) -> bool {
+        cooldown_bypass::has_cooldown_bypass(&env, &voucher, &borrower)
+    }
+
+    /// Issue #1056/#1372: fetch the raw cooldown bypass request record, if any.
+    pub fn get_cooldown_bypass_request(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Option<crate::types::CooldownBypassRequest> {
+        cooldown_bypass::get_cooldown_bypass_request(env, voucher, borrower)
+    }
+
+    /// Issue #1056/#1372: admin cleanup of a resolved/no-longer-needed bypass record.
+    pub fn clear_cooldown_bypass(
+        env: Env,
+        admin_signers: Vec<Address>,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::clear_cooldown_bypass(env, admin_signers, voucher, borrower)
     }
 
     pub fn slash(env: Env, admin_signers: Vec<Address>, borrower: Address) {
@@ -3923,7 +3967,6 @@ mod lib_tests {
     // admin-approval regression seen in invariants_test::test_invariants_after_config_update.
     // Disabled rather than debugging it here.
     #[test]
-    #[ignore]
     fn test_repay_mints_reputation() {
         let env = Env::default();
         let (contract_id, token_addr, _admin, borrower, voucher, nft_id) =
@@ -3944,7 +3987,6 @@ mod lib_tests {
     }
 
     #[test]
-    #[ignore]
     fn test_slash_burns_reputation() {
         let env = Env::default();
         let (contract_id, token_addr, admin, borrower, voucher, nft_id) =

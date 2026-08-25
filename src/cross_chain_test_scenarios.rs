@@ -236,7 +236,8 @@ mod cross_chain_test_scenarios {
         for (borrower, voucher) in borrowers.iter().zip(vouchers.iter()) {
             s.client.vouch(&voucher, &borrower, &20_000_000, &s.token, &None);
 
-            let amount = 10_000_000 + (vouchers.iter().position(|v| v == voucher).unwrap() as i128 * 1_000_000);
+            let amount = 10_000_000
+                + (vouchers.iter().position(|v| v == voucher).unwrap() as i128 * 1_000_000);
             s.client.request_loan(
                 &borrower,
                 &amount,

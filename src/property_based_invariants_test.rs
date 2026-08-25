@@ -27,7 +27,8 @@ extern crate std;
 
 use proptest::prelude::*;
 use std::collections::HashSet;
-use std::{format, string::String, vec, vec::Vec};
+use std::string::String;
+use std::vec::Vec;
 
 /// Configuration for property-based tests.
 #[derive(Clone, Debug)]
@@ -87,16 +88,16 @@ struct InvariantState {
 impl InvariantState {
     fn new(borrower_count: usize, initial_balance: i128) -> Self {
         InvariantState {
-            borrower_stakes: vec![0; borrower_count],
-            borrower_loans: vec![0; borrower_count],
-            borrower_repaid: vec![0; borrower_count],
+            borrower_stakes: std::vec![0; borrower_count],
+            borrower_loans: std::vec![0; borrower_count],
+            borrower_repaid: std::vec![0; borrower_count],
             active_borrowers: HashSet::new(),
             contract_balance: initial_balance,
             slash_treasury: 0,
             loan_count: 0,
             yield_bps: 500, // 5% yield
             slash_bps: 1000, // 10% slash
-            max_loan_to_stake_ratio: 200, // 2:1 LTV (ratio is applied as ratio/100, matching the contract's bps-style config)
+            max_loan_to_stake_ratio: 200, // 200% = 2:1 LTV, matches verify_i2_collateralization's stake * ratio / 100
         }
     }
 
@@ -104,7 +105,7 @@ impl InvariantState {
     fn verify_i1_solvency(&self) -> Result<(), String> {
         let total_stake: i128 = self.borrower_stakes.iter().sum();
         if self.contract_balance < total_stake {
-            return Err(format!(
+            return Err(std::format!(
                 "I1 violated: balance {} < total_stake {}",
                 self.contract_balance, total_stake
             ));
@@ -120,7 +121,7 @@ impl InvariantState {
             }
             let max_loan = (self.borrower_stakes[idx] * self.max_loan_to_stake_ratio) / 100;
             if loan_amount > max_loan {
-                return Err(format!(
+                return Err(std::format!(
                     "I2 violated: loan {} > max_loan {} for borrower {}",
                     loan_amount, max_loan, idx
                 ));
@@ -133,7 +134,7 @@ impl InvariantState {
     fn verify_i3_active_loans_have_vouches(&self) -> Result<(), String> {
         for &idx in &self.active_borrowers {
             if self.borrower_stakes[idx] == 0 && self.borrower_loans[idx] > 0 {
-                return Err(format!(
+                return Err(std::format!(
                     "I3 violated: active loan for borrower {} has zero vouch stake",
                     idx
                 ));
@@ -148,7 +149,7 @@ impl InvariantState {
             let repaid = self.borrower_repaid[idx];
             let max_repay = loan_amount + (loan_amount * self.yield_bps) / 10_000;
             if repaid > max_repay {
-                return Err(format!(
+                return Err(std::format!(
                     "I4 violated: repaid {} > principal+yield {} for borrower {}",
                     repaid, max_repay, idx
                 ));
@@ -160,7 +161,7 @@ impl InvariantState {
     /// Verify invariant I6: Slash treasury non-negative
     fn verify_i6_slash_treasury(&self) -> Result<(), String> {
         if self.slash_treasury < 0 {
-            return Err(format!("I6 violated: slash_treasury is negative: {}", self.slash_treasury));
+            return Err(std::format!("I6 violated: slash_treasury is negative: {}", self.slash_treasury));
         }
         Ok(())
     }
@@ -168,7 +169,7 @@ impl InvariantState {
     /// Verify invariant I7: Yield BPS valid
     fn verify_i7_yield_bps(&self) -> Result<(), String> {
         if self.yield_bps < 0 || self.yield_bps > 10_000 {
-            return Err(format!("I7 violated: yield_bps {} not in [0, 10000]", self.yield_bps));
+            return Err(std::format!("I7 violated: yield_bps {} not in [0, 10000]", self.yield_bps));
         }
         Ok(())
     }
@@ -176,7 +177,7 @@ impl InvariantState {
     /// Verify invariant I8 (implicit): Slash BPS valid
     fn verify_i8_slash_bps(&self) -> Result<(), String> {
         if self.slash_bps < 0 || self.slash_bps > 10_000 {
-            return Err(format!("I8 violated: slash_bps {} not in [0, 10000]", self.slash_bps));
+            return Err(std::format!("I8 violated: slash_bps {} not in [0, 10000]", self.slash_bps));
         }
         Ok(())
     }
@@ -203,8 +204,9 @@ impl InvariantState {
                 }
             }
             TransactionOp::RequestLoan(borrower_idx, amount, _threshold) => {
-                let max_loan = (self.borrower_stakes[*borrower_idx] * self.max_loan_to_stake_ratio) / 100;
-                if *amount > 0 && self.borrower_loans[*borrower_idx] == 0 && *amount <= max_loan {
+                let max_loan =
+                    (self.borrower_stakes[*borrower_idx] * self.max_loan_to_stake_ratio) / 100;
+                if *amount > 0 && *amount <= max_loan && self.borrower_loans[*borrower_idx] == 0 {
                     self.borrower_loans[*borrower_idx] = *amount;
                     self.contract_balance -= amount;
                     self.active_borrowers.insert(*borrower_idx);
@@ -231,13 +233,18 @@ impl InvariantState {
                 }
             }
             TransactionOp::DecreaseVouch(borrower_idx, _voucher_idx, decrease) => {
-                // Model-only guard: the live contract's decrease_stake does not
-                // check this, so this invariant isn't actually enforced on-chain.
                 if *decrease > 0 && self.borrower_stakes[*borrower_idx] >= *decrease {
-                    let remaining_stake = self.borrower_stakes[*borrower_idx] - decrease;
-                    let max_loan_after = (remaining_stake * self.max_loan_to_stake_ratio) / 100;
-                    if self.borrower_loans[*borrower_idx] <= max_loan_after {
-                        self.borrower_stakes[*borrower_idx] = remaining_stake;
+                    let stake_after = self.borrower_stakes[*borrower_idx] - decrease;
+                    let max_loan_after = (stake_after * self.max_loan_to_stake_ratio) / 100;
+                    // Model-only guard keeping I2 well-defined: a withdrawal that
+                    // would leave an active loan under-collateralized is skipped.
+                    // The live contract does not reject it — decrease_stake reduces
+                    // the stake and queues the payout — so I2 is not enforced
+                    // on-chain at this call site.
+                    let would_break_active_loan = self.active_borrowers.contains(borrower_idx)
+                        && self.borrower_loans[*borrower_idx] > max_loan_after;
+                    if !would_break_active_loan {
+                        self.borrower_stakes[*borrower_idx] = stake_after;
                         self.contract_balance += decrease;
                     }
                 }
@@ -310,11 +317,11 @@ mod tests {
     fn test_i2_collateralization_invariant() {
         let mut state = InvariantState::new(5, 100_000_000);
         state.borrower_stakes[0] = 50_000_000;
-        state.borrower_loans[0] = 150_000_000; // Exceeds 2:1 LTV
+        state.borrower_loans[0] = 150_000_000; // Exceeds 2:1 LTV (cap is 100_000_000)
 
         assert!(state.verify_i2_collateralization().is_err());
 
-        state.borrower_loans[0] = 100_000_000; // Within 2:1 LTV
+        state.borrower_loans[0] = 100_000_000; // Within 2:1 LTV (at the cap)
         assert!(state.verify_i2_collateralization().is_ok());
     }
 
@@ -347,7 +354,7 @@ mod tests {
     fn test_sequential_operations_maintain_invariants() {
         let mut state = InvariantState::new(3, 100_000_000_000);
 
-        let ops = vec![
+        let ops = std::vec![
             TransactionOp::Vouch(0, 0, 20_000_000),
             TransactionOp::Vouch(1, 1, 30_000_000),
             TransactionOp::RequestLoan(0, 15_000_000, 20_000_000),
@@ -435,7 +442,7 @@ mod tests {
         let mut state = InvariantState::new(10, 100_000_000_000);
         let mut rng: u64 = 42;
 
-        for i in 0..1000 {
+        for op_index in 0..1000 {
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             let op_type = (rng % 5) as usize;
             let borrower_idx = (rng / 5 % 10) as usize;
@@ -472,7 +479,7 @@ mod tests {
             assert!(
                 state.verify_all_invariants().is_ok(),
                 "Invariant violated at operation {}: {:?}",
-                i,
+                op_index,
                 state
             );
         }

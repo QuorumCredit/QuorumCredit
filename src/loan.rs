@@ -184,6 +184,15 @@ pub fn request_loan(
         return Err(ContractError::LoanExceedsMaxRatio);
     }
 
+    // The I2 invariant (invariants.rs) and the pool-borrow path (lib.rs) both cap
+    // a loan at total_stake × max_loan_to_stake_ratio / 100 (150% by default),
+    // but this path only checked max_loan_to_collateral_ratio (500% by default).
+    // A loan falling between the two limits was accepted here while violating I2,
+    // so enforce the stake ratio as well rather than leaving it unchecked.
+    if amount > total_stake * (cfg.max_loan_to_stake_ratio as i128) / 100 {
+        return Err(ContractError::LoanExceedsMaxRatio);
+    }
+
     let now = env.ledger().timestamp();
     let _loan_id = next_loan_id(&env);
 

@@ -61,8 +61,8 @@ mod timelock_safety_tests {
         s.client.vouch(&voucher, &borrower, &10_000_000, &s.token, &None);
 
         // Initial state: no loan exists (unlocked)
-        let loans_before = s.client.get_loan(&borrower);
-        assert!(loans_before.is_none());
+        let loan_before = s.client.get_loan(&borrower);
+        assert!(loan_before.is_none());
 
         // Create loan (state: locked → active)
         s.client.request_loan(
@@ -72,9 +72,6 @@ mod timelock_safety_tests {
             &String::from_str(&s.env, "test loan"),
             &s.token,
         );
-
-        let loans_after = s.client.get_loan(&borrower);
-        assert!(loans_after.is_some());
 
         // Verify loan is in active state
         let loan = s.client.get_loan(&borrower);
@@ -241,7 +238,6 @@ mod timelock_safety_tests {
         assert!(loan_after.amount_repaid > amount_repaid_before);
 
         // Verify loan is still tracked correctly
-        let loans = s.client.get_loan(&borrower);
-        assert!(loans.is_some());
+        assert!(s.client.get_loan(&borrower).is_some());
     }
 }

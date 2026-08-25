@@ -200,12 +200,7 @@ fn test_invariants_multi_borrower() {
     assert_invariants(&s, &[b1, b2]);
 }
 
-// Pre-existing failure, unrelated to this PR: update_config() rejects this
-// single-admin call with PermissionDenied (Error #60) even though `setup()`
-// registers that admin with threshold 1. Disabled rather than debugging an
-// unrelated admin-approval regression.
 #[test]
-#[ignore]
 fn test_invariants_after_config_update() {
     let s = setup();
     let borrower = Address::generate(&s.env);

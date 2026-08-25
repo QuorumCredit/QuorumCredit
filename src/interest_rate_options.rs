@@ -506,7 +506,23 @@ pub fn get_option(env: &Env, option_id: u64) -> Option<InterestRateOption> {
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Env;
+    use soroban_sdk::{Env, Vec};
+
+    /// Helper: create an env with a registered, initialized contract, since the
+    /// free functions under test access `env.storage()` / `config()`, which
+    /// requires an `as_contract` frame around a deployed+initialized instance.
+    fn make_env() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
+        (env, contract_id)
+    }
 
     #[test]
     fn test_isqrt() {
@@ -543,41 +559,25 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_get_option_returns_none_for_unknown_id() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(crate::QuorumCreditContract, ());
-        env.as_contract(&contract_id, || {
-            assert!(get_option(&env, 9999).is_none());
-        });
+        let (env, contract_id) = make_env();
+        let found = env.as_contract(&contract_id, || get_option(&env, 9999).is_some());
+        assert!(!found);
     }
 
     #[test]
-    #[ignore]
     fn test_open_interest_default_zero() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(crate::QuorumCreditContract, ());
-        env.as_contract(&contract_id, || {
-            let oi = get_open_interest(&env, OptionType::Call);
-            assert_eq!(oi.count, 0);
-            assert_eq!(oi.total_notional, 0);
-        });
+        let (env, contract_id) = make_env();
+        let oi = env.as_contract(&contract_id, || get_open_interest(&env, OptionType::Call));
+        assert_eq!(oi.count, 0);
+        assert_eq!(oi.total_notional, 0);
     }
 
     #[test]
-    #[ignore]
     fn test_get_implied_volatility_default() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(crate::QuorumCreditContract, ());
-        env.as_contract(&contract_id, || {
-            assert_eq!(
-                get_implied_volatility(&env),
-                DEFAULT_IMPLIED_VOLATILITY_BPS_PER_DAY
-            );
-        });
+        let (env, contract_id) = make_env();
+        let vol = env.as_contract(&contract_id, || get_implied_volatility(&env));
+        assert_eq!(vol, DEFAULT_IMPLIED_VOLATILITY_BPS_PER_DAY);
     }
 
     #[test]
@@ -604,26 +604,11 @@ mod tests {
         assert_eq!(gross, 150_000);
     }
 
-    // Pre-existing gap, unrelated to this PR: buy_option() reads contract config
-    // before validating inputs, and panics with "not initialized" unless the
-    // contract has gone through a full initialize(). Disabled rather than
-    // expanding this fixture.
     #[test]
-    #[ignore]
     fn test_buy_option_requires_nonzero_inputs() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-        let deployer = Address::generate(&env);
-        let admins = Vec::from_array(&env, [admin.clone()]);
-        let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
-        let token = token_contract.address();
-        let contract_id = env.register(crate::QuorumCreditContract, ());
-        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
-        client.initialize(&deployer, &admins, &1u32, &token);
-
+        let (env, contract_id) = make_env();
         let holder = Address::generate(&env);
+        let token = Address::generate(&env);
 
         let r1 = env.as_contract(&contract_id, || {
             buy_option(&env, holder.clone(), OptionType::Call, 200, 0, 3600, token.clone())

@@ -499,6 +499,10 @@ pub fn update_config(
     slash_bps: Option<i128>,
 ) {
     require_not_paused(&env).expect("contract paused");
+    // require_admin_approval_with_permission (below) already covers threshold,
+    // membership, and revocation checks plus auth, so no separate
+    // require_admin_approval call here — that would double-authorize each
+    // signer and panic with Auth(ExistingValue).
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }

@@ -8,7 +8,10 @@
 #[cfg(test)]
 mod fuzz_testing {
     extern crate std;
-    use std::{vec, vec::Vec};
+
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env, Symbol};
+    use std::vec;
 
     // Test 1: Stake calculation should never overflow i128
     #[test]
@@ -33,7 +36,7 @@ mod fuzz_testing {
             .saturating_mul(yield_bps as u128)
             .saturating_div(10_000)
             as i128;
-        assert_eq!(yield_min, 1); // 50 * 200 / 10_000 = 1
+        assert_eq!(yield_min, 1); // 50 * 200 / 10_000 = 1 (exact)
         
         // Case 2: 1 XLM (10_000_000 stroops)
         let stake_1xlm = 10_000_000i128;
@@ -73,7 +76,7 @@ mod fuzz_testing {
             .saturating_mul(slash_bps_small as u128)
             .saturating_div(10_000)
             as i128;
-        assert_eq!(slashed_small, 1); // 10_000 * 1 / 10_000 = 1
+        assert_eq!(slashed_small, 1); // 10_000 * 1 / 10_000 = 1 (exact)
         
         // Case 3: 100% slash (burn entire stake)
         let slash_bps_full = 10_000u32; // 100%

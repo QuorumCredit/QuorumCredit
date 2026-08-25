@@ -464,180 +464,165 @@ mod tests {
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(crate::QuorumCreditContract, ());
-
-        // create_proposal/finalize_proposal call require_not_paused, which
-        // reads Config, so the contract must be initialized.
         let deployer = Address::generate(&env);
-        let admins = Vec::from_array(&env, [deployer.clone()]);
-        let token_admin = Address::generate(&env);
-        let token = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        crate::QuorumCreditContractClient::new(&env, &contract_id)
-            .initialize(&deployer, &admins, &1u32, &token);
-
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
         let proposer = Address::generate(&env);
         (env, contract_id, proposer)
     }
 
     #[test]
-    #[ignore]
     fn test_deposit_increases_balance() {
         let (env, contract_id, _) = setup();
-        env.as_contract(&contract_id, || {
-            deposit_to_treasury(&env, 1_000_000);
-            assert_eq!(get_treasury_balance(&env), 1_000_000);
-        });
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let balance = env.as_contract(&contract_id, || get_treasury_balance(&env));
+        assert_eq!(balance, 1_000_000);
     }
 
-    // Pre-existing gap, unrelated to this PR: create_proposal() calls
-    // require_not_paused(), which calls helpers::config() and panics with
-    // "not initialized" unless the contract has gone through a full
-    // initialize() (admins + token), which `setup()` does not set up.
-    // Disabled rather than expanding this fixture.
     #[test]
-    #[ignore]
     fn test_create_proposal_requires_positive_amount() {
         let (env, contract_id, proposer) = setup();
-        env.as_contract(&contract_id, || {
-            deposit_to_treasury(&env, 1_000_000);
-            let recipient = Address::generate(&env);
-            let result = create_proposal(
-                &env,
-                proposer,
-                recipient,
-                -1,
-                String::from_str(&env, "bad"),
-            );
-            assert_eq!(result, Err(ContractError::InvalidAmount));
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let result = env.as_contract(&contract_id, || {
+            create_proposal(&env, proposer, recipient, -1, String::from_str(&env, "bad"))
         });
+        assert_eq!(result, Err(ContractError::InvalidAmount));
     }
 
     #[test]
-    #[ignore]
     fn test_create_proposal_succeeds() {
         let (env, contract_id, proposer) = setup();
-        env.as_contract(&contract_id, || {
-            deposit_to_treasury(&env, 1_000_000);
-            let recipient = Address::generate(&env);
-            let id = create_proposal(
-                &env,
-                proposer,
-                recipient,
-                100_000,
-                String::from_str(&env, "Community grant"),
-            )
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer,
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Community grant"),
+                )
+            })
             .unwrap();
-            assert_eq!(id, 1);
-            let p = get_treasury_proposal(&env, 1).unwrap();
-            assert_eq!(p.amount, 100_000);
-            assert_eq!(p.status, TreasuryProposalStatus::Active);
-        });
+        assert_eq!(id, 1);
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, 1))
+            .unwrap();
+        assert_eq!(p.amount, 100_000);
+        assert_eq!(p.status, TreasuryProposalStatus::Active);
     }
 
     #[test]
-    #[ignore]
     fn test_vote_and_finalize_proposal() {
         let (env, contract_id, proposer) = setup();
-        env.as_contract(&contract_id, || {
-            deposit_to_treasury(&env, 1_000_000);
-            let recipient = Address::generate(&env);
-            let id = create_proposal(
-                &env,
-                proposer.clone(),
-                recipient,
-                100_000,
-                String::from_str(&env, "Grant"),
-            )
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer.clone(),
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Grant"),
+                )
+            })
             .unwrap();
 
-            let voter1 = Address::generate(&env);
-            let voter2 = Address::generate(&env);
-            vote_on_proposal(&env, voter1, id, true).unwrap();
-            vote_on_proposal(&env, voter2, id, true).unwrap();
-
-            // Advance time past voting period.
-            env.ledger().with_mut(|l| {
-                l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1;
-            });
-
-            finalize_proposal(&env, id).unwrap();
-            let p = get_treasury_proposal(&env, id).unwrap();
-            assert_eq!(p.status, TreasuryProposalStatus::Executed);
-            assert_eq!(get_treasury_balance(&env), 900_000);
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, true).unwrap()
         });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+
+        // Advance time past voting period.
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Executed);
+        let balance = env.as_contract(&contract_id, || get_treasury_balance(&env));
+        assert_eq!(balance, 900_000);
     }
 
     #[test]
-    #[ignore]
     fn test_rejected_proposal_when_no_quorum() {
         let (env, contract_id, proposer) = setup();
-        env.as_contract(&contract_id, || {
-            deposit_to_treasury(&env, 1_000_000);
-            let recipient = Address::generate(&env);
-            let id = create_proposal(
-                &env,
-                proposer,
-                recipient,
-                100_000,
-                String::from_str(&env, "Grant"),
-            )
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer,
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Grant"),
+                )
+            })
             .unwrap();
 
-            let voter1 = Address::generate(&env);
-            vote_on_proposal(&env, voter1, id, false).unwrap();
-
-            env.ledger().with_mut(|l| {
-                l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1;
-            });
-
-            finalize_proposal(&env, id).unwrap();
-            let p = get_treasury_proposal(&env, id).unwrap();
-            assert_eq!(p.status, TreasuryProposalStatus::Rejected);
+        let voter1 = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, false).unwrap()
         });
+
+        // Advance time past voting period.
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Rejected);
     }
 
     #[test]
-    #[ignore]
     fn test_cannot_vote_twice() {
         let (env, contract_id, proposer) = setup();
-        let voter = Address::generate(&env);
-        // Each real vote is a separate on-chain transaction/auth context, so
-        // give the two votes on the same voter their own `as_contract` frames
-        // — otherwise the mock auth harness sees a single voter address
-        // re-authorizing within one frame and errors before the contract's
-        // own AlreadyVoted check ever runs.
-        let id = env.as_contract(&contract_id, || {
-            deposit_to_treasury(&env, 1_000_000);
-            let recipient = Address::generate(&env);
-            let id = create_proposal(
-                &env,
-                proposer,
-                recipient,
-                100_000,
-                String::from_str(&env, "Grant"),
-            )
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer,
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Grant"),
+                )
+            })
             .unwrap();
-            vote_on_proposal(&env, voter.clone(), id, true).unwrap();
-            id
-        });
 
+        let voter = Address::generate(&env);
         env.as_contract(&contract_id, || {
-            let result = vote_on_proposal(&env, voter, id, false);
-            assert_eq!(result, Err(ContractError::AlreadyVoted));
+            vote_on_proposal(&env, voter.clone(), id, true).unwrap()
         });
+        let result = env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, false));
+        assert_eq!(result, Err(ContractError::AlreadyVoted));
     }
 
     #[test]
-    #[ignore]
     fn test_monthly_report_updated_on_deposit() {
         let (env, contract_id, _) = setup();
-        env.as_contract(&contract_id, || {
-            deposit_to_treasury(&env, 500_000);
-            let month_id = env.ledger().timestamp() / (30 * 24 * 60 * 60);
-            let report = get_treasury_report(&env, month_id).unwrap();
-            assert_eq!(report.deposited, 500_000);
-        });
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 500_000));
+        let month_id = env.ledger().timestamp() / (30 * 24 * 60 * 60);
+        let report = env
+            .as_contract(&contract_id, || get_treasury_report(&env, month_id))
+            .unwrap();
+        assert_eq!(report.deposited, 500_000);
     }
 }
