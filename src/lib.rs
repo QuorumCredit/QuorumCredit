@@ -7,9 +7,6 @@
 #![allow(unused_mut)]
 #![allow(unused_assignments)]
 #![allow(unused_parens)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
-#![allow(unused_assignments)]
 #![allow(deprecated)]
 #![allow(clippy::empty_line_after_doc_comments)]
 #![allow(clippy::empty_line_after_outer_attr)]
@@ -31,7 +28,6 @@
 #![allow(clippy::doc_overindented_list_items)]
 #![allow(clippy::needless_lifetimes)]
 // Additional clippy lints that exist across the codebase
-#![allow(clippy::unnecessary_cast)]
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::manual_div_ceil)]
 #![allow(clippy::unnecessary_min_or_max)]
