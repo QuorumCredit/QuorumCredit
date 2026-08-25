@@ -241,7 +241,7 @@ EmergencyBypassNotAuthorised = 131,
     /// Invalid configuration for dynamic interest rate.
     InvalidDynamicRateConfig = 173,
     /// Attestor reported fewer origin-chain confirmations than the required minimum.
-    InsufficientBridgeConfirmations = 216,
+    InsufficientBridgeConfirmations = 220,
     /// A live protocol invariant check failed (see `crate::invariants`).
     InvariantViolation = 178,
     /// The withdrawal queue has reached its maximum size.
