@@ -3,11 +3,16 @@
 // and predate this PR. Suppressed here so `cargo clippy -D warnings` does not
 // fail CI on issues outside the scope of this change.
 #![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+#![allow(unused_assignments)]
 #![allow(unused_parens)]
 #![allow(deprecated)]
 #![allow(clippy::empty_line_after_doc_comments)]
+#![allow(clippy::empty_line_after_outer_attr)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::needless_borrow)]
+#![allow(clippy::needless_borrows_for_generic_args)]
 #![allow(clippy::assign_op_pattern)]
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::redundant_field_names)]
@@ -18,23 +23,18 @@
 #![allow(clippy::cast_lossless)]
 #![allow(clippy::large_enum_variant)]
 #![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::doc_overindented_list_items)]
 #![allow(clippy::needless_lifetimes)]
 // Additional clippy lints that exist across the codebase
 #![allow(clippy::unnecessary_cast)]
-#![allow(clippy::needless_borrows_for_generic_args)]
 #![allow(clippy::manual_clamp)]
 #![allow(clippy::manual_div_ceil)]
-#![allow(clippy::doc_lazy_continuation)]
 #![allow(clippy::unnecessary_min_or_max)]
 #![allow(clippy::manual_saturating_arithmetic)]
 #![allow(clippy::manual_checked_ops)]
 #![allow(clippy::redundant_closure)]
-#![allow(clippy::doc_overindented_list_items)]
 #![allow(clippy::question_mark)]
-#![allow(clippy::empty_line_after_outer_attr)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
-#![allow(unused_assignments)]
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, String, Vec,};
@@ -234,6 +234,11 @@ impl QuorumCreditContract {
         // Issue #1285: bump instance TTL at initialization so the contract
         // instance storage survives for the protocol's expected lifetime.
         helpers::bump_instance(&env);
+
+        // RBAC requires every admin to have a role before they can pass
+        // require_admin_approval_for_action; grant SuperAdmin to the initial
+        // admin set so admin functions work immediately after deployment.
+        rbac::migrate_legacy_admins_to_superadmin(&env);
 
         env.events().publish(
             (symbol_short!("contract"), symbol_short!("init")),
@@ -925,6 +930,7 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
 
         // Burn excellent credit tier badge on default
         reputation::burn_excellent_badge(&env, &borrower);
@@ -948,6 +954,15 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Vouches(borrower.clone()));
+
+        // Issue #1371: check the circuit breaker after each executed slash using
+        // real running default/loan counters instead of never calling it.
+        let _ = circuit_breaker::try_trigger_circuit_breaker(
+            &env,
+            &cfg,
+            helpers::get_total_default_count(&env),
+            helpers::get_total_loan_count(&env),
+        );
     }
 
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
@@ -1236,6 +1251,7 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
 
         if let Some(nft_addr) = env
             .storage()
@@ -1312,6 +1328,7 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
         // Issue #1288: Decrement on-chain TVL / active-loan-count counters on expired claim.
         helpers::decrement_tvl_counters(&env, loan.amount);
     }

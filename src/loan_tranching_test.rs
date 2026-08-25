@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod loan_tranching_tests {
-    use crate::types::{Config, DataKey, TrancheTier, TrancheStatus, WaterfallDistribution};
+    use crate::types::{Config, DataKey, WaterfallDistribution};
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -70,7 +70,7 @@ mod loan_tranching_tests {
         );
 
         // Verify loan is created and can be structured
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
         assert_eq!(loan.unwrap().amount, 30_000_000);
     }
@@ -96,7 +96,7 @@ mod loan_tranching_tests {
         );
 
         // Loan should exist and be ready for tranching
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 30_000_000);
     }
 
@@ -123,10 +123,10 @@ mod loan_tranching_tests {
         );
 
         // Perform repayment (returns should be routed by tranche)
-        s.client.repay_loan(&borrower, &0, &10_000_000);
+        s.client.repay(&borrower, &10_000_000);
 
         // Verify repayment occurred
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert!(loan.amount_repaid > 0);
     }
 
@@ -153,12 +153,12 @@ mod loan_tranching_tests {
         );
 
         // Make repayments
-        s.client.repay_loan(&borrower, &0, &5_000_000);  // First payment
-        s.client.repay_loan(&borrower, &0, &5_000_000);  // Second payment
-        s.client.repay_loan(&borrower, &0, &5_000_000);  // Third payment
+        s.client.repay(&borrower, &5_000_000);  // First payment
+        s.client.repay(&borrower, &5_000_000);  // Second payment
+        s.client.repay(&borrower, &5_000_000);  // Third payment
 
         // Verify repayments are accumulating
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount_repaid, 15_000_000);
     }
 
@@ -184,12 +184,12 @@ mod loan_tranching_tests {
             &s.token,
         );
 
-        let loan_initial = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_initial = s.client.get_loan(&borrower).unwrap();
 
         // Perform repayment
-        s.client.repay_loan(&borrower, &0, &10_000_000);
+        s.client.repay(&borrower, &10_000_000);
 
-        let loan_after = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_after = s.client.get_loan(&borrower).unwrap();
 
         // Verify performance is tracked
         assert!(loan_after.amount_repaid > loan_initial.amount_repaid);
@@ -215,7 +215,7 @@ mod loan_tranching_tests {
             &s.token,
         );
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         // Senior portion: 10M * 5% = 500k yield
         // This should be locked in the total_yield
         assert!(loan.total_yield > 0);
@@ -241,7 +241,7 @@ mod loan_tranching_tests {
             &s.token,
         );
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         // Junior portion: 15M * 15% = 2.25M yield (portion of total)
         assert!(loan.total_yield > 0);
     }
@@ -255,6 +255,8 @@ mod loan_tranching_tests {
 
         // Setup
         StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &100_000_000);
+        // Extra funds so the borrower can cover principal + yield on repayment.
+        StellarAssetClient::new(&s.env, &s.token).mint(&borrower, &10_000_000);
         s.client.vouch(&voucher, &borrower, &100_000_000, &s.token, &None);
 
         // Create loan with equity tranche (5M at variable)
@@ -266,13 +268,14 @@ mod loan_tranching_tests {
             &s.token,
         );
 
-        let loan_initial = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_initial = s.client.get_loan(&borrower).unwrap();
 
-        // Make full repayment to see equity gains
-        s.client.repay_loan(&borrower, &0, &30_000_000);
+        // Make full repayment (principal + yield) to see equity gains
+        let total_owed = loan_initial.amount + loan_initial.total_yield;
+        s.client.repay(&borrower, &total_owed);
 
-        let loan_final = s.client.get_loan(&borrower, &0).unwrap();
-        assert!(loan_final.repaid);
+        // A fully repaid loan is cleared from active-loan tracking.
+        assert!(s.client.get_loan(&borrower).is_none());
     }
 
     /// Test loss absorption by tranches (waterfall in reverse)
@@ -295,7 +298,7 @@ mod loan_tranching_tests {
             &s.token,
         );
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 30_000_000);
 
         // In case of default, losses should follow waterfall:
@@ -328,16 +331,16 @@ mod loan_tranching_tests {
         s.client.vouch(&investor_junior, &borrower, &20_000_000, &s.token, &None);
         s.client.vouch(&investor_equity, &borrower, &5_000_000, &s.token, &None);
 
-        // Create tranched loan
+        // Create tranched loan (threshold must be <= total vouched stake of 45M)
         s.client.request_loan(
             &borrower,
             &30_000_000,
-            &55_000_000,
+            &40_000_000,
             &String::from_str(&s.env, "multi-investor"),
             &s.token,
         );
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount, 30_000_000);
     }
 
@@ -362,9 +365,9 @@ mod loan_tranching_tests {
         );
 
         // Make partial repayment
-        s.client.repay_loan(&borrower, &0, &5_000_000);
+        s.client.repay(&borrower, &5_000_000);
 
-        let loan = s.client.get_loan(&borrower, &0).unwrap();
+        let loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(loan.amount_repaid, 5_000_000);
     }
 }

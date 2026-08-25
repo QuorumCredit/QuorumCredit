@@ -12,7 +12,7 @@
 /// 4. Cooldown enforcement prevents rapid trigger-pause-resume cycles
 
 use soroban_sdk::{Address, Env, Vec};
-use crate::types::{Config, DataKey};
+use crate::types::{Config, DataKey, PauseMode, ThawState};
 use crate::errors::ContractError;
 
 /// Minimum time (in seconds) between circuit breaker activations to prevent thrashing.
@@ -104,8 +104,19 @@ pub fn try_trigger_circuit_breaker(
     // Record the trigger time
     env.storage().instance().set(&DataKey::CircuitBreakerLastTriggered, &now);
 
-    // Auto-pause the contract
+    // Auto-pause the contract. `Paused` drives `get_paused()`; `PauseMode` is what
+    // `require_not_paused` actually checks, so both must be set for the pause to
+    // have any real effect on writes (mirrors `admin::pause`).
     env.storage().instance().set(&DataKey::Paused, &true);
+    env.storage().instance().set(&DataKey::PauseMode, &PauseMode::Paused);
+    env.storage().instance().set(
+        &DataKey::ThawState,
+        &ThawState {
+            pause_timestamp: now,
+            thaw_duration: crate::types::THAW_DURATION_SECS,
+            thaw_start_timestamp: 0,
+        },
+    );
 
     // Emit event (log the circuit breaker activation)
     env.events().publish(
@@ -162,14 +173,11 @@ pub fn set_default_rate_threshold(
     Ok(())
 }
 
-/// Get the current default rate based on loan statistics.
+/// Get the current default rate based on real protocol-wide loan statistics.
 pub fn get_current_default_rate(env: &Env) -> Result<u32, ContractError> {
-    // Query loan and default counts from a hypothetical statistics collection
-    // This will be integrated with the loan module when fully implemented.
-    // For now, return 0 as a placeholder.
-    
-    // TODO: Integrate with loan.rs to query actual default_count and total_loan_count
-    Ok(0)
+    let default_count = crate::helpers::get_total_default_count(env);
+    let total_loan_count = crate::helpers::get_total_loan_count(env);
+    Ok(calculate_default_rate(default_count, total_loan_count))
 }
 
 #[cfg(test)]

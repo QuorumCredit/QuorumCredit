@@ -18,6 +18,9 @@ mod reference_model {
     //! Simple reference implementation for differential testing.
     //! This is a simplified Python-like logic representation for verification.
 
+    extern crate std;
+    use std::string::{String, ToString};
+
     use soroban_sdk::Address;
 
     /// Reference model for vouch operations
@@ -113,7 +116,11 @@ mod reference_model {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+    use std::{println, string::String, vec, vec::Vec};
+
     use super::reference_model::*;
+    use soroban_sdk::{testutils::Address as _, Env};
 
     /// Test harness for comparing actual vs reference behavior
     struct DifferentialTestHarness {
@@ -153,12 +160,9 @@ mod tests {
     #[test]
     fn test_reference_vouch_positive_stake() {
         // Test that positive stake is accepted
-        let voucher = soroban_sdk::Address::from_account_id(
-            &soroban_sdk::AccountId::from_binary([0; 32]),
-        );
-        let borrower = soroban_sdk::Address::from_account_id(
-            &soroban_sdk::AccountId::from_binary([1; 32]),
-        );
+        let env = Env::default();
+        let voucher = soroban_sdk::Address::generate(&env);
+        let borrower = soroban_sdk::Address::generate(&env);
 
         let result = ref_vouch(&voucher, &borrower, 1000, 0);
         assert!(result.is_ok(), "Positive stake should be accepted");
@@ -167,12 +171,9 @@ mod tests {
     #[test]
     fn test_reference_vouch_zero_stake() {
         // Test that zero stake is rejected
-        let voucher = soroban_sdk::Address::from_account_id(
-            &soroban_sdk::AccountId::from_binary([0; 32]),
-        );
-        let borrower = soroban_sdk::Address::from_account_id(
-            &soroban_sdk::AccountId::from_binary([1; 32]),
-        );
+        let env = Env::default();
+        let voucher = soroban_sdk::Address::generate(&env);
+        let borrower = soroban_sdk::Address::generate(&env);
 
         let result = ref_vouch(&voucher, &borrower, 0, 0);
         assert!(result.is_err(), "Zero stake should be rejected");
@@ -181,9 +182,8 @@ mod tests {
     #[test]
     fn test_reference_vouch_self_vouch() {
         // Test that self-vouch is rejected
-        let borrower = soroban_sdk::Address::from_account_id(
-            &soroban_sdk::AccountId::from_binary([0; 32]),
-        );
+        let env = Env::default();
+        let borrower = soroban_sdk::Address::generate(&env);
 
         let result = ref_vouch(&borrower, &borrower, 1000, 0);
         assert!(result.is_err(), "Self-vouch should be rejected");
@@ -210,7 +210,8 @@ mod tests {
             (0, 0), // No time elapsed
             (6 * 30 * 24 * 60 * 60, 10), // 6 months: 0.1%
             (12 * 30 * 24 * 60 * 60, 20), // 12 months: 0.2%
-            (2 * 365 * 24 * 60 * 60, 100), // 2 years: capped at 1%
+            (2 * 365 * 24 * 60 * 60, 40), // 2 years: 4 periods * 0.1% = 0.4% (below the 1% cap)
+            (10 * 365 * 24 * 60 * 60, 100), // 10 years: capped at 1%
         ];
 
         for (tenure, expected) in test_cases {

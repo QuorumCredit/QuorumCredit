@@ -7,20 +7,18 @@
 
 #[cfg(test)]
 mod fuzz_testing {
-    use soroban_sdk::testutils::{Address as _, Env as _};
-    use soroban_sdk::{Address, Env, Symbol};
+    extern crate std;
+    use std::{vec, vec::Vec};
 
     // Test 1: Stake calculation should never overflow i128
     #[test]
     fn fuzz_stake_accumulation_no_overflow() {
-        let env = Env::default();
-        
-        // Try accumulating large amounts
-        let max_safe_stake = i128::MAX / 2;
-        let result1 = max_safe_stake.saturating_add(max_safe_stake);
-        
-        // Should saturate, not panic
-        assert!(result1 <= i128::MAX);
+        // Accumulate amounts that would overflow a plain `+`.
+        let near_max_stake = i128::MAX - 10;
+        let result1 = near_max_stake.saturating_add(near_max_stake);
+
+        // Should saturate at i128::MAX, not panic or wrap.
+        assert_eq!(result1, i128::MAX);
     }
 
     // Test 2: Yield calculations should be consistent across all valid inputs
@@ -35,7 +33,7 @@ mod fuzz_testing {
             .saturating_mul(yield_bps as u128)
             .saturating_div(10_000)
             as i128;
-        assert_eq!(yield_min, 0); // Truncates to 0
+        assert_eq!(yield_min, 1); // 50 * 200 / 10_000 = 1
         
         // Case 2: 1 XLM (10_000_000 stroops)
         let stake_1xlm = 10_000_000i128;
@@ -75,7 +73,7 @@ mod fuzz_testing {
             .saturating_mul(slash_bps_small as u128)
             .saturating_div(10_000)
             as i128;
-        assert_eq!(slashed_small, 0); // Truncates
+        assert_eq!(slashed_small, 1); // 10_000 * 1 / 10_000 = 1
         
         // Case 3: 100% slash (burn entire stake)
         let slash_bps_full = 10_000u32; // 100%

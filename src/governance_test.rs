@@ -57,11 +57,24 @@ mod governance_tests {
     }
 
     #[test]
-    #[should_panic(expected = "insufficient admin approvals")]
     fn test_emergency_pause_fewer_than_threshold_fails() {
         let s = setup(2, 3);
         let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone()]);
-        s.client.emergency_pause(&admin_signers);
+        let result = s.client.try_emergency_pause(&admin_signers);
+        assert_eq!(result, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
+    }
+
+    #[test]
+    fn test_emergency_pause_denies_role_without_pause_permission() {
+        let s = setup(1, 1);
+        let admin = s.admins.get(0).unwrap();
+        // Monitor has no Pause permission, even though it alone satisfies the threshold.
+        s.env.as_contract(&s.contract_id, || {
+            crate::rbac::assign_admin_role(&s.env, s.admins.clone(), admin.clone(), crate::types::AdminRole::Monitor);
+        });
+        let admin_signers = Vec::from_array(&s.env, [admin.clone()]);
+        let result = s.client.try_emergency_pause(&admin_signers);
+        assert_eq!(result, Err(Ok(crate::errors::ContractError::PermissionDenied)));
     }
 
     #[test]
