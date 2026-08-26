@@ -409,7 +409,8 @@ pub fn file_claim(env: Env, quote_id: u64) -> Result<u64, ContractError> {
 }
 
 /// Approve a pending claim.  Admin-only; the caller must pass valid admin signers.
-pub fn approve_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
+pub fn approve_claim(env: Env, admin_signers: soroban_sdk::Vec<soroban_sdk::Address>, claim_id: u64) -> Result<(), ContractError> {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
     let mut claim = load_claim(&env, claim_id)?;
     if !matches!(claim.status, ClaimStatus::Pending) {
         return Err(ContractError::InvalidClaimStatus);
@@ -427,7 +428,8 @@ pub fn approve_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
 }
 
 /// Reject a pending claim.
-pub fn reject_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
+pub fn reject_claim(env: Env, admin_signers: soroban_sdk::Vec<soroban_sdk::Address>, claim_id: u64) -> Result<(), ContractError> {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
     let mut claim = load_claim(&env, claim_id)?;
     if !matches!(claim.status, ClaimStatus::Pending) {
         return Err(ContractError::InvalidClaimStatus);
@@ -448,7 +450,8 @@ pub fn reject_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
 ///
 /// Transfers `claim.payout_amount` from the contract's reserve to the
 /// borrower's address.  Marks the claim as `Paid`.
-pub fn pay_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
+pub fn pay_claim(env: Env, admin_signers: soroban_sdk::Vec<soroban_sdk::Address>, claim_id: u64) -> Result<(), ContractError> {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
     let mut claim = load_claim(&env, claim_id)?;
     if !matches!(claim.status, ClaimStatus::Approved) {
         return Err(ContractError::InvalidClaimStatus);
