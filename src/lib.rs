@@ -137,6 +137,12 @@ mod cross_chain_governance_test;
 mod cross_chain_auction_test;
 #[cfg(test)]
 mod liquidity_farming_test;
+#[cfg(test)]
+mod loan_cart_test;
+#[cfg(test)]
+mod repay_validation_test;
+#[cfg(test)]
+mod unimplemented_stubs_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -1616,7 +1622,9 @@ impl QuorumCreditContract {
 
     /// Stage a loan request in the borrower's cart instead of submitting it
     /// immediately. Multiple items can be staged and submitted together via
-    /// `submit_batch_loan_request`.
+    /// `submit_batch_loan_request` — though the protocol's single-active-loan
+    /// constraint means only one item per submission can actually disburse;
+    /// see that function's docs (issue #1397).
     pub fn add_to_loan_cart(
         env: Env,
         borrower: Address,
@@ -1631,14 +1639,43 @@ impl QuorumCreditContract {
         loan_cart::get_loan_cart(env, borrower)
     }
 
+    /// Remove a single staged item from the borrower's cart by index,
+    /// without discarding the rest of the cart (#1396). Panics with
+    /// `ContractError::NotFound` if the borrower has no cart, or if
+    /// `item_index` is out of range for it.
+    pub fn remove_cart_item(env: Env, borrower: Address, item_index: u32) -> loan_cart::LoanCart {
+        loan_cart::remove_cart_item(env, borrower, item_index)
+    }
+
+    /// Replace the amount/tenure of a single staged cart item in place,
+    /// without disturbing its position or the rest of the cart (#1396).
+    /// Panics with `ContractError::NotFound` if the borrower has no cart, or
+    /// if `item_index` is out of range for it.
+    pub fn update_cart_item(
+        env: Env,
+        borrower: Address,
+        item_index: u32,
+        amount: i128,
+        tenure_secs: u64,
+    ) -> loan_cart::LoanCart {
+        loan_cart::update_cart_item(env, borrower, item_index, amount, tenure_secs)
+    }
+
     /// Clear a borrower's cart without submitting it (recorded as abandoned).
     pub fn abandon_loan_cart(env: Env, borrower: Address) {
         loan_cart::abandon_loan_cart(env, borrower)
     }
 
     /// Submit every staged cart item as an individual loan request. Batches
-    /// of 3 or more items receive a 1% volume discount on requested
-    /// principal. Returns a per-item result.
+    /// of 3 or more items are eligible for a 1% volume discount on requested
+    /// principal — but the protocol only allows a single *active* loan per
+    /// borrower, so at most one item per submission can actually disburse;
+    /// every item after the first success fails with `ActiveLoanExists`
+    /// (see the `loan_cart` module docs). Only an item that actually
+    /// succeeds can carry a realized discount in the returned result; a
+    /// failed item's `discounted_amount` is left undiscounted rather than
+    /// advertising a price for a loan that was never funded (issue #1397).
+    /// Returns a per-item result.
     pub fn submit_batch_loan_request(
         env: Env,
         borrower: Address,
