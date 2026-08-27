@@ -1099,6 +1099,15 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+    /// Issue #1175/#1428: (voucher, loan_id) → VouchProtectionBond
+    VouchProtectionBond(Address, u64),
+    /// Issue #1175: (voucher, loan_id) → BondInsuranceRecord
+    BondInsurance(Address, u64),
+    /// Issue #1175: voucher → BondStats
+    BondStats(Address),
+    /// Issue #1429: borrower → Vec<u64> of every loan id ever opened by the borrower.
+    /// Backs `lazy_default_detection::check_all_defaults_for_borrower`.
+    BorrowerLoanIds(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

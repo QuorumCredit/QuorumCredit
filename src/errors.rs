@@ -337,4 +337,7 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
+    /// Issue #1428: A non-released vouch protection bond already exists for this
+    /// (voucher, loan_id) pair. Release the existing bond before staking another.
+    BondAlreadyActive = 221,
 }

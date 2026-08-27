@@ -45,6 +45,7 @@ pub mod admin;
 pub mod arbitrage_prevention;
 pub mod audit;
 pub mod batch_transfer;
+pub mod bond_protection;
 pub mod bridge;
 pub mod cache;
 pub mod circuit_breaker;

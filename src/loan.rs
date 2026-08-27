@@ -149,6 +149,10 @@ pub fn request_loan(
     crate::helpers::check_permission(&env, &borrower, |p| p.can_request_loan)?;
     register_borrower_if_needed(&env, &borrower);
 
+    // Issue #1429: lazily settle any overdue loans in the borrower's history so a
+    // fresh request cannot be granted while a past-due loan sits unflagged.
+    crate::lazy_default_detection::check_all_defaults_for_borrower(&env, &borrower)?;
+
     if has_active_loan(&env, &borrower) {
         return Err(ContractError::ActiveLoanExists);
     }
@@ -270,6 +274,9 @@ pub fn request_loan(
     };
 
     env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+    // Issue #1429: index this loan under the borrower's history so future
+    // pre-checks can iterate every loan they have ever opened.
+    crate::lazy_default_detection::record_borrower_loan_id(&env, &borrower, loan_id);
     env.storage()
         .persistent()
         .set(&DataKey::ActiveLoan(borrower.clone()), &loan_id);
