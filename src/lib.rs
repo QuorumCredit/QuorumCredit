@@ -50,6 +50,7 @@ pub mod cache;
 pub mod circuit_breaker;
 pub mod cooldown_bypass;
 pub mod credit_score;
+pub mod detection;
 pub mod cross_chain;
 pub mod cross_chain_auction;
 pub mod cross_chain_governance;
@@ -1009,6 +1010,60 @@ impl QuorumCreditContract {
             helpers::get_total_default_count(&env),
             helpers::get_total_loan_count(&env),
         );
+    }
+
+    // ── Issue #1422: Fraud score detection ──────────────────────────────────
+    /// Recompute and persist a voucher's fraud score from their vouch/slash history.
+    pub fn update_fraud_score(env: Env, voucher: Address) -> Result<(), ContractError> {
+        detection::update_fraud_score(env, voucher)
+    }
+
+    /// Read a voucher's stored fraud score, if one has been computed.
+    pub fn get_fraud_score(env: Env, voucher: Address) -> Option<crate::types::VoucherFraudScore> {
+        detection::get_fraud_score(env, voucher)
+    }
+
+    /// Persist the fraud-score configuration (threshold + enabled). Admin-only.
+    pub fn set_fraud_score_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: crate::types::FraudScoreConfig,
+    ) -> Result<(), ContractError> {
+        detection::set_fraud_score_config(env, admin_signers, config)
+    }
+
+    /// Read the current fraud-score configuration.
+    pub fn get_fraud_score_config(env: Env) -> crate::types::FraudScoreConfig {
+        detection::get_fraud_score_config_view(env)
+    }
+
+    // ── Issue #1423/#1424/#1425: Circuit breaker admin controls ─────────────
+    /// Acknowledge the most recent circuit-breaker activation (admin multi-sig).
+    /// Required before `unpause` will clear a circuit-breaker-induced pause.
+    pub fn acknowledge_circuit_breaker(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::acknowledge_circuit_breaker(&env, admin_signers)
+    }
+
+    /// Return the bounded history of circuit-breaker activations, oldest first.
+    pub fn get_circuit_breaker_history(env: Env) -> Vec<crate::types::CircuitBreakerTrigger> {
+        circuit_breaker::get_circuit_breaker_history(&env)
+    }
+
+    /// Set the circuit-breaker anti-thrash cooldown window, in seconds. Admin-only.
+    pub fn set_circuit_breaker_cooldown(
+        env: Env,
+        admin_signers: Vec<Address>,
+        new_cooldown_secs: u64,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::set_circuit_breaker_cooldown(&env, admin_signers, new_cooldown_secs)
+    }
+
+    /// Read the effective circuit-breaker cooldown (configured value or default).
+    pub fn get_circuit_breaker_cooldown(env: Env) -> u64 {
+        circuit_breaker::circuit_breaker_cooldown_secs(&env)
     }
 
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {

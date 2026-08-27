@@ -1099,6 +1099,18 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+
+    // ── Issue #1423/#1424/#1425: Circuit breaker admin controls & history ────
+    /// Vec<CircuitBreakerTrigger>: bounded, append-only history of circuit-breaker
+    /// activations (oldest entries evicted once the bound is reached).
+    CircuitBreakerHistory,
+    /// bool: `true` once an admin has acknowledged the most recent circuit-breaker
+    /// activation via `acknowledge_circuit_breaker`. A fresh trigger resets it to
+    /// `false`; `unpause` refuses to clear a circuit-breaker pause while it is `false`.
+    CircuitBreakerAcknowledged,
+    /// u64: configurable cooldown (in seconds) between circuit-breaker activations.
+    /// Falls back to `CIRCUIT_BREAKER_COOLDOWN_SECS_DEFAULT` when unset.
+    CircuitBreakerCooldownSecs,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -3270,6 +3282,22 @@ pub struct SlashAppealRecord {
 pub struct FraudScoreConfig {
     pub threshold: u32,
     pub enabled: bool,
+}
+
+/// Issue #1424: a single historical circuit-breaker activation, retained in the
+/// bounded `DataKey::CircuitBreakerHistory` log so operators can audit how often
+/// the breaker has fired and correlate incidents with default-rate spikes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CircuitBreakerTrigger {
+    /// Ledger timestamp at which the breaker activated.
+    pub timestamp: u64,
+    /// Protocol-wide defaulted-loan count at activation time.
+    pub default_count: u32,
+    /// Protocol-wide total-loan count at activation time.
+    pub total_loan_count: u32,
+    /// Default rate in basis points at activation time.
+    pub rate_bps: u32,
 }
 
 #[contracttype]

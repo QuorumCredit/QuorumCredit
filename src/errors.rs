@@ -337,4 +337,8 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
+    /// Issue #1423: the contract is held in a circuit-breaker-induced pause that
+    /// has not been acknowledged by an admin. Call `acknowledge_circuit_breaker`
+    /// before attempting to `unpause`.
+    CircuitBreakerNotAcknowledged = 221,
 }

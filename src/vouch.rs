@@ -378,6 +378,10 @@ fn commit_vouch(
         &timestamp,
     );
 
+    // Issue #1422: (re)evaluate this voucher's fraud score on every new vouch so
+    // rapid vouch cycling / circular vouching is scored as it accrues.
+    let _ = crate::detection::update_fraud_score(env.clone(), voucher.clone());
+
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("create")),
         (voucher, borrower, stake, token),
