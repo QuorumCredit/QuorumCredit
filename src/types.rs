@@ -2001,6 +2001,17 @@ pub struct Config {
     /// Issue #1071: Maximum insurance payout as a percentage of total slashed amount
     /// (in basis points, e.g. 2500 = 25%).
     pub insurance_max_payout_bps: u32,
+    /// Issue #1437: Upper bound (in stroops) accepted for a single admin
+    /// contribution to the insurance fund. Guards against fat-finger admin
+    /// errors and undocumented manual top-ups. `0` disables the check.
+    /// (Name capped at 30 chars by `#[contracttype]`.)
+    pub insurance_fund_max_contrib: i128,
+    /// Issue #1436: Low-balance alert threshold (in stroops) for the insurance
+    /// fund. When the post-claim balance drops below this value,
+    /// `claim_insurance_for_shortfall` emits an `insurance_fund / low_bal`
+    /// event for operator alerting. `0` disables the alert.
+    /// (Name capped at 30 chars by `#[contracttype]`.)
+    pub insurance_fund_low_bal_thresh: i128,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────

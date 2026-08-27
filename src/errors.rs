@@ -48,6 +48,8 @@ pub enum ContractError {
     ReminderAlreadySent = 43,
     /// Insurance pool has no funds to cover the claim.
     InsurancePoolEmpty = 44,
+    /// Admin contribution exceeds `insurance_fund_max_contribution` cap (#1437).
+    InsuranceContributionTooLarge = 221,
     /// Insurance claim already made for this loan.
     InsuranceClaimAlreadyMade = 45,
     /// Basis points value is invalid (must be 0–10000).

@@ -228,6 +228,8 @@ impl QuorumCreditContract {
                 default_rate_threshold: 0,
                 insurance_fund_premium_bps: 0,
                 insurance_max_payout_bps: 0,
+                insurance_fund_max_contrib: 0,
+                insurance_fund_low_bal_thresh: 0,
             },
         );
 
