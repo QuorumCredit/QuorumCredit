@@ -137,6 +137,15 @@ pub const EXTENSION_FEE_BPS: i128 = 100;
 /// Maximum number of extensions allowed per loan.
 pub const MAX_EXTENSIONS_PER_LOAN: u32 = 2;
 
+/// Issue #10: Default maximum number of consecutive refinances in a loan chain.
+/// A value of 3 means a borrower can refinance up to 3 times before needing to
+/// close the chain and start fresh.
+pub const DEFAULT_MAX_REFINANCES_PER_LOAN_CHAIN: u32 = 3;
+
+/// Issue #10: Default minimum cooldown between consecutive refinances, in seconds.
+/// 7 days prevents rapid chaining that could abuse prepayment-penalty timing.
+pub const DEFAULT_REFINANCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Default liquidity mining reward rate in basis points per epoch (50 = 0.5% per 7 days).
 pub const DEFAULT_LIQUIDITY_MINING_RATE_BPS: u32 = 50;
 
@@ -1099,6 +1108,12 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+
+    // ── Issue #10: Refinance chain limits ────────────────────────────────────
+    /// borrower → u32: how many refinances have been chained off the original loan
+    RefinanceChainCount(Address),
+    /// borrower → u64: timestamp of the most recent refinance
+    LastRefinancedAt(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -2001,6 +2016,14 @@ pub struct Config {
     /// Issue #1071: Maximum insurance payout as a percentage of total slashed amount
     /// (in basis points, e.g. 2500 = 25%).
     pub insurance_max_payout_bps: u32,
+    /// Issue #10: Maximum number of consecutive refinances allowed in a single loan
+    /// chain before the chain must be closed.  0 means no limit.
+    /// Default: `DEFAULT_MAX_REFINANCES_PER_LOAN_CHAIN` (3).
+    pub max_refinances_per_loan_chain: u32,
+    /// Issue #10: Minimum time (in seconds) a borrower must wait between consecutive
+    /// refinances.  0 means no cooldown.
+    /// Default: `DEFAULT_REFINANCE_COOLDOWN_SECS` (7 days).
+    pub refinance_cooldown_secs: u64,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
