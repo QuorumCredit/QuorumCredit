@@ -137,6 +137,12 @@ mod cross_chain_governance_test;
 mod cross_chain_auction_test;
 #[cfg(test)]
 mod liquidity_farming_test;
+#[cfg(test)]
+mod guarantor_test;
+#[cfg(test)]
+mod syndicate_execution_test;
+#[cfg(test)]
+mod vouch_reputation_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -3247,6 +3253,45 @@ impl QuorumCreditContract {
         crate::get_insurance_pool_balance(env)
     }
 
+    // ── Issue #1172/#1406: Guarantor coverage ─────────────────────────────────
+
+    /// Locks `guarantee_amount` of `token` from `guarantor_address` into the
+    /// contract as collateral backing the loan (#1406).
+    pub fn request_guarantor_for_loan(
+        env: Env,
+        loan_id: u64,
+        guarantor_address: Address,
+        guarantee_amount: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        guarantor::request_guarantor_for_loan(env, loan_id, guarantor_address, guarantee_amount, token)
+    }
+
+    /// Releases a guarantor once their obligation is over, returning the
+    /// locked collateral (#1406).
+    pub fn release_guarantor(env: Env, loan_id: u64) -> Result<(), ContractError> {
+        guarantor::release_guarantor(env, loan_id)
+    }
+
+    pub fn get_guarantor_record(env: Env, loan_id: u64) -> Result<GuarantorRecord, ContractError> {
+        guarantor::get_guarantor_record(env, loan_id)
+    }
+
+    pub fn get_guarantor_stats(env: Env, guarantor: Address) -> Result<GuarantorStats, ContractError> {
+        guarantor::get_guarantor_stats(env, guarantor)
+    }
+
+    /// Pays out a defaulted loan's locked guarantee to its vouchers pro-rata
+    /// (or the borrower if there are none), only once the loan is actually
+    /// Defaulted, and only once ever per guarantee (#1406).
+    pub fn claim_guarantor_coverage(env: Env, loan_id: u64) -> Result<i128, ContractError> {
+        guarantor::claim_guarantor_coverage(env, loan_id)
+    }
+
+    pub fn get_guarantor_reputation_multiplier(env: Env, guarantor: Address) -> Result<u32, ContractError> {
+        guarantor::get_guarantor_reputation_multiplier(env, guarantor)
+    }
+
 
 
 
@@ -4413,6 +4458,17 @@ impl QuorumCreditContract {
         proposal_id: u64,
     ) -> Option<SyndicateProposal> {
         vouch_syndication::get_syndicate_proposal(env, pool_id, proposal_id)
+    }
+
+    /// #1409: execute an Approved syndicate proposal — dissolves the pool and
+    /// returns each member's principal pro-rata. Without this, an Approved
+    /// proposal was inert: nothing in the module ever read it back to act on it.
+    pub fn execute_syndicate_proposal(
+        env: Env,
+        pool_id: u64,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        vouch_syndication::execute_syndicate_proposal(env, pool_id, proposal_id)
     }
 }
 
