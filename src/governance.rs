@@ -656,6 +656,9 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
     crate::helpers::increment_total_default_count(&env);
 
+    // Issue #1413: Demote loyalty tier on default
+    crate::loyalty::record_default_for_loyalty(&env, borrower);
+
     if remaining_vouches.is_empty() {
         env.storage()
             .persistent()

@@ -114,3 +114,20 @@ flamegraph.svg
 __pycache__/
 *.pyc
 *.pyo
+
+# Soroban / Stellar CLI cache
+.stellar/
+stellar.toml.local
+
+# proptest regressions (generated, not source)
+# proptest-regressions/  # intentionally tracked for regression detection
+
+# cargo-nextest / test output
+nextest-report/
+junit.xml
+
+# Local secrets / keys
+*.pem
+*.key
+*.p12
+*.pfx
