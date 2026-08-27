@@ -4,7 +4,7 @@
 /// priority queue so loans can be tagged Senior / Mezzanine / Junior, and default
 /// proceeds are routed through a waterfall: Senior is made whole first, then
 /// Mezzanine, then Junior absorbs any shortfall.
-use soroban_sdk::{contracttype, symbol_short, Address, Env, Vec};
+use soroban_sdk::{contracttype, symbol_short, token, Address, Env, Vec};
 
 use crate::errors::ContractError;
 use crate::helpers;
@@ -159,6 +159,18 @@ pub fn get_loan_priority_queue(env: Env) -> Vec<PriorityLoanEntry> {
 /// remainder flows to Mezzanine, and Junior absorbs whatever is left — which
 /// may be zero in a severe default. Returns the full distribution record and
 /// persists it for later audit/read-back via `get_waterfall_run`.
+///
+/// #1392: this now actually pays out — for each entry with `paid > 0`, the
+/// corresponding loan's own `token_address` is transferred from this
+/// contract to `entry.borrower`, the address recorded in the run. Previously
+/// a `WaterfallRun` was recorded with paid amounts that never moved any real
+/// funds, which is misleading for anyone reading `get_waterfall_run` as an
+/// audit trail of a completed payout.
+///
+/// The priority queue is cleared once routing succeeds, since the batch of
+/// loans it named has now been paid out — this is also the double-payout
+/// guard: calling this a second time with no queue re-created in between
+/// fails with `InvalidAmount` instead of paying the same loans again.
 pub fn route_default_proceeds(
     env: Env,
     admin_signers: Vec<Address>,
@@ -191,6 +203,20 @@ pub fn route_default_proceeds(
         remaining -= paid;
         distributed += paid;
 
+        if paid > 0 {
+            let loan = helpers::get_loan_by_id(&env, &e.loan_id)?;
+            let token_client = token::Client::new(&env, &loan.token_address);
+            token_client.transfer(&env.current_contract_address(), &e.borrower, &paid);
+
+            // Per-entry payout event, distinct from the aggregate "waterfl" event
+            // below — lets a caller watch exactly which loans/addresses were paid
+            // and in which token, rather than only the run-wide totals.
+            env.events().publish(
+                (symbol_short!("prio"), symbol_short!("payout")),
+                (e.loan_id, e.borrower.clone(), paid, loan.token_address.clone()),
+            );
+        }
+
         entries.push_back(WaterfallDistributionEntry {
             loan_id: e.loan_id,
             borrower: e.borrower.clone(),
@@ -222,6 +248,10 @@ pub fn route_default_proceeds(
     env.storage()
         .persistent()
         .set(&PriorityDataKey::WaterfallRun(run_id), &run);
+
+    // #1392: clear the queue now that this batch has actually been paid out —
+    // see the double-payout guard note in the doc comment above.
+    env.storage().persistent().remove(&PriorityDataKey::Queue);
 
     env.events().publish(
         (symbol_short!("prio"), symbol_short!("waterfl")),

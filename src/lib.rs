@@ -137,6 +137,12 @@ mod cross_chain_governance_test;
 mod cross_chain_auction_test;
 #[cfg(test)]
 mod liquidity_farming_test;
+#[cfg(test)]
+mod request_loan_yield_test;
+#[cfg(test)]
+mod loan_priority_waterfall_test;
+#[cfg(test)]
+mod factor_report_sector_region_test;
 
 pub use errors::ContractError;
 pub use types::*;

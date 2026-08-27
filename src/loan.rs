@@ -226,7 +226,13 @@ pub fn request_loan(
 
     let _deadline = now + cfg.loan_duration;
     let loan_id = next_loan_id(&env);
-    let total_yield = amount * cfg.yield_bps / 10_000;
+    // Issue #1391: `total_yield` above is already the sum of every entry pushed
+    // into `yield_distribution` in the loop — it must stay that way so
+    // repay()'s per-voucher payouts (read from YieldDistribution) can never sum
+    // to more than what the borrower actually owes (loan.total_yield). This
+    // used to be silently overwritten here with a flat `amount * cfg.yield_bps
+    // / 10_000`, discarding the age/reputation/tier-weighted computation above
+    // and letting the two figures drift apart.
 
     // Store yield distribution for repayment-time lookup
     env.storage()
