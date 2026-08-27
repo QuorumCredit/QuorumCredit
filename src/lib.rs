@@ -2005,27 +2005,26 @@ impl QuorumCreditContract {
 
     // ── Issue #1176: Social Features for Borrower Network ────────────────────
 
-    /// Set or update a borrower's profile (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Set or update a borrower's profile (Issue #1176).
     /// Allows borrowers to create their community profile with bio and sector info.
     pub fn set_borrower_profile(
-        _env: Env,
+        env: Env,
         borrower: Address,
-        _bio: String,
-        _sector: Option<String>,
-        _region: Option<String>,
+        bio: String,
+        sector: Option<String>,
+        region: Option<String>,
     ) -> Result<(), ContractError> {
         borrower.require_auth();
-        // TODO: Implement when social profile types are defined
-        Ok(())
+        social::set_borrower_profile(&env, borrower, bio, sector, region)
     }
 
-    /// Get a borrower's profile (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Get a borrower's profile (Issue #1176).
+    /// Returns a pipe-delimited string `"bio|sector|region"`.
     pub fn get_borrower_profile(
-        _env: Env,
-        _borrower: Address,
+        env: Env,
+        borrower: Address,
     ) -> Result<String, ContractError> {
-        // TODO: Implement when social profile types are defined
-        Ok(String::from_str(&_env, ""))
+        social::get_borrower_profile(&env, &borrower)
     }
 
     /// Set whether borrower consents to share success stories (Issue #1176).
@@ -5009,6 +5008,28 @@ impl QuorumCreditContract {
         staker: Address,
     ) -> Result<StakerPosition, ContractError> {
         staking_pool::get_staker_position(env, pool_id, staker)
+    }
+
+    /// Apply a loss to the staking pool, reducing staker balances proportionally.
+    /// Requires admin approval.
+    pub fn apply_staking_pool_loss(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+        loss_amount: i128,
+    ) -> Result<(), ContractError> {
+        staking_pool::apply_staking_pool_loss(env, admin_signers, pool_id, loss_amount)
+    }
+
+    /// Close a staking pool. Prevents new stakes and yield distributions.
+    /// Existing stakers can still unstake and claim yield after closure.
+    /// Requires admin approval.
+    pub fn close_staking_pool(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+    ) -> Result<(), ContractError> {
+        staking_pool::close_staking_pool(env, admin_signers, pool_id)
     }
 
     // ── Issue #1247: Referral Rewards Program ─────────────────────────────────

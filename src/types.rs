@@ -1099,6 +1099,23 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+
+    // ── Issue #1417: Borrower Social Profiles ────────────────────────────────
+    /// borrower → BorrowerProfile: community profile for a borrower
+    BorrowerProfile(Address),
+}
+
+/// Issue #1417: Borrower community profile stored on-chain.
+///
+/// Allows borrowers to describe themselves with a short bio, an optional
+/// sector (e.g. "agriculture"), and an optional region for peer-discovery.
+#[contracttype]
+#[derive(Clone)]
+pub struct BorrowerProfile {
+    pub bio: String,
+    pub sector: Option<String>,
+    pub region: Option<String>,
+    pub updated_at: u64,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

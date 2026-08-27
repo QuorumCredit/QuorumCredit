@@ -114,3 +114,9 @@ flamegraph.svg
 __pycache__/
 *.pyc
 *.pyo
+
+# proptest regression files
+proptest-regressions/
+
+# Rust doc output
+doc/
