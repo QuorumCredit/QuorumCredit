@@ -137,6 +137,21 @@ mod cross_chain_governance_test;
 mod cross_chain_auction_test;
 #[cfg(test)]
 mod liquidity_farming_test;
+// Issue #1418 — Vouch cooldown enforcement tests
+#[cfg(test)]
+mod vouch_cooldown_test;
+// Issue #1419 — Minimum stake, zero stake, and voucher balance validation tests
+#[cfg(test)]
+mod vouch_zero_stake_test;
+#[cfg(test)]
+mod vouch_min_stake_test;
+#[cfg(test)]
+mod voucher_balance_check_test;
+// Issue #1420 — Max vouchers per borrower and duplicate vouch tests
+#[cfg(test)]
+mod max_vouchers_per_borrower_test;
+#[cfg(test)]
+mod duplicate_vouch_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -2681,6 +2696,22 @@ impl QuorumCreditContract {
     /// Issue #1072: Batch apply reputation score decay to multiple borrowers.
     pub fn apply_reputation_decay_batch(env: Env, borrowers: Vec<Address>) -> Result<u32, ContractError> {
         credit_score::apply_reputation_decay_batch(&env, borrowers)
+    }
+
+    /// Issue #1421 Phase 2: Backfill historical payment records for a pre-upgrade loan.
+    ///
+    /// Admin-gated. Only allowed for loans in a terminal state (Repaid or Defaulted).
+    /// Appends the supplied `payment_records` to the `PaymentHistory(loan_id)` storage
+    /// key so credit-score timeliness calculations can be recalculated with real data.
+    ///
+    /// See `docs/credit-score-migration.md` Phase 2 for the full backfill strategy.
+    pub fn backfill_payment_history(
+        env: Env,
+        admin_signers: Vec<Address>,
+        loan_id: u64,
+        payment_records: Vec<PaymentRecord>,
+    ) -> Result<(), ContractError> {
+        admin::backfill_payment_history(env, admin_signers, loan_id, payment_records)
     }
 
     // ── Views ─────────────────────────────────────────────────────────────────

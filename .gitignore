@@ -114,3 +114,29 @@ flamegraph.svg
 __pycache__/
 *.pyc
 *.pyo
+
+# Rust incremental build / debug artifacts
+**/*.rlib
+**/*.rmeta
+**/*.d
+
+# cargo-tarpaulin / grcov coverage output
+tarpaulin-out/
+cobertura.xml
+codecov.json
+
+# Test snapshot formats (additional patterns)
+**/*.snap.new
+**/insta_snapshots/
+**/.pending-snapshots/
+
+# Local override / personal config files
+*.local.toml
+*.local.json
+.direnv/
+.envrc
+
+# Editor backup / session files
+*.orig
+Session.vim
+.netrwhist
