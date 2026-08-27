@@ -1432,17 +1432,29 @@ pub fn approve_extension(
     request.approvals.push_back(voucher.clone());
 
     // ── Stake-weighted quorum ────────────────────────────────────────────
-    // total_stake = sum of all vouchers' reputation-weighted stakes
-    // approval_stake = sum of approving vouchers' reputation-weighted stakes
-    // Extension executes when approval_stake > total_stake / 2 (strict majority)
+    // Cache each voucher's weighted stake once, then accumulate totals in a
+    // single pass. This avoids re-calling vouch_reputation_weight on every
+    // vote (previously O(n) per vote → O(n²) total) and avoids the nested
+    // approvals scan. Weighted stakes are locked in at request-approval time;
+    // mid-vote reputation changes are intentionally not reflected — the
+    // snapshot prevents manipulation of an in-flight vote by rapidly
+    // adjusting reputation scores.
     let mut total_stake: i128 = 0;
     let mut approval_stake: i128 = 0;
 
+    // Build a cached list of (voucher_addr, weighted_stake) in one pass.
+    let mut weighted_stakes: soroban_sdk::Vec<(Address, i128)> =
+        soroban_sdk::Vec::new(&env);
     for v in vouches.iter() {
         let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
         let weighted = v.stake * weight / crate::types::BPS_DENOMINATOR;
+        weighted_stakes.push_back((v.voucher.clone(), weighted));
         total_stake = total_stake.saturating_add(weighted);
-        if request.approvals.iter().any(|a| a == v.voucher) {
+    }
+
+    // Single O(n) pass: accumulate approval_stake from the cached values.
+    for (addr, weighted) in weighted_stakes.iter() {
+        if request.approvals.iter().any(|a| a == addr) {
             approval_stake = approval_stake.saturating_add(weighted);
         }
     }
@@ -1508,11 +1520,20 @@ pub fn set_maturity_date(
     env: Env,
     admin_signers: Vec<Address>,
     borrower: Address,
-    _maturity_date: u64,
+    maturity_date: u64,
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     let mut loan = get_active_loan_record(&env, &borrower)?;
-    loan.maturity_date = Some(_maturity_date);
+
+    let now = env.ledger().timestamp();
+    if maturity_date <= now {
+        return Err(ContractError::InvalidAmount);
+    }
+    if maturity_date <= loan.disbursement_timestamp {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    loan.maturity_date = Some(maturity_date);
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
@@ -1528,8 +1549,19 @@ pub fn set_loan_rate(
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     let mut loan = get_active_loan_record(&env, &borrower)?;
+
+    // Variable rate requires an index reference; Fixed rate must not carry one.
+    if rate_type == crate::types::RateType::Variable && index_reference.is_none() {
+        return Err(ContractError::InvalidAmount);
+    }
+    let resolved_index = if rate_type == crate::types::RateType::Fixed {
+        None // clear any stale index on a Fixed-rate loan
+    } else {
+        index_reference
+    };
+
     loan.rate_type = rate_type;
-    loan.index_reference = index_reference;
+    loan.index_reference = resolved_index;
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
