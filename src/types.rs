@@ -1099,6 +1099,18 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+
+    // ── Issue #1446: RBAC Migration Idempotency ──────────────────────────────
+    /// bool: true if legacy admin migration has been completed (idempotency guard)
+    RbacMigrationComplete,
+
+    // ── Issue #1448: Treasury Admin Approval Deadline ────────────────────────
+    /// proposal_id → admin_approval_deadline_timestamp (u64)
+    TreasuryAdminApprovalDeadline(u64),
+
+    // ── Issue #1449: High-Risk Feature Flags Governance ──────────────────────
+    /// feature_name → governance_proposal_id for flag changes
+    FeatureFlagProposal(String),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
