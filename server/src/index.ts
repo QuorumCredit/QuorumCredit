@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   const bus = buildBus(config.redisUrl);
   const store = new EventStore(config.indexerDbPath);
   const revocationStore = buildRevocationStore(config.redisUrl);
-  const rpcClient = buildSorobanRpcClient(config.sorobanRpc.url, config.sorobanRpc.contractId);
+  const rpcClient = buildSorobanRpcClient(config.sorobanRpc.url, config.sorobanRpc.contractId, config.sorobanRpc.keeperSecretKey);
   const paymentStore = buildRecurringPaymentStore(config.redisUrl);
 
   const bridge = new Bridge({
@@ -75,6 +75,7 @@ async function main(): Promise<void> {
     store,
     authSecret: config.authSecret,
     connectionQueueMax: config.connectionQueueMax,
+    redisUrl: config.redisUrl,
   });
 
   attachMetricsWsServer({
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
     store,
     authSecret: config.authSecret,
     connectionQueueMax: config.connectionQueueMax,
+    redisUrl: config.redisUrl,
   });
 
   bridge.start();

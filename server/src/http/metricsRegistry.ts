@@ -20,6 +20,16 @@ export class MetricsRegistry {
     this.counters.set(name, (this.counters.get(name) ?? 0) + by);
   }
 
+  /**
+   * Increment a labeled counter. The emitted metric name includes the label
+   * suffix, e.g. `incLabeledCounter("qc_ws_queue_drops_total", "loan")`
+   * produces `qc_ws_queue_drops_total{type="loan"}`.
+   */
+  incLabeledCounter(baseName: string, labelName: string, labelValue: string, by = 1): void {
+    const name = `${baseName}{${labelName}="${labelValue}"}`;
+    this.counters.set(name, (this.counters.get(name) ?? 0) + by);
+  }
+
   setGauge(name: string, value: number): void {
     this.gauges.set(name, value);
   }

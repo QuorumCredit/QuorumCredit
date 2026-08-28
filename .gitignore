@@ -17,7 +17,13 @@ test_snapshots/
 **/*.snapshot
 **/snapshot_tests/
 
-# WASM build artifacts
+# Vitest cache / coverage
+.vitest/
+coverage/
+
+# Build artifacts
+/target
+**/target
 *.wasm
 *.wasm.opt
 
