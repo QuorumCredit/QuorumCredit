@@ -348,4 +348,67 @@ mod governance_tests {
         assert_eq!(err, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
         assert!(!s.client.get_paused());
     }
+
+    // ── Issue #1443: Successor Admin Timelock & Cancellation Tests ────────────
+
+    #[test]
+    fn test_successor_admin_timelock_enforced() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let successor = Address::generate(&s.env);
+
+        // 1. Set successor admin
+        s.client.set_successor_admin(&admin_signers, &Some(successor.clone()));
+        assert_eq!(s.client.get_config().successor_admin, Some(successor.clone()));
+
+        // 2. Claim immediately (timelock of 24h not elapsed)
+        let err = s.client.try_claim_successor_admin();
+        assert_eq!(err, Err(Ok(crate::errors::ContractError::TimelockDelayNotElapsed)));
+    }
+
+    #[test]
+    fn test_successor_admin_claim_after_delay_succeeds() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let successor = Address::generate(&s.env);
+
+        // 1. Set successor admin at current time
+        let start_time = s.env.ledger().timestamp();
+        s.client.set_successor_admin(&admin_signers, &Some(successor.clone()));
+
+        // 2. Advance time past 24-hour timelock delay
+        s.env.ledger().with_mut(|l| l.timestamp = start_time + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS + 1);
+
+        // 3. Claim successor admin
+        let result = s.client.try_claim_successor_admin();
+        assert!(result.is_ok());
+
+        // 4. Verify successor was added to admins and successor_admin is cleared
+        let cfg = s.client.get_config();
+        assert!(cfg.admins.iter().any(|a| a == successor));
+        assert_eq!(cfg.successor_admin, None);
+    }
+
+    #[test]
+    fn test_successor_admin_cancellation() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let successor = Address::generate(&s.env);
+
+        let start_time = s.env.ledger().timestamp();
+        s.client.set_successor_admin(&admin_signers, &Some(successor.clone()));
+        assert_eq!(s.client.get_config().successor_admin, Some(successor.clone()));
+
+        // Current admins cancel the designation
+        let cancel_res = s.client.try_cancel_successor_admin(&admin_signers);
+        assert!(cancel_res.is_ok());
+        assert_eq!(s.client.get_config().successor_admin, None);
+
+        // Advance time past 24 hours
+        s.env.ledger().with_mut(|l| l.timestamp = start_time + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS + 10);
+
+        // Attempting to claim must fail with UnauthorizedCaller
+        let claim_res = s.client.try_claim_successor_admin();
+        assert_eq!(claim_res, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
+    }
 }

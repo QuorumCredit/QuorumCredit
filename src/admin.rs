@@ -1032,7 +1032,7 @@ pub fn accept_admin(env: Env) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Designate a successor admin who can claim admin rights without multi-sig approval.
+/// Designate a successor admin who can claim admin rights after a timelock delay.
 /// Only the current admin set can designate a successor. Pass `None` to clear.
 pub fn set_successor_admin(
     env: Env,
@@ -1053,15 +1053,48 @@ pub fn set_successor_admin(
     cfg.successor_admin = successor.clone();
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    if successor.is_some() {
+        let claimable_at = env.ledger().timestamp() + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS;
+        env.storage().instance().set(&DataKey::SuccessorAdminClaimableAt, &claimable_at);
+    } else {
+        env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+    }
+
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("successor")),
         (admin_signers.get(0).unwrap(), successor),
     );
 }
 
-/// Claim admin rights as the designated successor admin.
+/// Issue #1443: Cancel/revoke a pending successor admin designation before it is claimed.
+/// Requires admin multi-sig approval.
+pub fn cancel_successor_admin(
+    env: Env,
+    admin_signers: Vec<Address>,
+) -> Result<(), ContractError> {
+    crate::rbac::require_admin_approval_for_action(
+        &env,
+        &admin_signers,
+        crate::rbac::AdminAction::RemoveAdmin,
+    )?;
+
+    let mut cfg = config(&env);
+    let prev_successor = cfg.successor_admin.take();
+
+    env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("cx_succ")),
+        (admin_signers.get(0).unwrap(), prev_successor),
+    );
+
+    Ok(())
+}
+
+/// Issue #1443: Claim admin rights as the designated successor admin after the timelock delay has elapsed.
 /// The caller must match the stored `successor_admin` address and authenticate.
-/// On success, the caller is added to the admin list and the successor slot is cleared.
+/// On success, the caller is added to the admin list, the successor slot is cleared, and a distinct event is emitted.
 pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
     let mut cfg = config(&env);
     let successor = cfg
@@ -1071,13 +1104,25 @@ pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
 
     successor.require_auth();
 
+    let claimable_at: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::SuccessorAdminClaimableAt)
+        .unwrap_or(0);
+
+    if env.ledger().timestamp() < claimable_at {
+        return Err(ContractError::TimelockDelayNotElapsed);
+    }
+
     cfg.admins.push_back(successor.clone());
     cfg.successor_admin = None;
+    env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    // Emit a distinct event when a successor is claimed so monitoring can alert immediately
     env.events().publish(
-        (symbol_short!("admin"), symbol_short!("cl_succ")),
-        successor,
+        (symbol_short!("admin"), symbol_short!("succ_clm")),
+        (successor, env.ledger().timestamp()),
     );
 
     Ok(())
@@ -2138,6 +2183,12 @@ fn execute_governance_action_internal(
             }
             cfg.successor_admin = successor.clone();
             env.storage().instance().set(&DataKey::Config, &cfg);
+            if successor.is_some() {
+                let claimable_at = env.ledger().timestamp() + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS;
+                env.storage().instance().set(&DataKey::SuccessorAdminClaimableAt, &claimable_at);
+            } else {
+                env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+            }
         }
         GovernanceAction::SetConfirmationRequired(enabled) => {
             let mut cfg = config(env);

@@ -98,6 +98,7 @@ through the standard governance flow to enable/disable.
 | Slash proposal (per-borrower) | `SlashVoteQuorum` bps of eligible voucher stake | None beyond vote collection; executes once quorum is met | Re-proposal cooldown: `DEFAULT_SLASH_PROPOSAL_COOLDOWN_SECS` = 7 days after a completed slash | `src/types.rs` |
 | Auto-slash (deadline default) | None (permissionless) | Loan `deadline` must have passed | N/A | `src/lib.rs` |
 | Withdrawal requests (voucher-side, not admin governance but timelocked similarly) | N/A | `WITHDRAWAL_TIMELOCK_DELAY` = 24 hours | N/A | `src/types.rs` |
+| Successor admin claim delay (`claim_successor_admin`) | Multi-sig designation (`admin_threshold`) | `SUCCESSOR_CLAIM_TIMELOCK_SECS` = 24 hours | N/A (cancellable by admins via `cancel_successor_admin`) | `src/types.rs`, `src/admin.rs` |
 | Vouch cooldown between successive vouches by the same voucher | N/A | `DEFAULT_VOUCH_COOLDOWN_SECS` = 24 hours | N/A | `src/types.rs` |
 | Voting period referenced by `Config.voting_period_seconds` (general-purpose governance vote window, where applicable) | N/A | `DEFAULT_VOTING_PERIOD_SECONDS` = 7 days | N/A | `src/types.rs` |
 

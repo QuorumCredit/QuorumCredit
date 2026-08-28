@@ -2963,6 +2963,13 @@ impl QuorumCreditContract {
         admin::claim_successor_admin(env)
     }
 
+    pub fn cancel_successor_admin(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        admin::cancel_successor_admin(env, admin_signers)
+    }
+
     // ── Issue #14: Cross-chain loan portability ───────────────────────────────
 
 
