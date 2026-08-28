@@ -1104,13 +1104,18 @@ pub fn get_prepayment_penalty_bps(env: Env) -> u32 {
         .unwrap_or(0)
 }
 
-/// Issue #554: Propose an admin action (e.g., pause, slash, config change).
+/// Issue #554 / #1442: Propose an admin action (e.g., pause, slash, config change).
 pub fn propose_admin_action(
     env: Env,
     proposer: Address,
-    action_type: soroban_sdk::String,
+    action_type: GovernanceAction,
 ) -> Result<u64, ContractError> {
     proposer.require_auth();
+
+    let cfg = config(&env);
+    if !cfg.admins.iter().any(|a| a == proposer) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
 
     let action_id: u64 = env
         .storage()
@@ -1144,7 +1149,7 @@ pub fn propose_admin_action(
     Ok(action_id)
 }
 
-/// Issue #554: Approve an admin action. Requires admin signature.
+/// Issue #554 / #1442: Approve an admin action. Requires admin signature.
 pub fn approve_admin_action(
     env: Env,
     admin: Address,
@@ -1186,7 +1191,7 @@ pub fn approve_admin_action(
     Ok(())
 }
 
-/// Issue #554: Execute an admin action if threshold is met.
+/// Issue #554 / #1442: Execute an admin action if threshold is met.
 pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
     let mut proposal: AdminActionProposal = env
         .storage()
@@ -1203,6 +1208,9 @@ pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractErro
         return Err(ContractError::UnauthorizedCaller);
     }
 
+    // Dispatch the concrete state change
+    execute_governance_action_internal(&env, &proposal.action_type)?;
+
     proposal.executed = true;
     env.storage()
         .instance()
@@ -1214,6 +1222,13 @@ pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractErro
     );
 
     Ok(())
+}
+
+/// Get an admin action proposal by ID.
+pub fn get_admin_action_proposal(env: Env, action_id: u64) -> Option<AdminActionProposal> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminAction(action_id))
 }
 
 // ── Issue #682: Multi-sig config update proposals ─────────────────────────────

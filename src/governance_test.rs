@@ -256,4 +256,96 @@ mod governance_tests {
         let res3 = s.client.vote_slash(&v3, &borrower, &true);
         assert_eq!(res3, VoteSlashResult::VoteCounted);
     }
+
+    // ── Issue #1442: Typed Admin Action Execution Tests ───────────────────────
+
+    #[test]
+    fn test_admin_action_pause_unpause_executes_end_to_end() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+        let admin2 = s.admins.get(1).unwrap();
+
+        assert!(!s.client.get_paused());
+
+        // 1. Propose Pause action
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::Pause,
+        );
+
+        // 2. Approve from admin1 and admin2 (threshold = 2)
+        s.client.approve_admin_action(&admin1, &action_id);
+        s.client.approve_admin_action(&admin2, &action_id);
+
+        // 3. Execute action
+        s.client.execute_admin_action(&action_id);
+
+        // Assert concrete state change occurred
+        assert!(s.client.get_paused());
+
+        // 4. Propose and execute Unpause action
+        let unpause_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::Unpause,
+        );
+        s.client.approve_admin_action(&admin1, &unpause_id);
+        s.client.approve_admin_action(&admin2, &unpause_id);
+        s.client.execute_admin_action(&unpause_id);
+
+        assert!(!s.client.get_paused());
+    }
+
+    #[test]
+    fn test_admin_action_set_protocol_fee_executes_end_to_end() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+        let admin2 = s.admins.get(1).unwrap();
+
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::SetProtocolFee(500),
+        );
+
+        s.client.approve_admin_action(&admin1, &action_id);
+        s.client.approve_admin_action(&admin2, &action_id);
+        s.client.execute_admin_action(&action_id);
+
+        assert_eq!(s.client.get_protocol_fee(), 500);
+    }
+
+    #[test]
+    fn test_admin_action_set_yield_bps_executes_end_to_end() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+        let admin2 = s.admins.get(1).unwrap();
+
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::SetYieldBps(350),
+        );
+
+        s.client.approve_admin_action(&admin1, &action_id);
+        s.client.approve_admin_action(&admin2, &action_id);
+        s.client.execute_admin_action(&action_id);
+
+        assert_eq!(s.client.get_config().yield_bps, 350);
+    }
+
+    #[test]
+    fn test_admin_action_cannot_execute_below_threshold() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::Pause,
+        );
+
+        // Only 1 approval (threshold is 2)
+        s.client.approve_admin_action(&admin1, &action_id);
+
+        let err = s.client.try_execute_admin_action(&action_id);
+        assert_eq!(err, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
+        assert!(!s.client.get_paused());
+    }
 }

@@ -53,6 +53,21 @@ not just one — see [ADR 0005](./adr/0005-multisig-admin-and-governance.md) for
 7. **Expire (automatic).** If a proposal is not executed by `expires_at`, it lapses to
    `Expired` and must be re-proposed from scratch if still needed.
 
+### Multi-Sig Admin Action Proposals (`propose_admin_action`)
+
+For threshold-gated administrative operations without queued delay scheduling, the contract provides
+`propose_admin_action`, `approve_admin_action`, and `execute_admin_action`. These proposals take a typed
+`GovernanceAction` enum that encodes the target action and parameters:
+
+- **Emergency Controls**: `Pause`, `Unpause`
+- **Fee Management**: `SetProtocolFee(u32)`, `SetFeeTreasury(Address)`, `SetPrepaymentPenaltyBps(u32)`
+- **Token Allow-List**: `AddAllowedToken(Address)`, `RemoveAllowedToken(Address)`
+- **Parameter Tuning**: `SetMinStake(i128)`, `SetMaxLoanAmount(i128)`, `SetMinVouchers(u32)`, `SetMaxVouchersPerBorrower(u32)`, `SetMaxLoanToStakeRatio(u32)`, `SetGracePeriod(u64)`, `SetYieldBps(i128)`, `SetSlashBps(i128)`, `SetDynamicSlashThreshold(bool)`, `SetLoanSizeSlashEnabled(bool)`, `SetLoanSizeSlashMaxBps(i128)`, `SetConfirmationRequired(bool)`, `SetAdminCompensationBps(u32)`, `SetRemovalVoteThreshold(u32)`, `SetRateLimitConfig(RateLimitConfig)`
+- **Admin Set & Governance**: `SetAdminThreshold(u32)`, `AddAdmin(Address)`, `RemoveAdmin(Address)`, `RotateAdmin(Address, Address)`, `SetSuccessorAdmin(Option<Address>)`, `SetReputationNft(Address)`, `SetWhitelistEnabled(bool)`, `BlacklistBorrower(Address)`
+- **Contract Upgrades**: `Upgrade(BytesN<32>)`
+
+Upon reaching `Config.admin_threshold` approvals, calling `execute_admin_action` dispatches and applies the concrete state change on-chain immediately.
+
 ### Special case: Slash proposals
 
 Slashing a borrower's vouches is high-impact and time-sensitive, so it has its own

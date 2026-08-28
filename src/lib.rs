@@ -2836,6 +2836,38 @@ impl QuorumCreditContract {
         admin::get_governance_proposal_count(env)
     }
 
+    // ── Admin Action Proposals (Issue #554 / #1442) ───────────────────────────
+
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        action_type: GovernanceAction,
+    ) -> Result<u64, ContractError> {
+        admin::propose_admin_action(env, proposer, action_type)
+    }
+
+    pub fn approve_admin_action(
+        env: Env,
+        admin: Address,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::approve_admin_action(env, admin, action_id)
+    }
+
+    pub fn execute_admin_action(
+        env: Env,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::execute_admin_action(env, action_id)
+    }
+
+    pub fn get_admin_action_proposal(
+        env: Env,
+        action_id: u64,
+    ) -> Option<AdminActionProposal> {
+        admin::get_admin_action_proposal(env, action_id)
+    }
+
     // ── On-Chain Credit Score with Tiered Rewards ───────────────────────────────
 
     pub fn update_credit_score(env: Env, borrower: Address) -> Result<(), ContractError> {

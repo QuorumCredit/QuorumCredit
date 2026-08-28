@@ -3244,10 +3244,10 @@ pub struct CooldownBypassRequest {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminActionProposal {
     pub id: u64,
-    pub action_type: soroban_sdk::String,
+    pub action_type: GovernanceAction,
     pub proposer: Address,
     pub approvals: Vec<Address>,
     pub created_at: u64,
