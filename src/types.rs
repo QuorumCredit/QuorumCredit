@@ -1099,6 +1099,18 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+    
+    // ── Issue #1446: Legacy admin migration idempotency ──────────────────────
+    /// bool: whether legacy admin migration has been completed (guard against re-running)
+    LegacyAdminMigrationComplete,
+    
+    // ── Issue #1449: High-risk feature flag governance ──────────────────────────
+    /// feature_flag_name → FeatureFlagGovernanceProposal
+    FeatureFlagProposal(String),
+    /// feature_flag_name → u64: unix timestamp when active proposal was created
+    FeatureFlagProposalActive(String),
+    /// (feature_flag_name, voter) → bool: has this voter voted on the proposal
+    FeatureFlagVote(String, Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
