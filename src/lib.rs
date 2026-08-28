@@ -2480,6 +2480,23 @@ impl QuorumCreditContract {
         governance::finalize_appeal(env, borrower)
     }
 
+    // ── Slashing Transparency Reports & Backfill (Issue #656 / #1444) ─────────
+
+    pub fn generate_slashing_report(env: Env, month_id: u64) -> SlashingReportRecord {
+        governance::generate_slashing_report(env, month_id)
+    }
+
+    pub fn get_slashing_report(env: Env, month_id: u64) -> Option<SlashingReportRecord> {
+        governance::get_slashing_report(env, month_id)
+    }
+
+    pub fn backfill_slashes_by_month(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<u32, ContractError> {
+        governance::backfill_slashes_by_month(env, admin_signers)
+    }
+
     // ── Admin management ─────────────────────────────────────────────────────
 
     pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Address) {

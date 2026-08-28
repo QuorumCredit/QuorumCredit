@@ -411,4 +411,98 @@ mod governance_tests {
         let claim_res = s.client.try_claim_successor_admin();
         assert_eq!(claim_res, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
     }
+
+    // ── Issue #1444: SlashesByMonth Index & Slashing Reports Tests ────────────
+
+    #[test]
+    fn test_slashing_report_indexed_by_month_and_backfill() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let token_admin = StellarAssetClient::new(&s.env, &s.token);
+
+        let borrower = Address::generate(&s.env);
+        let voucher = Address::generate(&s.env);
+        token_admin.mint(&voucher, &1_000_000);
+
+        s.client.vouch(&voucher, &borrower, &1_000_000, &s.token, &None);
+        s.client.request_loan(&borrower, &500_000, &100_000, &String::from_str(&s.env, "test"), &s.token);
+
+        let month_1 = 100u64;
+        let month_1_timestamp = month_1 * crate::types::MONTHLY_PERIOD_SECS + 500;
+        s.env.ledger().with_mut(|l| l.timestamp = month_1_timestamp);
+
+        // Queue and execute slash in month 1
+        s.client.queue_slash(&admin_signers, &borrower, &100_000);
+        s.client.execute_queued_slashes(&admin_signers);
+
+        // Advance to month 2
+        let month_2 = 101u64;
+        let month_2_timestamp = month_2 * crate::types::MONTHLY_PERIOD_SECS + 200;
+        s.env.ledger().with_mut(|l| l.timestamp = month_2_timestamp);
+
+        // Generate report for month 1
+        let report_m1 = s.client.generate_slashing_report(&month_1);
+        assert_eq!(report_m1.month_id, month_1);
+        assert_eq!(report_m1.total_slashes, 1);
+        assert_eq!(report_m1.total_slashed, 500_000);
+        assert_eq!(report_m1.slash_ids.len(), 1);
+
+        // Generate report for month 2 (empty)
+        let report_m2 = s.client.generate_slashing_report(&month_2);
+        assert_eq!(report_m2.month_id, month_2);
+        assert_eq!(report_m2.total_slashes, 0);
+        assert_eq!(report_m2.total_slashed, 0);
+        assert_eq!(report_m2.slash_ids.len(), 0);
+
+        // Verify get_slashing_report retrieves persisted reports
+        let cached_m1 = s.client.get_slashing_report(&month_1).unwrap();
+        assert_eq!(cached_m1.total_slashes, 1);
+    }
+
+    #[test]
+    fn test_backfill_slashes_by_month_migrates_records() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let borrower = Address::generate(&s.env);
+
+        let month_target = 50u64;
+        let timestamp = month_target * crate::types::MONTHLY_PERIOD_SECS + 100;
+
+        // Manually simulate a legacy slash record without SlashesByMonth index
+        let legacy_record = crate::types::SlashRecord {
+            slash_id: 1,
+            borrower: borrower.clone(),
+            loan_id: 1,
+            loan_amount: 100_000,
+            total_slashed: 50_000,
+            slash_timestamp: timestamp,
+            recovery_amount: 0,
+            reversal_reason: None,
+            reversed: false,
+            effective_slash_bps: 1000,
+        };
+
+        s.env.as_contract(&s.contract_id, || {
+            s.env.storage().persistent().set(&DataKey::SlashRecord(1), &legacy_record);
+            s.env.storage().instance().set(&DataKey::SlashRecordCounter, &1u64);
+        });
+
+        // Before backfill, month_target report is empty (index-based)
+        let pre_report = s.client.generate_slashing_report(&month_target);
+        assert_eq!(pre_report.total_slashes, 0);
+
+        // Run backfill
+        let backfilled = s.client.backfill_slashes_by_month(&admin_signers);
+        assert_eq!(backfilled, 1);
+
+        // Re-running backfill is idempotent
+        let second_backfill = s.client.backfill_slashes_by_month(&admin_signers);
+        assert_eq!(second_backfill, 0);
+
+        // After backfill, report successfully includes the migrated record
+        let post_report = s.client.generate_slashing_report(&month_target);
+        assert_eq!(post_report.total_slashes, 1);
+        assert_eq!(post_report.total_slashed, 50_000);
+        assert_eq!(post_report.slash_ids.get(0).unwrap(), 1);
+    }
 }

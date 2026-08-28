@@ -655,6 +655,8 @@ pub enum DataKey {
     /// Monthly slashing transparency report: month_id → SlashingReportRecord.
     /// month_id = unix_timestamp / MONTHLY_PERIOD_SECS
     SlashingReport(u64),
+    /// Issue #1444: Per-month index of slash record IDs: month_id → Vec<u64>
+    SlashesByMonth(u64),
     /// Per-vouch insurance opt-in: (voucher, borrower) → bool (insured).
     VoucherInsurance(Address, Address),
     /// Cross-chain bridge validation status: (voucher, chain_id) → bool.
