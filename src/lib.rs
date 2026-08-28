@@ -117,8 +117,8 @@ mod tests;
 mod fuzz_stake_testing;
 #[cfg(test)]
 mod circuit_breaker_insurance_integration_test;
-// #[cfg(test)]
-// mod rbac_enforcement_test; // private API drift — blocks unrelated tests
+#[cfg(test)]
+mod rbac_enforcement_test;
 #[cfg(test)]
 mod contingent_loan_test;
 #[cfg(test)]

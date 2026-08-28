@@ -22,6 +22,18 @@ issue to reconcile the docs.
 | **Borrower** | Anyone with an active or historical loan | No governance authority; subject to governance outcomes (config changes, slashing) |
 | **RBAC permission holders** | Granted fine-grained capability bits via `src/rbac.rs` (independent of the admin set) | Scoped capabilities (e.g. `can_request_loan`) that are not governance actions but are also access-controlled |
 
+### Admin RBAC Role Matrix (`src/rbac.rs`)
+
+Admins are assigned granular roles defining the permissions they may exercise. Every admin action requires both the numeric threshold of approvals AND that all signing admins possess the required permission for that action.
+
+| Admin Role | Permissions Granted | Allowed Admin Actions |
+|---|---|---|
+| **`SuperAdmin`** | `Slash`, `Pause`, `UpdateConfig`, `ManageFees`, `ReadAnalytics` | All admin actions (emergency pause, slashes, config updates, fee management, admin set rotations, upgrades). |
+| **`Treasurer`** | `UpdateConfig`, `ManageFees` | Fee management, parameter tuning, token allow-listing, config updates. |
+| **`Monitor`** | `ReadAnalytics` | Read-only access to metrics, reports, and audit logs. |
+| **`Slasher`** | `Slash`, `ReadAnalytics` | Queue and execute borrower slashes, view analytics and audit logs. |
+| **`GovernanceOperator`** | `UpdateConfig` | Propose and approve protocol config updates, threshold changes, and non-financial governance adjustments. |
+
 **Key distinction:** "Admin" is a set of addresses with a **threshold** (`Config.admin_threshold`),
 not a single privileged key. Every governance action below requires that many admin approvals,
 not just one — see [ADR 0005](./adr/0005-multisig-admin-and-governance.md) for why.

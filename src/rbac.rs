@@ -27,7 +27,7 @@ pub enum AdminAction {
 }
 
 /// Map each AdminAction to the required AdminPermission
-fn get_required_permission(action: AdminAction) -> AdminPermission {
+pub fn get_required_permission(action: AdminAction) -> AdminPermission {
     match action {
         AdminAction::AddAdmin
         | AdminAction::RemoveAdmin
@@ -93,6 +93,10 @@ pub fn check_admin_permission(
             matches!(permission, AdminPermission::UpdateConfig | AdminPermission::ManageFees)
         }
         AdminRole::Monitor => matches!(permission, AdminPermission::ReadAnalytics),
+        AdminRole::Slasher => {
+            matches!(permission, AdminPermission::Slash | AdminPermission::ReadAnalytics)
+        }
+        AdminRole::GovernanceOperator => matches!(permission, AdminPermission::UpdateConfig),
     }
 }
 
@@ -253,6 +257,54 @@ mod tests {
         assert!(!check_admin_permission(
             &AdminRole::Monitor,
             &AdminPermission::ManageFees
+        ));
+    }
+
+    #[test]
+    fn test_slasher_permissions() {
+        assert!(check_admin_permission(
+            &AdminRole::Slasher,
+            &AdminPermission::Slash
+        ));
+        assert!(check_admin_permission(
+            &AdminRole::Slasher,
+            &AdminPermission::ReadAnalytics
+        ));
+        assert!(!check_admin_permission(
+            &AdminRole::Slasher,
+            &AdminPermission::Pause
+        ));
+        assert!(!check_admin_permission(
+            &AdminRole::Slasher,
+            &AdminPermission::UpdateConfig
+        ));
+        assert!(!check_admin_permission(
+            &AdminRole::Slasher,
+            &AdminPermission::ManageFees
+        ));
+    }
+
+    #[test]
+    fn test_governance_operator_permissions() {
+        assert!(check_admin_permission(
+            &AdminRole::GovernanceOperator,
+            &AdminPermission::UpdateConfig
+        ));
+        assert!(!check_admin_permission(
+            &AdminRole::GovernanceOperator,
+            &AdminPermission::Slash
+        ));
+        assert!(!check_admin_permission(
+            &AdminRole::GovernanceOperator,
+            &AdminPermission::Pause
+        ));
+        assert!(!check_admin_permission(
+            &AdminRole::GovernanceOperator,
+            &AdminPermission::ManageFees
+        ));
+        assert!(!check_admin_permission(
+            &AdminRole::GovernanceOperator,
+            &AdminPermission::ReadAnalytics
         ));
     }
 

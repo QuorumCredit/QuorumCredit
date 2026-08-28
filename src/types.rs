@@ -235,6 +235,8 @@ pub enum AdminRole {
     SuperAdmin,
     Treasurer,
     Monitor,
+    Slasher,
+    GovernanceOperator,
 }
 
 #[contracttype]
