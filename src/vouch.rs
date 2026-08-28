@@ -1895,6 +1895,10 @@ pub fn compute_and_store_merkle_root(env: Env, borrower: Address) -> Result<soro
         return Err(ContractError::NoVouchesForBorrower);
     }
 
+    if vouches.len() > crate::merkle_tree::MAX_VOUCH_SET_SIZE as usize {
+        return Err(ContractError::InvalidAmount);
+    }
+
     // Each leaf commits to a vouch's (voucher, stake, token, vouch_timestamp)
     // tuple via crate::merkle_tree::hash_leaf. See docs/vouch-merkle-proof.md
     // for the full leaf/root format and its guarantees.
