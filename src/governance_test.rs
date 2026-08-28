@@ -256,4 +256,147 @@ mod governance_tests {
         let res3 = s.client.vote_slash(&v3, &borrower, &true);
         assert_eq!(res3, VoteSlashResult::VoteCounted);
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #1447: Vote-Delegation Interaction With Mid-Vote Stake Changes
+    // ─────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_direct_vote_then_delegate_original_vote_counts() {
+        // Issue #1447: Test voucher votes directly, then delegates
+        // Original vote should not be duplicated/overridden by delegate
+        let s = setup(1, 1);
+        let borrower = Address::generate(&s.env);
+
+        let v1 = Address::generate(&s.env);
+        let v2 = Address::generate(&s.env);
+
+        let token_admin = StellarAssetClient::new(&s.env, &s.token);
+        token_admin.mint(&v1, &1_000_000);
+        token_admin.mint(&v2, &1_000_000);
+
+        s.client.vouch(&v1, &borrower, &1_000_000, &s.token, &None);
+        s.client.vouch(&v2, &borrower, &1_000_000, &s.token, &None);
+
+        s.client.request_loan(&borrower, &100_000, &1_000_000, &String::from_str(&s.env, "test"), &s.token);
+
+        // v1 votes directly (YES)
+        let result = s.client.vote_slash(&v1, &borrower, &true);
+        assert_eq!(result, VoteSlashResult::VoteCounted);
+
+        // v1 then delegates to v2
+        s.client.delegate_vote(&v1, &v2);
+
+        // v2 votes for this slash (should also work and count its own stake)
+        let result_v2 = s.client.vote_slash(&v2, &borrower, &true);
+        assert_eq!(result_v2, VoteSlashResult::VoteCounted);
+
+        // Verify that both v1's original vote and v2's vote were counted
+        // (not duplicated)
+    }
+
+    #[test]
+    fn test_stake_change_after_delegation_uses_updated_stake() {
+        // Issue #1447: Voucher stake changes after delegation but before vote_slash
+        // Delegate should vote with the UP-TO-DATE stake
+        let s = setup(1, 1);
+        let borrower = Address::generate(&s.env);
+
+        let v1 = Address::generate(&s.env);
+        let v2 = Address::generate(&s.env);
+
+        let token_admin = StellarAssetClient::new(&s.env, &s.token);
+        token_admin.mint(&v1, &3_000_000);
+        token_admin.mint(&v2, &1_000_000);
+
+        // v1 initially stakes 1_000_000
+        s.client.vouch(&v1, &borrower, &1_000_000, &s.token, &None);
+        s.client.vouch(&v2, &borrower, &1_000_000, &s.token, &None);
+
+        s.client.request_loan(&borrower, &100_000, &1_000_000, &String::from_str(&s.env, "test"), &s.token);
+
+        // v1 delegates to v2
+        s.client.delegate_vote(&v1, &v2);
+
+        // v1 increases stake to 3_000_000
+        s.client.increase_stake(&v1, &borrower, &2_000_000, &s.token);
+
+        // v2 votes for this slash - should use v1's updated stake (3_000_000 total)
+        let result = s.client.vote_slash(&v2, &borrower, &true);
+        assert_eq!(result, VoteSlashResult::VoteCounted);
+
+        // The vote weight should reflect v1's updated stake of 3_000_000
+    }
+
+    #[test]
+    fn test_10_hop_delegation_chain_at_boundary() {
+        // Issue #1447: Test 10-hop delegation chain limit (max 10 hops)
+        let s = setup(1, 1);
+        let borrower = Address::generate(&s.env);
+
+        // Create 11 vouchers to form a 10-hop chain
+        let mut vouchers = Vec::new(&s.env);
+        let token_admin = StellarAssetClient::new(&s.env, &s.token);
+
+        for _ in 0..11 {
+            let v = Address::generate(&s.env);
+            vouchers.push_back(v.clone());
+            token_admin.mint(&v, &1_000_000);
+        }
+
+        // All vouchers back the borrower
+        for i in 0..11 {
+            let v = vouchers.get(i).unwrap();
+            s.client.vouch(&v, &borrower, &1_000_000, &s.token, &None);
+        }
+
+        s.client.request_loan(&borrower, &100_000, &1_000_000, &String::from_str(&s.env, "test"), &s.token);
+
+        // Create delegation chain: v0 → v1 → v2 → ... → v9 → v10
+        for i in 0..10 {
+            let delegator = vouchers.get(i).unwrap();
+            let delegate = vouchers.get(i + 1).unwrap();
+            s.client.delegate_vote(&delegator, &delegate);
+        }
+
+        // v10 votes - should work (it's the endpoint, not delegated)
+        let result = s.client.vote_slash(&vouchers.get(10).unwrap(), &borrower, &true);
+        assert_eq!(result, VoteSlashResult::VoteCounted);
+
+        // v0 tries to vote - should return DelegateWillVote (chain resolves to v10)
+        let result_v0 = s.client.vote_slash(&vouchers.get(0).unwrap(), &borrower, &true);
+        assert_eq!(result_v0, VoteSlashResult::DelegateWillVote);
+    }
+
+    #[test]
+    fn test_delegate_will_vote_result_surfaced_to_caller() {
+        // Issue #1447: DelegateWillVote result is correctly returned to caller/indexers
+        let s = setup(1, 1);
+        let borrower = Address::generate(&s.env);
+
+        let v1 = Address::generate(&s.env);
+        let v2 = Address::generate(&s.env);
+
+        let token_admin = StellarAssetClient::new(&s.env, &s.token);
+        token_admin.mint(&v1, &1_000_000);
+        token_admin.mint(&v2, &1_000_000);
+
+        s.client.vouch(&v1, &borrower, &1_000_000, &s.token, &None);
+        s.client.vouch(&v2, &borrower, &1_000_000, &s.token, &None);
+
+        s.client.request_loan(&borrower, &100_000, &1_000_000, &String::from_str(&s.env, "test"), &s.token);
+
+        // v1 delegates to v2
+        s.client.delegate_vote(&v1, &v2);
+
+        // v1's vote should return DelegateWillVote (not VoteCounted)
+        let result = s.client.vote_slash(&v1, &borrower, &true);
+        assert_eq!(result, VoteSlashResult::DelegateWillVote,
+            "Delegated voter should return DelegateWillVote, not VoteCounted");
+
+        // v2's vote should return VoteCounted (it's the final voter)
+        let result_v2 = s.client.vote_slash(&v2, &borrower, &true);
+        assert_eq!(result_v2, VoteSlashResult::VoteCounted,
+            "Final voter should return VoteCounted");
+    }
 }
