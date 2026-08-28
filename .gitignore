@@ -114,3 +114,67 @@ flamegraph.svg
 __pycache__/
 *.pyc
 *.pyo
+
+# Test snapshots & coverage
+**/__snapshots__/
+**/*.snap
+**/snapshots/
+**/*.snapshot
+coverage/
+.nyc_output/
+lcov.info
+tarpaulin-report.html
+tarpaulin-report.json
+*.profraw
+*.profdata
+
+# Node modules / build output
+dashboard/node_modules/
+server/node_modules/
+services/*/node_modules/
+tools/*/node_modules/
+node_modules/
+server/dist/
+dashboard/dist/
+services/*/dist/
+.npm/
+.yarn/
+
+# Mutation testing output
+mutants.out/
+mutants.out.lock
+
+# Runtime backup archives/snapshots
+/backups/
+
+# Indexer SQLite database
+indexer.db
+indexer.db-*
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Canary deployment decision history
+/deploy/
+
+# Restore-drill state files
+*.state.json
+
+# TypeScript build info
+*.tsbuildinfo
+*.d.ts.map
+
+# Temporary / OS files
+*.tmp
+*.temp
+.DS_Store
+ehthumbs.db
+
+# Kiro agent scratch files
+.kiro/agents/
+
+# Benchmark / profiling output
+perf.data
+perf.data.old
+flamegraph.svg
+*.perf
