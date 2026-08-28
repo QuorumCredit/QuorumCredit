@@ -1111,6 +1111,8 @@ pub enum DataKey {
     // ── Issue #1449: High-Risk Feature Flags Governance ──────────────────────
     /// feature_name → governance_proposal_id for flag changes
     FeatureFlagProposal(String),
+    /// u64: monotonically increasing feature flag proposal counter
+    FeatureFlagProposalCounter,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

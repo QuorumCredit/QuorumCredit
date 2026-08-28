@@ -337,4 +337,8 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
+    /// This operation requires governance voting but admin-only changes are not allowed.
+    GovernanceVotingRequired = 221,
+    /// The operation has already been executed and cannot be executed again.
+    AlreadyExecuted = 222,
 }
