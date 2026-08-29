@@ -789,3 +789,234 @@ describe("#1511 useLoanSocket — connect_error auth vs transient", () => {
     expect(testStore.getState().loans.socketError).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1510 — useMetricsSocket exponential backoff and give-up state
+// ---------------------------------------------------------------------------
+
+describe("#1510 useMetricsSocket — exponential backoff and give-up", () => {
+  beforeEach(() => {
+    createdSockets = [];
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    // Pin Math.random to 1.0 so delay = ceiling (worst-case / deterministic)
+    vi.spyOn(Math, "random").mockReturnValue(1.0);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("does NOT give up before maxAttempts are exhausted", async () => {
+    const { useMetricsSocket } = await import("../useMetricsSocket");
+    let capturedGaveUp = false;
+
+    function TestHook() {
+      const { gaveUp } = useMetricsSocket("ws://localhost/metrics", 100, 10_000, 3);
+      capturedGaveUp = gaveUp;
+      return null;
+    }
+
+    await act(async () => { render(<TestHook />); });
+
+    // Close attempt 0 — one of 3 allowed failures
+    const ws1 = createdSockets[0];
+    await act(async () => { ws1._close(); });
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    // Only 1 of 3 maxAttempts used; should not have given up
+    expect(capturedGaveUp).toBe(false);
+  });
+
+  it("sets gaveUp=true after maxAttempts consecutive close events", async () => {
+    const { useMetricsSocket } = await import("../useMetricsSocket");
+    let capturedGaveUp = false;
+
+    function TestHook() {
+      const { gaveUp } = useMetricsSocket("ws://localhost/metrics", 100, 10_000, 3);
+      capturedGaveUp = gaveUp;
+      return null;
+    }
+
+    await act(async () => { render(<TestHook />); });
+
+    // maxAttempts=3 means 3 retries scheduled after 3 closes.
+    // The 4th close (after the 3rd retry fires) is what pushes attempt=3 >= 3.
+    // Total closes needed: maxAttempts + 1 = 4.
+    for (let i = 0; i < 4; i++) {
+      const ws = createdSockets[createdSockets.length - 1];
+      await act(async () => { ws._close(); });
+      await act(async () => { vi.advanceTimersByTime(10_000); });
+    }
+
+    expect(capturedGaveUp).toBe(true);
+  });
+
+  it("stops creating new WebSocket connections after giving up", async () => {
+    const { useMetricsSocket } = await import("../useMetricsSocket");
+
+    function TestHook() {
+      useMetricsSocket("ws://localhost/metrics", 50, 5_000, 2);
+      return null;
+    }
+
+    await act(async () => { render(<TestHook />); });
+
+    // Exhaust maxAttempts=2 → need 3 closes (2+1)
+    for (let i = 0; i < 3; i++) {
+      const ws = createdSockets[createdSockets.length - 1];
+      await act(async () => { ws._close(); });
+      await act(async () => { vi.advanceTimersByTime(10_000); });
+    }
+
+    const socketCountAfterGiveUp = createdSockets.length;
+
+    // Advance more time — no new sockets should be created
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+
+    expect(createdSockets.length).toBe(socketCountAfterGiveUp);
+  });
+
+  it("resets gaveUp=false and reconnects when resetKey changes", async () => {
+    const { useMetricsSocket } = await import("../useMetricsSocket");
+    let capturedGaveUp = false;
+    let setKey!: (k: number) => void;
+
+    function TestHook() {
+      const [key, setK] = React.useState(0);
+      setKey = setK;
+      const { gaveUp } = useMetricsSocket("ws://localhost/metrics", 50, 5_000, 2, key);
+      capturedGaveUp = gaveUp;
+      return null;
+    }
+
+    await act(async () => { render(<TestHook />); });
+
+    // Exhaust maxAttempts=2 → need 3 closes (2+1)
+    for (let i = 0; i < 3; i++) {
+      const ws = createdSockets[createdSockets.length - 1];
+      await act(async () => { ws._close(); });
+      await act(async () => { vi.advanceTimersByTime(10_000); });
+    }
+
+    expect(capturedGaveUp).toBe(true);
+    const socketCountBeforeRetry = createdSockets.length;
+
+    // Trigger retry via resetKey increment
+    await act(async () => { setKey(1); });
+
+    expect(capturedGaveUp).toBe(false);
+    // A new socket should have been opened
+    expect(createdSockets.length).toBeGreaterThan(socketCountBeforeRetry);
+  });
+
+  it("uses exponential backoff: delay for attempt N is capped at maxDelayMs", async () => {
+    // With Math.random() === 1.0:  delay = min(base * 2^attempt, maxDelay)
+    // base=100, maxDelay=200  →  attempt 0: 100ms, attempt 1: 200ms (capped)
+    const { useMetricsSocket } = await import("../useMetricsSocket");
+
+    function TestHook() {
+      useMetricsSocket("ws://localhost/metrics", 100, 200, 5);
+      return null;
+    }
+
+    await act(async () => { render(<TestHook />); });
+
+    // Attempt 0: initial connect, close immediately
+    const ws0 = createdSockets[0];
+    await act(async () => { ws0._close(); });
+
+    // After 99ms: reconnect timer has NOT fired yet (delay = 100ms)
+    await act(async () => { vi.advanceTimersByTime(99); });
+    expect(createdSockets).toHaveLength(1);
+
+    // After 1 more ms (total 100ms): reconnect fires
+    await act(async () => { vi.advanceTimersByTime(1); });
+    expect(createdSockets.length).toBeGreaterThanOrEqual(2);
+
+    // Attempt 1: close immediately; delay = min(100*2^1, 200) = 200ms
+    const ws1 = createdSockets[createdSockets.length - 1];
+    await act(async () => { ws1._close(); });
+    const countBefore = createdSockets.length;
+
+    await act(async () => { vi.advanceTimersByTime(199); });
+    expect(createdSockets.length).toBe(countBefore); // not yet
+
+    await act(async () => { vi.advanceTimersByTime(1); });
+    expect(createdSockets.length).toBeGreaterThan(countBefore); // fires at 200ms
+  });
+
+  it("resets attempt counter after a successful connection", async () => {
+    const { useMetricsSocket } = await import("../useMetricsSocket");
+    let capturedGaveUp = false;
+
+    function TestHook() {
+      const { gaveUp } = useMetricsSocket("ws://localhost/metrics", 50, 5_000, 2);
+      capturedGaveUp = gaveUp;
+      return null;
+    }
+
+    await act(async () => { render(<TestHook />); });
+
+    // One failed attempt
+    const ws1 = createdSockets[0];
+    await act(async () => { ws1._close(); });
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+
+    // Second attempt: this one opens successfully → resets the counter
+    const ws2 = createdSockets[createdSockets.length - 1];
+    await act(async () => { ws2._open(); });
+
+    // Now close it — counter was reset on open, so we have 2 more retries
+    await act(async () => { ws2._close(); });
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+
+    // Should NOT have given up (1 of 2 attempts used after counter reset)
+    expect(capturedGaveUp).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1510 — EmptyState give-up variant rendering
+// These tests do NOT use vi.resetModules() so @testing-library/react screen
+// remains the module-level import throughout.
+// ---------------------------------------------------------------------------
+
+import EmptyStateComponent from "../EmptyState";
+
+describe("#1510 EmptyState — give-up variant", () => {
+  it("renders give-up state with role=alert", () => {
+    const { getByTestId } = render(<EmptyStateComponent variant="give-up" />);
+    const el = getByTestId("empty-state-give-up");
+    expect(el).toBeInTheDocument();
+    expect(el).toHaveAttribute("role", "alert");
+  });
+
+  it("renders the give-up title text", () => {
+    const { getByText } = render(<EmptyStateComponent variant="give-up" />);
+    expect(getByText(/Unable to connect/i)).toBeInTheDocument();
+  });
+
+  it("renders the subtitle message", () => {
+    const { getByText } = render(<EmptyStateComponent variant="give-up" />);
+    expect(getByText(/could not be reached/i)).toBeInTheDocument();
+  });
+
+  it("renders a retry button when onRetry is provided", () => {
+    const onRetry = vi.fn();
+    const { getByRole } = render(
+      <EmptyStateComponent variant="give-up" onRetry={onRetry} />,
+    );
+    const btn = getByRole("button", { name: /try again/i });
+    expect(btn).toBeInTheDocument();
+    btn.click();
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT render a retry button when onRetry is omitted", () => {
+    const { queryByRole } = render(<EmptyStateComponent variant="give-up" />);
+    expect(queryByRole("button", { name: /try again/i })).not.toBeInTheDocument();
+  });
+});
