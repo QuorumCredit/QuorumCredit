@@ -62,14 +62,13 @@ mechanics referenced below.
       immediately after deployment.
 - [ ] RBAC roles (`src/rbac.rs`) for this deployment reviewed — no role
       is over-privileged relative to what this release actually requires,
-      and role assignments match `docs/RBAC_QUICK_REFERENCE.md` (root
-      `RBAC_*` docs) expectations.
+      and role assignments match the role definitions in `src/rbac.rs`.
 - [ ] Collateral pool accounting (`src/collateral_pool.rs`) reconciled:
       total staked/locked amounts tracked by the contract match the
       indexer's independently-computed totals before deployment proceeds.
 - [ ] No open/pending withdrawal-queue entries are left in an ambiguous
       state that the upcoming deployment's logic changes could
-      mishandle (see `WITHDRAWAL_QUEUE_OPTIMIZATION.md`).
+      mishandle (see `src/withdrawal_queue_test.rs`).
 
 ## 3. Oracle Health Verification
 

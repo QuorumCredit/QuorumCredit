@@ -93,6 +93,26 @@ describe("stroopsToXlm", () => {
   it("STROOPS_PER_XLM constant equals 10_000_000", () => {
     expect(STROOPS_PER_XLM).toBe(10_000_000);
   });
+
+  // #1302 — precision beyond Number.MAX_SAFE_INTEGER
+  // Number.MAX_SAFE_INTEGER = 9_007_199_254_740_991 stroops ≈ 900,719,925 XLM
+  // Values beyond this silently lose precision via Number() cast.
+  // With BigInt arithmetic the result must be exact.
+  it("handles stroops beyond Number.MAX_SAFE_INTEGER exactly (no precision loss)", () => {
+    // 9_007_199_254_740_993n is Number.MAX_SAFE_INTEGER + 2, which collapses to
+    // Number.MAX_SAFE_INTEGER + 1 (an even number) when cast to a float — i.e.
+    // Number(9_007_199_254_740_993n) === 9_007_199_254_740_992 (off by 1).
+    const stroops = 9_007_199_254_740_993n;
+    // whole = 900_719_925 XLM, frac = stroops % 10_000_000n = 4_740_993 stroops
+    // Expected: "900719925.4740993"
+    expect(stroopsToXlm(stroops)).toBe("900719925.4740993");
+  });
+
+  it("handles a large round bigint value exactly", () => {
+    // 1 trillion XLM in stroops = 10^19
+    const oneTrillionXlmInStroops = 10_000_000_000_000_000_000n;
+    expect(stroopsToXlm(oneTrillionXlmInStroops)).toBe("1000000000000.0000000");
+  });
 });
 
 describe("xlmToStroops", () => {
@@ -256,6 +276,57 @@ describe("useLoanSocket via LoanStatusDashboard", () => {
     });
     expect(mockSocket.emit).toHaveBeenCalledWith("subscribe", { borrower: "GABC_ADDR" });
   });
+
+  // #1297 — server's connectionQueue backpressure contract: on overflow the oldest
+  // queued "loan:update" is dropped and a "resync_required" control frame is sent
+  // instead (see server/src/ws/loanSocketServer.ts and connectionQueue.ts). The
+  // client must re-subscribe from the given cursor so Redux catches back up rather
+  // than staying stale forever.
+  it("re-subscribes with resumeFrom and catches Redux state up after a forced queue overflow", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC_ADDR" });
+      return null;
+    }
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    // Initial state landed via the normal loan:list reply to the mount-time subscribe.
+    const staleLoan: LoanRecord = { ...activeLoan, amount_repaid: 1_000_000 };
+    await act(async () => {
+      mockSocket.handlers["loan:list"]?.([staleLoan]);
+    });
+    expect(testStore.getState().loans.loans[0].amount_repaid).toBe(1_000_000);
+
+    // Server-side queue overflows: an intermediate loan:update is silently dropped
+    // (never reaches this handler) and the server instead emits resync_required
+    // carrying the cursor the client should resume from.
+    await act(async () => {
+      mockSocket.handlers["resync_required"]?.({ reason: "queue_overflow", resumeFrom: 42 });
+    });
+
+    // Client must ask the server to replay from that cursor.
+    expect(mockSocket.emit).toHaveBeenCalledWith("subscribe", {
+      borrower: "GABC_ADDR",
+      since: 42,
+    });
+
+    // Redux still holds the stale value until the server's authoritative reply lands.
+    expect(testStore.getState().loans.loans[0].amount_repaid).toBe(1_000_000);
+
+    // Server responds to the resubscribe with the authoritative, caught-up state
+    // (reflecting the update that was dropped during the overflow).
+    const caughtUpLoan: LoanRecord = { ...activeLoan, amount_repaid: 10_000_000, status: "Repaid" };
+    await act(async () => {
+      mockSocket.handlers["loan:list"]?.([caughtUpLoan]);
+    });
+
+    expect(testStore.getState().loans.loans).toHaveLength(1);
+    expect(testStore.getState().loans.loans[0].amount_repaid).toBe(10_000_000);
+    expect(testStore.getState().loans.loans[0].status).toBe("Repaid");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -272,14 +343,16 @@ describe("LoanCard", () => {
     );
   }
 
-  it("renders borrower address", () => {
+  it("renders borrower address (truncated)", () => {
     renderCard(activeLoan);
-    expect(screen.getByText("GABC1234BORROWER")).toBeInTheDocument();
+    // LoanCard truncates the borrower address: first 10 + "..." + last 10
+    expect(screen.getByText(/GABC1234BO/)).toBeInTheDocument();
   });
 
   it("renders loan purpose", () => {
     renderCard(activeLoan);
-    expect(screen.getByText("Business expansion")).toBeInTheDocument();
+    // LoanCard wraps the purpose in quotes
+    expect(screen.getByText(/"Business expansion"/)).toBeInTheDocument();
   });
 
   it("renders principal in XLM (7 decimal places)", () => {
@@ -290,8 +363,8 @@ describe("LoanCard", () => {
 
   it("renders yield in XLM", () => {
     renderCard(activeLoan);
-    // 200_000 stroops = 0.0200000 XLM
-    expect(screen.getByText("0.0200000 XLM")).toBeInTheDocument();
+    // 200_000 stroops = 0.0200000 XLM; LoanCard prefixes yield with "+"
+    expect(screen.getByText("+0.0200000 XLM")).toBeInTheDocument();
   });
 
   it("shows Active status badge", () => {
@@ -337,5 +410,97 @@ describe("LoanCard", () => {
   it("renders article with accessible label", () => {
     renderCard(activeLoan);
     expect(screen.getByRole("article", { name: "Loan 1" })).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Error Boundary — #1303
+// ---------------------------------------------------------------------------
+
+import { LoanCardErrorBoundary, DashboardErrorBoundary } from "../ErrorBoundary";
+
+// A component that unconditionally throws during render.
+const ThrowingComponent: React.FC<{ message?: string }> = ({ message = "render error" }) => {
+  throw new Error(message);
+};
+
+describe("LoanCardErrorBoundary", () => {
+  // Suppress the expected React error output so test logs stay clean.
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders children normally when no error is thrown", () => {
+    render(
+      <LoanCardErrorBoundary>
+        <span>healthy content</span>
+      </LoanCardErrorBoundary>
+    );
+    expect(screen.getByText("healthy content")).toBeInTheDocument();
+  });
+
+  it("shows the card-level fallback when a child throws", () => {
+    render(
+      <LoanCardErrorBoundary>
+        <ThrowingComponent />
+      </LoanCardErrorBoundary>
+    );
+    expect(screen.getByRole("alert", { name: "Loan card error" })).toBeInTheDocument();
+    expect(screen.getByText(/Unable to display this loan/i)).toBeInTheDocument();
+  });
+
+  it("one broken LoanCard does not crash sibling cards (#1303)", () => {
+    // Verify that a boundary around a throwing component leaves its sibling
+    // boundaries (and their children) completely unaffected.
+    render(
+      <div>
+        {/* Healthy sibling — must remain visible */}
+        <LoanCardErrorBoundary>
+          <span data-testid="healthy-card">Healthy card</span>
+        </LoanCardErrorBoundary>
+        {/* Broken sibling — simulates a malformed WebSocket payload causing a render crash */}
+        <LoanCardErrorBoundary>
+          <ThrowingComponent message="malformed payload" />
+        </LoanCardErrorBoundary>
+      </div>
+    );
+
+    // Healthy card still visible — the crash is isolated
+    expect(screen.getByTestId("healthy-card")).toBeInTheDocument();
+    // Broken card shows fallback, not a blank screen
+    expect(screen.getByRole("alert", { name: "Loan card error" })).toBeInTheDocument();
+    expect(screen.getByText(/Unable to display this loan/i)).toBeInTheDocument();
+  });
+});
+
+describe("DashboardErrorBoundary", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("renders children normally when no error is thrown", () => {
+    render(
+      <DashboardErrorBoundary>
+        <span>dashboard content</span>
+      </DashboardErrorBoundary>
+    );
+    expect(screen.getByText("dashboard content")).toBeInTheDocument();
+  });
+
+  it("shows the dashboard-level fallback when a child throws", () => {
+    render(
+      <DashboardErrorBoundary>
+        <ThrowingComponent message="fatal dashboard error" />
+      </DashboardErrorBoundary>
+    );
+    expect(screen.getByRole("alert", { name: "Dashboard error" })).toBeInTheDocument();
+    expect(screen.getByText(/Dashboard Error/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Reload/i })).toBeInTheDocument();
   });
 });

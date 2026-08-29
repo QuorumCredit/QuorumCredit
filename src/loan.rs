@@ -184,6 +184,15 @@ pub fn request_loan(
         return Err(ContractError::LoanExceedsMaxRatio);
     }
 
+    // The I2 invariant (invariants.rs) and the pool-borrow path (lib.rs) both cap
+    // a loan at total_stake × max_loan_to_stake_ratio / 100 (150% by default),
+    // but this path only checked max_loan_to_collateral_ratio (500% by default).
+    // A loan falling between the two limits was accepted here while violating I2,
+    // so enforce the stake ratio as well rather than leaving it unchecked.
+    if amount > total_stake * (cfg.max_loan_to_stake_ratio as i128) / 100 {
+        return Err(ContractError::LoanExceedsMaxRatio);
+    }
+
     let now = env.ledger().timestamp();
     let _loan_id = next_loan_id(&env);
 
@@ -275,7 +284,11 @@ pub fn request_loan(
     bump_persistent(&env, &DataKey::LatestLoan(borrower.clone()));
     bump_instance(&env);
 
-    token.transfer(&env.current_contract_address(), &borrower, &amount);
+    // Issue #1071: Collect insurance fee from loan principal
+    let insurance_fee = crate::insurance::collect_insurance_fee(&env, amount, &cfg)?;
+    let disbursed_amount = amount.saturating_sub(insurance_fee);
+
+    token.transfer(&env.current_contract_address(), &borrower, &disbursed_amount);
 
     // Issue #1288: Maintain running on-chain TVL / active-loan-count counters.
     crate::helpers::increment_tvl_counters(&env, amount);
@@ -899,15 +912,45 @@ pub fn default_count(env: Env, borrower: Address) -> u32 {
 }
 
 pub fn register_referral(
-    _env: Env,
-    _borrower: Address,
-    _referrer: Address,
+    env: Env,
+    borrower: Address,
+    referrer: Address,
 ) -> Result<(), ContractError> {
-    Err(ContractError::InvalidStateTransition)
+    borrower.require_auth();
+    require_not_paused(&env)?;
+
+    // Prevent self-referral.
+    if borrower == referrer {
+        return Err(ContractError::SelfReferralNotAllowed);
+    }
+
+    // Prevent double registration.
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, Address>(&DataKey::ReferredBy(borrower.clone()))
+        .is_some()
+    {
+        return Err(ContractError::ReferralAlreadyRegistered);
+    }
+
+    // Record the referrer for this borrower.
+    env.storage()
+        .persistent()
+        .set(&DataKey::ReferredBy(borrower.clone()), &referrer);
+
+    env.events().publish(
+        (symbol_short!("referral"), symbol_short!("register")),
+        (borrower, referrer),
+    );
+
+    Ok(())
 }
 
-pub fn get_referrer(_env: Env, _borrower: Address) -> Option<Address> {
-    None
+pub fn get_referrer(env: Env, borrower: Address) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ReferredBy(borrower))
 }
 
 // ── Issue #880: Co-Borrower Support ──────────────────────────────────────────

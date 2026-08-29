@@ -61,8 +61,8 @@ mod timelock_safety_tests {
         s.client.vouch(&voucher, &borrower, &10_000_000, &s.token, &None);
 
         // Initial state: no loan exists (unlocked)
-        let loans_before = s.client.get_loans(&borrower);
-        assert_eq!(loans_before.len(), 0);
+        let loan_before = s.client.get_loan(&borrower);
+        assert!(loan_before.is_none());
 
         // Create loan (state: locked → active)
         s.client.request_loan(
@@ -73,11 +73,8 @@ mod timelock_safety_tests {
             &s.token,
         );
 
-        let loans_after = s.client.get_loans(&borrower);
-        assert_eq!(loans_after.len(), 1);
-
         // Verify loan is in active state
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
     }
 
@@ -101,7 +98,7 @@ mod timelock_safety_tests {
         );
 
         // Get the loan to verify it exists
-        let loan = s.client.get_loan(&borrower, &0);
+        let loan = s.client.get_loan(&borrower);
         assert!(loan.is_some());
 
         // Time travel to before the loan is disbursed (still locked)
@@ -130,22 +127,22 @@ mod timelock_safety_tests {
             &s.token,
         );
 
-        let loan_before = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_before = s.client.get_loan(&borrower).unwrap();
         let amount_before = loan_before.amount;
 
-        // Try to create another loan while first is active
-        // This should fail or create a separate loan
-        s.client.request_loan(
+        // A borrower can only have one active loan at a time, so requesting
+        // a second loan while the first is still active must be rejected.
+        let result = s.client.try_request_loan(
             &borrower,
             &3_000_000,
             &10_000_000,
             &String::from_str(&s.env, "second loan"),
             &s.token,
         );
+        assert_eq!(result, Err(Ok(crate::errors::ContractError::ActiveLoanExists)));
 
-        let loans_after = s.client.get_loans(&borrower);
-        // Should have multiple loans or the first one should remain unchanged
-        let first_loan = s.client.get_loan(&borrower, &0).unwrap();
+        // The first loan must remain unmodified.
+        let first_loan = s.client.get_loan(&borrower).unwrap();
         assert_eq!(first_loan.amount, amount_before);
     }
 
@@ -200,9 +197,9 @@ mod timelock_safety_tests {
         );
 
         // Verify all loans exist independently
-        let loan1 = s.client.get_loan(&borrower1, &0).unwrap();
-        let loan2 = s.client.get_loan(&borrower2, &0).unwrap();
-        let loan3 = s.client.get_loan(&borrower3, &0).unwrap();
+        let loan1 = s.client.get_loan(&borrower1).unwrap();
+        let loan2 = s.client.get_loan(&borrower2).unwrap();
+        let loan3 = s.client.get_loan(&borrower3).unwrap();
 
         assert_eq!(loan1.amount, 10_000_000);
         assert_eq!(loan2.amount, 8_000_000);
@@ -231,17 +228,16 @@ mod timelock_safety_tests {
             &s.token,
         );
 
-        let loan_before = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_before = s.client.get_loan(&borrower).unwrap();
         let amount_repaid_before = loan_before.amount_repaid;
 
         // Repay partial amount
-        s.client.repay_loan(&borrower, &0, &1_000_000);
+        s.client.repay(&borrower, &1_000_000);
 
-        let loan_after = s.client.get_loan(&borrower, &0).unwrap();
+        let loan_after = s.client.get_loan(&borrower).unwrap();
         assert!(loan_after.amount_repaid > amount_repaid_before);
 
         // Verify loan is still tracked correctly
-        let loans = s.client.get_loans(&borrower);
-        assert_eq!(loans.len(), 1);
+        assert!(s.client.get_loan(&borrower).is_some());
     }
 }

@@ -146,7 +146,7 @@ pub fn flash_loan(
 
     // Check contract balance
     let contract_id = env.current_contract_address();
-    let balance = token_client(env, &cfg.token).balance(&contract_id);
+    let balance = token_client(env).balance(&contract_id);
     if balance < amount {
         return Err(ContractError::InsufficientFunds);
     }
@@ -159,7 +159,7 @@ pub fn flash_loan(
     let total_repay = amount + fee;
 
     // Transfer amount to callback contract
-    token_client(env, &cfg.token).transfer(&contract_id, &callback_contract, &amount);
+    token_client(env).transfer(&contract_id, &callback_contract, &amount);
 
     // Invoke callback contract to perform flash loan operations
     // The callback must call repay_flash_loan() before transaction completes
@@ -181,7 +181,7 @@ pub fn flash_loan(
 
     // Verify repayment happened (in production, this is implicit in transaction atomicity)
     // The contract balance check ensures the loan was repaid
-    let balance_after = token_client(env, &cfg.token).balance(&contract_id);
+    let balance_after = token_client(env).balance(&contract_id);
     if balance_after < balance {
         // Flash loan was not repaid in full
         return Err(ContractError::FlashLoanNotRepaid);
@@ -213,11 +213,7 @@ pub fn repay_flash_loan(
 
     // Transfer repayment from borrower to contract
     let contract_id = env.current_contract_address();
-    token_client(env, &cfg.token).transfer_from(
-        &borrower,
-        &contract_id,
-        &total,
-    )?;
+    token_client(env).transfer(&borrower, &contract_id, &total);
 
     Ok(())
 }
@@ -304,7 +300,7 @@ fn add_flash_loan_record(env: &Env, record: &FlashLoanRecord) -> Result<(), Cont
 }
 
 fn update_flash_loan_stats(env: &Env, amount: i128, fee: i128) -> Result<(), ContractError> {
-    let mut stats = env
+    let mut stats: FlashLoanStats = env
         .storage()
         .persistent()
         .get(&DataKey::FlashLoanStats)
@@ -330,7 +326,8 @@ mod tests {
     fn test_flash_loan_fee_calculation() {
         let principal = 1_000_000;
         let expected_fee = (principal * FLASH_LOAN_FEE_BPS) / 10_000;
-        assert_eq!(expected_fee, 50); // 0.05% of 1 XLM
+        // 5 basis points (0.05%) of 1,000,000 stroops = 500 stroops
+        assert_eq!(expected_fee, 500);
     }
 
     #[test]

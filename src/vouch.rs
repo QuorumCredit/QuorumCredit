@@ -7,8 +7,8 @@ use crate::helpers::{
 };
 use crate::types::{
     BatchVouchResult, BorrowerExposure, BridgeRecord, ChainExposure, DataKey, PortfolioRiskReport,
-    PortfolioSnapshot, QueuedWithdrawal, StagnantVouch, TokenExposure, VouchHistoryEntry,
-    VouchRecord, VouchMerkleRoot, VouchSplitRecord, MAX_HOT_VOUCH_HISTORY_ENTRIES,
+    PortfolioSnapshot, QueuedWithdrawal, StagnantVouch, TokenExposure, VouchAuditEventType,
+    VouchHistoryEntry, VouchRecord, VouchMerkleRoot, VouchSplitRecord, MAX_HOT_VOUCH_HISTORY_ENTRIES,
     MAX_WITHDRAWAL_QUEUE_SIZE, PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS,
     BPS_DENOMINATOR, SECS_PER_DAY, VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES,
 };
@@ -359,8 +359,16 @@ fn commit_vouch(
         },
     );
 
-    // Issue #1179: Log audit trail event for vouch creation (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for vouch creation.
+    crate::audit::log_vouch_audit_event(
+        env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchAuditEventType::Created,
+        stake,
+        stake,
+    )?;
 
     // Issue #1177: Initialize maturity tracking (stub - to be implemented)
     // crate::maturity::initialize_vouch_maturity(...) - deferred implementation
@@ -528,6 +536,7 @@ pub fn increase_stake(
         .ok_or(ContractError::StakeOverflow)?;
 
     let token = vouch_rec.token.clone();
+    let resulting_stake = vouch_rec.stake;
     vouches.set(idx, vouch_rec);
     env.storage()
         .persistent()
@@ -545,8 +554,16 @@ pub fn increase_stake(
         (voucher.clone(), borrower.clone(), additional),
     );
 
-    // Issue #1179: Log audit trail event for stake increase (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for stake increase.
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchAuditEventType::StakeIncreased,
+        additional,
+        resulting_stake,
+    )?;
 
     Ok(())
 }
@@ -636,8 +653,17 @@ pub fn decrease_stake(
         (voucher.clone(), borrower.clone(), amount),
     );
 
-    // Issue #1179: Log audit trail event for stake decrease (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for stake decrease.
+    let resulting_stake = vouch_rec.stake.checked_sub(amount).ok_or(ContractError::ArithmeticError)?;
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchAuditEventType::StakeDecreased,
+        amount,
+        resulting_stake,
+    )?;
 
     Ok(())
 }
@@ -703,8 +729,16 @@ pub fn withdraw_vouch(
         (voucher.clone(), borrower.clone(), vouch_stake),
     );
 
-    // Issue #1179: Log audit trail event for vouch withdrawal (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for vouch withdrawal.
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &borrower,
+        &voucher,
+        &vouch_token,
+        VouchAuditEventType::Withdrawn,
+        vouch_stake,
+        0,
+    )?;
 
     Ok(())
 }
@@ -1003,6 +1037,7 @@ mod tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Vec};
 
+    #[allow(dead_code)]
     fn setup_contract(env: &Env) -> (Address, Address) {
         let deployer = Address::generate(env);
         let admin = Address::generate(env);
@@ -2429,8 +2464,8 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match token_addrs.iter().position(|t| t == v.token) {
             Some(i) => {
-                let updated = token_stakes.get(i).unwrap().saturating_add(v.stake);
-                token_stakes.set(i, updated);
+                let updated = token_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                token_stakes.set(i as u32, updated);
             }
             None => {
                 token_addrs.push_back(v.token.clone());
@@ -2440,8 +2475,8 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match chain_ids.iter().position(|c| c == v.chain_id) {
             Some(i) => {
-                let updated = chain_stakes.get(i).unwrap().saturating_add(v.stake);
-                chain_stakes.set(i, updated);
+                let updated = chain_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                chain_stakes.set(i as u32, updated);
             }
             None => {
                 chain_ids.push_back(v.chain_id);

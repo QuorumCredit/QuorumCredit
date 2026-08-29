@@ -10,6 +10,9 @@ import { attachMetricsWsServer } from "./ws/metricsWsServer.js";
 import { handleHttpRequest } from "./http/routes.js";
 import { metrics } from "./http/metricsRegistry.js";
 import * as insuranceMarketplace from "./insurance-marketplace.js";
+import { buildRevocationStore } from "./auth/jtiRevocationStore.js";
+import { buildSorobanRpcClient } from "./soroban/rpcClient.js";
+import { buildRecurringPaymentStore } from "./recurring/recurringPaymentStore.js";
 
 export function buildBus(redisUrl: string | undefined): PubSubBus {
   if (redisUrl) return new RedisBus(redisUrl);
@@ -27,6 +30,9 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const bus = buildBus(config.redisUrl);
   const store = new EventStore(config.indexerDbPath);
+  const revocationStore = buildRevocationStore(config.redisUrl);
+  const rpcClient = buildSorobanRpcClient(config.sorobanRpc.url, config.sorobanRpc.contractId);
+  const paymentStore = buildRecurringPaymentStore(config.redisUrl);
 
   const bridge = new Bridge({
     bus,
@@ -57,6 +63,9 @@ async function main(): Promise<void> {
       costAllocator: bridge.costAllocator,
       partitionGuard: bridge.partitionGuard,
       serviceVersion: config.serviceVersion,
+      revocationStore,
+      rpcClient,
+      paymentStore,
     });
   });
 
@@ -89,6 +98,9 @@ async function main(): Promise<void> {
     await bridge.stop();
     httpServer.close();
     await bus.close();
+    await revocationStore.close();
+    await rpcClient.close();
+    await paymentStore.close();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

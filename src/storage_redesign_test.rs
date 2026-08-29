@@ -7,6 +7,7 @@ use crate::{QuorumCreditContract, QuorumCreditContractClient};
 use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Vec};
 
 fn setup(env: &Env) -> (Address, Address) {
+    env.mock_all_auths();
     let deployer = Address::generate(env);
     let admin = Address::generate(env);
     let admins = Vec::from_array(env, [admin.clone()]);

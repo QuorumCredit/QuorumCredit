@@ -14,6 +14,19 @@ export interface ServerConfig {
   /** Deployed version identifier, surfaced on /health for canary release monitoring
    * (issue #1231) — e.g. a git SHA or semver tag set by the deploy pipeline. */
   serviceVersion: string;
+  /**
+   * Application-level WebSocket heartbeat / idle-timeout settings.
+   * Both loanSocketServer (socket.io) and metricsWsServer (raw ws) use these.
+   */
+  wsHeartbeat: {
+    /** How often the server sends a ping to each connection (ms). Default: 30 000. */
+    intervalMs: number;
+    /**
+     * How long after the last pong (or initial connect) before the server tears
+     * down the connection as a half-open/idle zombie (ms). Default: 60 000.
+     */
+    idleTimeoutMs: number;
+  };
   /** Cost allocation inputs (issue #1227) — see server/src/costs/costAllocator.ts. */
   costAllocation: {
     contractFeeStroopsPerTx: number;
@@ -25,6 +38,11 @@ export interface ServerConfig {
   partitionGuard: {
     failureThreshold: number;
     maxQueuedWrites: number;
+  };
+  /** Soroban RPC configuration for recurring payment execution (issue #1362). */
+  sorobanRpc: {
+    url: string | undefined;
+    contractId: string | undefined;
   };
 }
 
@@ -42,12 +60,66 @@ function envFloat(name: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+/** Known insecure default that must never reach production. */
+const INSECURE_DEFAULT_SECRET = "dev-insecure-secret-change-me";
+/** Minimum acceptable AUTH_SECRET length (32 characters). */
+const MIN_AUTH_SECRET_LENGTH = 32;
+
+/**
+ * Fail-fast guard for security-critical environment variables (Issue #1291).
+ *
+ * In production (`NODE_ENV=production`) the server must not start if:
+ *   - AUTH_SECRET is unset or equals the well-known insecure default.
+ *   - AUTH_SECRET is shorter than MIN_AUTH_SECRET_LENGTH characters.
+ *
+ * In non-production environments a warning is printed instead so local
+ * development and test runs are not broken by missing configuration.
+ */
+function validateAuthSecret(secret: string): void {
+  const isProduction = process.env.NODE_ENV === "production";
+
+  const problems: string[] = [];
+  if (secret === INSECURE_DEFAULT_SECRET) {
+    problems.push(
+      "AUTH_SECRET equals the publicly-known insecure default " +
+        `("${INSECURE_DEFAULT_SECRET}").`
+    );
+  } else if (secret.length < MIN_AUTH_SECRET_LENGTH) {
+    problems.push(
+      `AUTH_SECRET is only ${secret.length} character(s) long; ` +
+        `minimum required is ${MIN_AUTH_SECRET_LENGTH}.`
+    );
+  }
+
+  if (problems.length === 0) return;
+
+  const message =
+    "[quorum-credit] FATAL — insecure AUTH_SECRET configuration detected:\n" +
+    problems.map((p) => `  • ${p}`).join("\n") +
+    "\n  Set AUTH_SECRET to a strong, randomly-generated secret of at least " +
+    `${MIN_AUTH_SECRET_LENGTH} characters before starting the server.`;
+
+  if (isProduction) {
+    console.error(message);
+    process.exit(1);
+  } else {
+    console.warn(
+      "[quorum-credit] WARNING — " +
+        "insecure AUTH_SECRET in use (this would abort in NODE_ENV=production):\n" +
+        problems.map((p) => `  • ${p}`).join("\n")
+    );
+  }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const authSecret = env.AUTH_SECRET ?? INSECURE_DEFAULT_SECRET;
+  validateAuthSecret(authSecret);
+
   return {
     port: envInt("PORT", 4000),
     redisUrl: env.REDIS_URL,
     indexerDbPath: env.INDEXER_DB_PATH ?? "indexer.db",
-    authSecret: env.AUTH_SECRET ?? "dev-insecure-secret-change-me",
+    authSecret,
     tokenTtlSeconds: envInt("TOKEN_TTL_SECONDS", 300),
     connectionQueueMax: envInt("CONN_QUEUE_MAX", 500),
     bridgePollIntervalMs: envInt("BRIDGE_POLL_INTERVAL_MS", 250),
@@ -63,6 +135,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     partitionGuard: {
       failureThreshold: envInt("PARTITION_FAILURE_THRESHOLD", 5),
       maxQueuedWrites: envInt("PARTITION_MAX_QUEUED_WRITES", 500),
+    },
+    wsHeartbeat: {
+      intervalMs: envInt("WS_HEARTBEAT_INTERVAL_MS", 30_000),
+      idleTimeoutMs: envInt("WS_IDLE_TIMEOUT_MS", 60_000),
+    },
+    sorobanRpc: {
+      url: env.SOROBAN_RPC_URL,
+      contractId: env.QUORUM_CREDIT_CONTRACT_ID,
     },
   };
 }

@@ -2,6 +2,7 @@ import type { Server as HttpServer } from "node:http";
 import { Server as SocketIOServer, type Socket } from "socket.io";
 import { verifyToken, isExpiringSoon } from "../auth/tokens.js";
 import { ConnectionQueue } from "./connectionQueue.js";
+import { WsRateLimiter } from "./wsRateLimiter.js";
 import { LoanProjector } from "../bridge/loanProjector.js";
 import type { EventStore } from "../bridge/eventStore.js";
 import type { PubSubBus } from "../pubsub/PubSubBus.js";
@@ -16,19 +17,66 @@ export interface LoanSocketServerOptions {
   connectionQueueMax: number;
   /** How long before hard expiry to warn the client so it can refresh proactively. */
   authExpiryWarningMs?: number;
+  /**
+   * Sliding-window rate-limit for inbound WS messages (subscribe / unsubscribe /
+   * auth:refresh). Defaults tuned for a well-behaved dashboard client; override in
+   * config for stricter or looser environments.
+   */
+  rateLimitWindowMs?: number;
+  /** Max inbound messages accepted per window per connection. Default: 30. */
+  rateLimitMaxMessages?: number;
+  /**
+   * Consecutive throttle violations before the connection is forcibly closed with
+   * code 4029 ("Too Many Requests"). Default: 3.
+   */
+  rateLimitMaxViolations?: number;
+  /**
+   * Application-level ping/pong heartbeat interval (ms). The server sends a
+   * "ping" event at this cadence and expects a "pong" event back. Default: 30 000.
+   */
+  heartbeatIntervalMs?: number;
+  /**
+   * How long (ms) after the last pong (or initial connect) before the server
+   * treats the connection as a half-open/idle zombie and tears it down.
+   * Default: 60 000.
+   */
+  idleTimeoutMs?: number;
 }
 
 interface SocketState {
   borrower: string | null;
   queue: ConnectionQueue<{ eventId: number; loan: unknown }>;
   authTimer: ReturnType<typeof setInterval>;
+  /** Per-connection sliding-window rate limiter for inbound messages. */
+  rateLimiter: WsRateLimiter;
+  /** Timer that fires pings at heartbeatIntervalMs cadence. */
+  heartbeatTimer: ReturnType<typeof setInterval>;
+  /** Timer that fires idleTimeoutMs after the last pong (or connect). */
+  idleTimer: ReturnType<typeof setTimeout>;
 }
+
+/** Close code sent when a connection is killed for exceeding the rate limit. */
+export const WS_CLOSE_TOO_MANY_REQUESTS = 4029;
+/** Close code sent when a connection is killed for idle/heartbeat timeout. */
+export const WS_CLOSE_IDLE_TIMEOUT = 4008;
 
 /**
  * socket.io wiring for the /loans stream consumed by dashboard/src/useLoanSocket.ts.
+ *
  * Auth: handshake `auth.token` is verified on connect; a periodic check warns the
  * client via `auth_expired` before hard-disconnecting so it can call `auth:refresh`
  * with a freshly issued token without losing the socket.
+ *
+ * Rate limiting: every inbound event (subscribe / unsubscribe / auth:refresh) is
+ * passed through a per-connection sliding-window limiter. Connections that exceed the
+ * limit are warned once ("rate_limited") then disconnected with close-code 4029 if
+ * the excess continues.
+ *
+ * Heartbeat / idle timeout: the server sends a "ping" event every
+ * `heartbeatIntervalMs` and expects a "pong" event back within `idleTimeoutMs`. If
+ * no pong arrives in time (half-open / NAT-dead connection), the socket is
+ * disconnected, its ConnectionQueue and subscription state are released, and the
+ * qc_ws_idle_closed_total counter is incremented.
  */
 export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOServer {
   const io = new SocketIOServer(opts.httpServer, {
@@ -38,6 +86,8 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
   const projector = new LoanProjector();
   const states = new Map<Socket, SocketState>();
   const warningMs = opts.authExpiryWarningMs ?? 30_000;
+  const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 30_000;
+  const idleTimeoutMs = opts.idleTimeoutMs ?? 60_000;
 
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
@@ -71,15 +121,64 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
   void opts.bus.subscribe(EVENTS_CHANNEL, busHandler);
 
   io.on("connection", (socket) => {
+    // ── heartbeat / idle-timeout setup ──────────────────────────────────────
+    // scheduleIdleTimer returns a NodeJS.Timeout that disconnects the socket if it
+    // fires. resetIdle cancels and reschedules it — call it whenever a pong arrives.
+    const scheduleIdleTimer = (): ReturnType<typeof setTimeout> =>
+      setTimeout(() => {
+        const s = states.get(socket);
+        if (!s) return;
+        clearInterval(s.heartbeatTimer);
+        clearInterval(s.authTimer);
+        clearTimeout(s.idleTimer);
+        states.delete(socket);
+        metrics.setGauge("qc_broadcast_loan_connections", states.size);
+        metrics.incCounter("qc_ws_idle_closed_total");
+        socket.disconnect(true);
+      }, idleTimeoutMs);
+
+    const heartbeatTimer = setInterval(() => {
+      socket.emit("ping");
+    }, heartbeatIntervalMs);
+
     const state: SocketState = {
       borrower: null,
       queue: new ConnectionQueue(opts.connectionQueueMax),
       authTimer: setInterval(() => checkAuthExpiry(socket, opts.authSecret, warningMs), 5000),
+      rateLimiter: new WsRateLimiter({
+        windowMs: opts.rateLimitWindowMs,
+        maxMessages: opts.rateLimitMaxMessages,
+        maxViolations: opts.rateLimitMaxViolations,
+      }),
+      heartbeatTimer,
+      idleTimer: scheduleIdleTimer(),
     };
     states.set(socket, state);
     metrics.setGauge("qc_broadcast_loan_connections", states.size);
 
+    // ── pong resets the idle timer ───────────────────────────────────────────
+    socket.on("pong", () => {
+      clearTimeout(state.idleTimer);
+      state.idleTimer = scheduleIdleTimer();
+    });
+
+    // ── rate-limited event handlers ──────────────────────────────────────────
+
     socket.on("subscribe", (payload: SubscribePayload) => {
+      const decision = state.rateLimiter.check();
+      if (decision === "throttled") {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        return;
+      }
+      if (decision === "disconnect") {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        metrics.incCounter("qc_ws_force_disconnected_rate_limit_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        socket.disconnect(true);
+        return;
+      }
+
       if (!payload || typeof payload.borrower !== "string") return;
       state.borrower = payload.borrower;
 
@@ -95,7 +194,38 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
       }
     });
 
+    socket.on("unsubscribe", () => {
+      const decision = state.rateLimiter.check();
+      if (decision === "throttled") {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        return;
+      }
+      if (decision === "disconnect") {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        metrics.incCounter("qc_ws_force_disconnected_rate_limit_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        socket.disconnect(true);
+        return;
+      }
+      state.borrower = null;
+    });
+
     socket.on("auth:refresh", (payload: { token?: string }) => {
+      const decision = state.rateLimiter.check();
+      if (decision === "throttled") {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        return;
+      }
+      if (decision === "disconnect") {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        metrics.incCounter("qc_ws_force_disconnected_rate_limit_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        socket.disconnect(true);
+        return;
+      }
+
       if (!payload || typeof payload.token !== "string") return;
       const result = verifyToken(opts.authSecret, payload.token);
       if (!result.valid) {
@@ -105,6 +235,8 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
     });
 
     socket.on("disconnect", () => {
+      clearInterval(state.heartbeatTimer);
+      clearTimeout(state.idleTimer);
       clearInterval(state.authTimer);
       states.delete(socket);
       metrics.setGauge("qc_broadcast_loan_connections", states.size);

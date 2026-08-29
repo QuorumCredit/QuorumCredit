@@ -513,73 +513,107 @@ pub fn get_badge_stats(env: &Env, badge_type: BadgeType) -> BadgeStats {
 mod tests {
     use super::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Env;
+    use soroban_sdk::{Env, Vec};
 
-    fn setup() -> (Env, Address) {
+    /// Helper: create an env with a registered, initialized contract, since the
+    /// free functions under test access `env.storage()` / `config()`, which
+    /// requires an `as_contract` frame around a deployed+initialized instance.
+    fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
         let owner = Address::generate(&env);
-        (env, owner)
+        (env, contract_id, owner)
     }
 
     #[test]
     fn test_mint_badge_idempotent() {
-        let (env, owner) = setup();
-        mint_badge(&env, &owner, BadgeType::FirstLoan);
-        mint_badge(&env, &owner, BadgeType::FirstLoan); // second call is no-op
-        let stats = get_badge_stats(&env, BadgeType::FirstLoan);
+        let (env, contract_id, owner) = setup();
+        let stats = env.as_contract(&contract_id, || {
+            mint_badge(&env, &owner, BadgeType::FirstLoan);
+            mint_badge(&env, &owner, BadgeType::FirstLoan); // second call is no-op
+            get_badge_stats(&env, BadgeType::FirstLoan)
+        });
         assert_eq!(stats.total_minted, 1);
     }
 
     #[test]
     fn test_stake_and_unstake() {
-        let (env, owner) = setup();
-        mint_badge(&env, &owner, BadgeType::TenLoans);
-        stake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap();
+        let (env, contract_id, owner) = setup();
+        env.as_contract(&contract_id, || mint_badge(&env, &owner, BadgeType::TenLoans));
+        env.as_contract(&contract_id, || {
+            stake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap()
+        });
 
-        let bonus = get_staked_yield_bonus(&env, &owner, &BadgeType::TenLoans);
+        let bonus = env.as_contract(&contract_id, || {
+            get_staked_yield_bonus(&env, &owner, &BadgeType::TenLoans)
+        });
         assert_eq!(bonus, TEN_LOANS_BADGE_YIELD_BONUS_BPS);
 
-        unstake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap();
-        let bonus_after = get_staked_yield_bonus(&env, &owner, &BadgeType::TenLoans);
+        env.as_contract(&contract_id, || {
+            unstake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap()
+        });
+        let bonus_after = env.as_contract(&contract_id, || {
+            get_staked_yield_bonus(&env, &owner, &BadgeType::TenLoans)
+        });
         assert_eq!(bonus_after, 0);
     }
 
     #[test]
     fn test_cannot_stake_listed_badge() {
-        let (env, owner) = setup();
-        mint_badge(&env, &owner, BadgeType::Centurion);
-        list_badge_for_sale(&env, owner.clone(), BadgeType::Centurion, 1_000_000).unwrap();
-        let result = stake_badge(&env, owner, BadgeType::Centurion);
+        let (env, contract_id, owner) = setup();
+        env.as_contract(&contract_id, || mint_badge(&env, &owner, BadgeType::Centurion));
+        env.as_contract(&contract_id, || {
+            list_badge_for_sale(&env, owner.clone(), BadgeType::Centurion, 1_000_000).unwrap()
+        });
+        let result = env.as_contract(&contract_id, || {
+            stake_badge(&env, owner, BadgeType::Centurion)
+        });
         assert_eq!(result, Err(ContractError::InvalidStateTransition));
     }
 
     #[test]
     fn test_list_and_purchase_badge() {
-        let (env, seller) = setup();
+        let (env, contract_id, seller) = setup();
         let buyer = Address::generate(&env);
 
-        mint_badge(&env, &seller, BadgeType::TopVoucher);
-        list_badge_for_sale(&env, seller.clone(), BadgeType::TopVoucher, 500_000).unwrap();
-        purchase_badge(&env, buyer.clone(), seller.clone(), BadgeType::TopVoucher).unwrap();
+        env.as_contract(&contract_id, || {
+            mint_badge(&env, &seller, BadgeType::TopVoucher);
+            list_badge_for_sale(&env, seller.clone(), BadgeType::TopVoucher, 500_000).unwrap();
+            purchase_badge(&env, buyer.clone(), seller.clone(), BadgeType::TopVoucher).unwrap();
+        });
 
-        // Seller no longer has the badge.
-        assert!(get_badge(&env, &seller, BadgeType::TopVoucher).is_none());
-        // Buyer now has it.
-        let b = get_badge(&env, &buyer, BadgeType::TopVoucher).unwrap();
-        assert_eq!(b.owner, buyer);
-        assert!(!b.listed_for_sale);
+        env.as_contract(&contract_id, || {
+            // Seller no longer has the badge.
+            assert!(get_badge(&env, &seller, BadgeType::TopVoucher).is_none());
+            // Buyer now has it.
+            let b = get_badge(&env, &buyer, BadgeType::TopVoucher).unwrap();
+            assert_eq!(b.owner, buyer);
+            assert!(!b.listed_for_sale);
+        });
     }
 
     #[test]
     fn test_total_staked_yield_bonus() {
-        let (env, owner) = setup();
-        mint_badge(&env, &owner, BadgeType::FirstLoan);
-        mint_badge(&env, &owner, BadgeType::TenLoans);
-        stake_badge(&env, owner.clone(), BadgeType::FirstLoan).unwrap();
-        stake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap();
+        let (env, contract_id, owner) = setup();
+        env.as_contract(&contract_id, || {
+            mint_badge(&env, &owner, BadgeType::FirstLoan);
+            mint_badge(&env, &owner, BadgeType::TenLoans);
+        });
+        env.as_contract(&contract_id, || {
+            stake_badge(&env, owner.clone(), BadgeType::FirstLoan).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            stake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap()
+        });
 
-        let total = total_staked_yield_bonus(&env, &owner);
+        let total = env.as_contract(&contract_id, || total_staked_yield_bonus(&env, &owner));
         assert_eq!(
             total,
             FIRST_LOAN_BADGE_YIELD_BONUS_BPS + TEN_LOANS_BADGE_YIELD_BONUS_BPS
@@ -588,24 +622,28 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_mint_first_loan_badge() {
-        let (env, borrower) = setup();
-        // Set repayment count to 1.
-        env.storage()
-            .persistent()
-            .set(&DataKey::RepaymentCount(borrower.clone()), &1u32);
-        evaluate_and_mint_badges(&env, &borrower);
-        assert!(get_badge(&env, &borrower, BadgeType::FirstLoan).is_some());
-        assert!(get_badge(&env, &borrower, BadgeType::TenLoans).is_none());
+        let (env, contract_id, borrower) = setup();
+        env.as_contract(&contract_id, || {
+            // Set repayment count to 1.
+            env.storage()
+                .persistent()
+                .set(&DataKey::RepaymentCount(borrower.clone()), &1u32);
+            evaluate_and_mint_badges(&env, &borrower);
+            assert!(get_badge(&env, &borrower, BadgeType::FirstLoan).is_some());
+            assert!(get_badge(&env, &borrower, BadgeType::TenLoans).is_none());
+        });
     }
 
     #[test]
     fn test_evaluate_and_mint_ten_loans_badge() {
-        let (env, borrower) = setup();
-        env.storage()
-            .persistent()
-            .set(&DataKey::RepaymentCount(borrower.clone()), &10u32);
-        evaluate_and_mint_badges(&env, &borrower);
-        assert!(get_badge(&env, &borrower, BadgeType::FirstLoan).is_some());
-        assert!(get_badge(&env, &borrower, BadgeType::TenLoans).is_some());
+        let (env, contract_id, borrower) = setup();
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::RepaymentCount(borrower.clone()), &10u32);
+            evaluate_and_mint_badges(&env, &borrower);
+            assert!(get_badge(&env, &borrower, BadgeType::FirstLoan).is_some());
+            assert!(get_badge(&env, &borrower, BadgeType::TenLoans).is_some());
+        });
     }
 }

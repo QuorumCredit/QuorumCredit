@@ -546,26 +546,38 @@ mod tests {
         Address, Env, Vec,
     };
 
-    /// Helper: create a minimal env with a registered contract.
-    fn make_env() -> Env {
-        Env::default()
+    /// Helper: create an env with a registered, initialized contract, since the
+    /// free functions under test access `env.storage()` (and, for
+    /// `liquidity_tier_bonus_bps`, `config()`) which requires an `as_contract`
+    /// frame around a deployed+initialized contract instance.
+    fn make_env() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
+        (env, contract_id)
     }
 
     // ── #1074: Reentrancy guard ───────────────────────────────────────────────
 
     #[test]
     fn test_reentrancy_lock_acquire_release() {
-        let env = make_env();
-        env.mock_all_auths();
-
-        // Lock should acquire successfully when not locked
-        assert!(acquire_lock(&env).is_ok());
-        // Lock should fail when already locked
-        assert_eq!(acquire_lock(&env), Err(ContractError::Reentrancy));
-        // After release, lock should be available again
-        release_lock(&env);
-        assert!(acquire_lock(&env).is_ok());
-        release_lock(&env);
+        let (env, contract_id) = make_env();
+        env.as_contract(&contract_id, || {
+            // Lock should acquire successfully when not locked
+            assert!(acquire_lock(&env).is_ok());
+            // Lock should fail when already locked
+            assert_eq!(acquire_lock(&env), Err(ContractError::Reentrancy));
+            // After release, lock should be available again
+            release_lock(&env);
+            assert!(acquire_lock(&env).is_ok());
+            release_lock(&env);
+        });
     }
 
     #[test]
@@ -578,52 +590,191 @@ mod tests {
 
     #[test]
     fn test_get_liquidity_tier_default_is_zero() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
         // Not set → tier 0 (most liquid)
-        assert_eq!(
-            get_token_liquidity_tier(env.clone(), token_addr),
-            0u32
-        );
+        let tier = env.as_contract(&contract_id, || {
+            get_token_liquidity_tier(env.clone(), token_addr)
+        });
+        assert_eq!(tier, 0u32);
     }
 
     #[test]
     fn test_liquidity_tier_bonus_default_values() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
 
-        // Tier 0 → 0 bps bonus
-        let t0 = Address::generate(&env);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TokenLiquidityTier(t0.clone()), &0u32);
-        assert_eq!(liquidity_tier_bonus_bps(&env, &t0), 0);
+        env.as_contract(&contract_id, || {
+            // Tier 0 → 0 bps bonus
+            let t0 = Address::generate(&env);
+            env.storage()
+                .persistent()
+                .set(&DataKey::TokenLiquidityTier(t0.clone()), &0u32);
+            assert_eq!(liquidity_tier_bonus_bps(&env, &t0), 0);
 
-        // Tier 3 → 300 bps bonus (DEFAULT_TIER_BONUS_BPS[3])
-        let t3 = Address::generate(&env);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TokenLiquidityTier(t3.clone()), &3u32);
-        // With an empty config vector, falls back to DEFAULT_TIER_BONUS_BPS
-        assert_eq!(liquidity_tier_bonus_bps(&env, &t3), 300);
+            // Tier 3 → 300 bps bonus (DEFAULT_TIER_BONUS_BPS[3])
+            let t3 = Address::generate(&env);
+            env.storage()
+                .persistent()
+                .set(&DataKey::TokenLiquidityTier(t3.clone()), &3u32);
+            // With an empty config vector, falls back to DEFAULT_TIER_BONUS_BPS
+            assert_eq!(liquidity_tier_bonus_bps(&env, &t3), 300);
+        });
     }
 
     // ── #1075: Bridge token price ─────────────────────────────────────────────
 
     #[test]
     fn test_get_bridge_token_price_default_is_parity() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
         // Default price is 10_000 bps (1:1)
-        assert_eq!(get_bridge_token_price(&env, &token_addr), 10_000);
+        let price = env.as_contract(&contract_id, || {
+            get_bridge_token_price(&env, &token_addr)
+        });
+        assert_eq!(price, 10_000);
     }
 
     #[test]
     fn test_bridged_token_balance_starts_at_zero() {
-        let env = make_env();
+        let (env, contract_id) = make_env();
         let token_addr = Address::generate(&env);
-        assert_eq!(
-            get_bridged_token_balance(env.clone(), token_addr),
-            0i128
-        );
+        let balance = env.as_contract(&contract_id, || {
+            get_bridged_token_balance(env.clone(), token_addr)
+        });
+        assert_eq!(balance, 0i128);
     }
+}
+
+/// Issue #965: Atomic cross-chain repayment with bridge attestation verification.
+///
+/// This function enables a borrower to repay a loan from another chain by:
+/// 1. Verifying that the repayment actually occurred on the origin chain (via bridge attestation)
+/// 2. Atomically updating the local loan state ONLY if verification succeeds
+/// 3. Returning an error if verification fails (no partial state changes)
+///
+/// **Atomic semantics**: The repayment record is updated and events are published
+/// only after successful attestation verification. If verification fails at any point,
+/// the function returns early with no state mutations.
+///
+/// **Parameters:**
+/// - `origin_chain`: The chain ID where the repayment originated (0 = local/Stellar)
+/// - `loan_id`: The loan ID on the origin chain
+/// - `borrower`: The borrower address (must match the attestation)
+/// - `payment_amount`: Amount repaid (in origin chain's stroops equivalent)
+/// - `attestation`: Bridge-signed proof that repayment occurred on origin chain
+///
+/// **Errors:**
+/// - `InvalidToken`: Attestation references unknown token
+/// - `InsufficientFunds`: Payment amount invalid or insufficient
+/// - `NoActiveLoan`: Borrower has no active or defaulted loan
+/// - `UnauthorizedCaller`: Attestation doesn't match borrower address
+/// - `StaleBridgeAttestation`: Attestation timestamp is too old
+pub fn repay_cross_chain_atomic(
+    env: Env,
+    origin_chain: u32,
+    loan_id: u64,
+    borrower: Address,
+    payment_amount: i128,
+    attestation: crate::cross_chain::BridgeAttestation,
+) -> Result<(), ContractError> {
+    borrower.require_auth();
+    require_not_paused(&env)?;
+    
+    // Load the active (or defaulted) loan for this borrower
+    let active_loan_id: Option<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ActiveLoan(borrower.clone()));
+
+    let mut loan: LoanRecord = match active_loan_id {
+        Some(id) => {
+            let record: Option<LoanRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Loan(id));
+            match record {
+                Some(r) if r.status == LoanStatus::Active || r.status == LoanStatus::Defaulted => r,
+                _ => return Err(ContractError::NoActiveLoan),
+            }
+        }
+        None => {
+            // Try latest loan if it is defaulted
+            let latest_id: Option<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LatestLoan(borrower.clone()));
+            match latest_id {
+                Some(id) => {
+                    let record: Option<LoanRecord> = env
+                        .storage()
+                        .persistent()
+                        .get(&DataKey::Loan(id));
+                    match record {
+                        Some(r) if r.status == LoanStatus::Defaulted => r,
+                        _ => return Err(ContractError::NoActiveLoan),
+                    }
+                }
+                None => return Err(ContractError::NoActiveLoan),
+            }
+        }
+    };
+
+    // Validate payment amount
+    if payment_amount <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    // Phase 1: Verify the bridge attestation (all-or-nothing)
+    // This is the critical atomic boundary — if attestation fails, return immediately
+    // without any state mutations.
+    crate::cross_chain::verify_bridge_message(
+        env.clone(),
+        crate::cross_chain::CrossChainLoanMetadata {
+            origin_chain,
+            loan_id,
+            borrower: borrower.clone(),
+            amount: payment_amount,
+            status: LoanStatus::Repaid,
+            reputation_score: 0, // Not used for repayment verification
+        },
+        attestation.clone(),
+    )?;
+
+    // Phase 2: Attestation verified — atomically update local state
+    
+    // Transfer payment from borrower to contract
+    let token_client = token::Client::new(&env, &loan.token_address);
+    token_client.transfer(&borrower, &env.current_contract_address(), &payment_amount);
+
+    // Update loan record with repayment
+    let now = env.ledger().timestamp();
+    loan.amount_repaid = loan
+        .amount_repaid
+        .checked_add(payment_amount)
+        .ok_or(ContractError::ArithmeticError)?;
+    loan.repayment_timestamp = Some(now);
+
+    // Check if fully repaid
+    let total_owed = loan
+        .amount
+        .checked_add(loan.total_yield)
+        .ok_or(ContractError::ArithmeticError)?;
+    
+    let fully_repaid = loan.amount_repaid >= total_owed;
+    if fully_repaid {
+        loan.status = LoanStatus::Repaid;
+    }
+
+    // Persist updated loan record
+    env.storage()
+        .persistent()
+        .set(&DataKey::Loan(loan.id), &loan);
+
+    // Emit event with cross-chain metadata
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("xc_repay")),
+        (borrower.clone(), origin_chain, loan_id, payment_amount, fully_repaid),
+    );
+
+    Ok(())
 }

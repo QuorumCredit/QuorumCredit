@@ -214,32 +214,34 @@ EmergencyBypassNotAuthorised = 131,
     RelayEventAlreadyProcessed = 159,
     /// A relay acknowledgement tried to move the cursor backwards.
     RelayAckRegression = 160,
+    /// A relay attestation's signature did not verify against the registered key.
+    InvalidRelaySignature = 161,
     /// Circular delegation chain detected in vote delegation.
-    CircularDelegation = 161,
+    CircularDelegation = 162,
     /// Delegation not found.
-    DelegationNotFound = 162,
+    DelegationNotFound = 163,
     /// Loan has already been fully repaid.
-    AlreadyRepaid = 163,
+    AlreadyRepaid = 164,
     /// Loan amount exceeds the maximum ratio allowed.
-    LoanExceedsMaxRatio = 164,
+    LoanExceedsMaxRatio = 165,
     /// Self-co-borrowing is not allowed.
-    SelfCoBorrowerNotAllowed = 165,
+    SelfCoBorrowerNotAllowed = 166,
     /// Maximum number of co-borrowers exceeded.
-    MaxCoBorrowersExceeded = 166,
+    MaxCoBorrowersExceeded = 167,
     /// Co-borrower is already added to this loan.
-    CoBorrowerAlreadyAdded = 167,
+    CoBorrowerAlreadyAdded = 168,
     /// Operation is not allowed on a loan in forbearance.
-    LoanInForbearance = 168,
+    LoanInForbearance = 169,
     /// No forbearance record found for this loan.
-    ForbearanceNotFound = 169,
+    ForbearanceNotFound = 170,
     /// Forbearance is not currently active.
-    ForbearanceNotActive = 170,
+    ForbearanceNotActive = 171,
     /// Maximum number of forbearance periods reached.
-    MaxForbearanceExceeded = 171,
+    MaxForbearanceExceeded = 172,
     /// Invalid configuration for dynamic interest rate.
-    InvalidDynamicRateConfig = 172,
+    InvalidDynamicRateConfig = 173,
     /// Attestor reported fewer origin-chain confirmations than the required minimum.
-    InsufficientBridgeConfirmations = 173,
+    InsufficientBridgeConfirmations = 220,
     /// A live protocol invariant check failed (see `crate::invariants`).
     InvariantViolation = 178,
     /// The withdrawal queue has reached its maximum size.
@@ -265,4 +267,78 @@ EmergencyBypassNotAuthorised = 131,
     /// appeal mechanism. Only one appeal mechanism (evidence-based #552 or
     /// escrow-quorum #841) may be active at a time to prevent double-refunds.
     AppealAlreadyPending = 187,
+    // ── Issue #1238: Staking Pool ─────────────────────────────────────────────
+    /// No staking pool found for the given pool_id.
+    StakingPoolNotFound = 187,
+    /// Operation requires an Active staking pool, but the pool is Draining or Closed.
+    StakingPoolNotActive = 188,
+    // ── Issue #1247: Referral Rewards ─────────────────────────────────────────
+    /// Referral code not found or does not correspond to any registered referrer.
+    ReferralCodeNotFound = 189,
+    /// Caller cannot refer themselves.
+    SelfReferralNotAllowed = 190,
+    /// This borrower already has a referrer registered.
+    ReferralAlreadyRegistered = 191,
+    // ── Guarantor system ────────────────────────────────────────────────────
+    /// No guarantor record found for the given loan.
+    GuarantorNotFound = 192,
+    /// A guarantor has already been assigned to this loan.
+    GuarantorAlreadyAssigned = 193,
+    /// The guarantor's obligation for this loan has already been claimed.
+    GuarantorAlreadyClaimed = 194,
+    /// The provided guarantor address is invalid (e.g. zero address or the borrower itself).
+    InvalidGuarantor = 195,
+    /// The guarantee amount is invalid (e.g. zero or exceeds the loan amount).
+    InvalidGuaranteeAmount = 196,
+    /// The guarantee is not in a status that permits this operation.
+    InvalidGuaranteeStatus = 197,
+    /// An arithmetic overflow or underflow occurred during a checked operation.
+    ArithmeticOverflow = 198,
+    // ── Flash loans ──────────────────────────────────────────────────────────
+    /// The flash loan was not repaid (plus fee) within the same transaction.
+    FlashLoanNotRepaid = 199,
+    /// The requested fee amount is invalid.
+    InvalidFeeAmount = 200,
+    /// The requested flash loan would exceed the per-contract borrow cap.
+    FlashLoanCapExceeded = 201,
+    /// The requested record or resource was not found.
+    NotFound = 202,
+    // ── Vouch syndication ────────────────────────────────────────────────────
+    /// A syndicate pool already exists for this loan.
+    SyndicatePoolExists = 203,
+    /// A syndicate pool cannot be created or operated on with zero members.
+    SyndicateEmpty = 204,
+    /// No syndicate pool was found for the given pool_id.
+    SyndicatePoolNotFound = 205,
+    /// The syndicate pool is not in the Active status required for this operation.
+    SyndicateNotActive = 206,
+    /// Caller is not a member of the specified syndicate pool.
+    NotSyndicateMember = 207,
+    /// Caller has already voted on this syndicate proposal.
+    SyndicateAlreadyVoted = 208,
+    /// No syndicate proposal was found for the given proposal_id.
+    SyndicateProposalNotFound = 209,
+    // ── Vouch milestones ─────────────────────────────────────────────────────
+    /// The milestone condition has not yet been reached.
+    MilestoneNotReached = 210,
+    /// This milestone's release has already been claimed.
+    MilestoneAlreadyReleased = 211,
+    // ── Recurring payments ───────────────────────────────────────────────────
+    /// A recurring payment schedule already exists for this borrower.
+    RecurringPaymentExists = 212,
+    /// No recurring payment schedule was found for this borrower.
+    RecurringPaymentNotFound = 213,
+    /// The recurring payment schedule is not active.
+    RecurringPaymentInactive = 214,
+    /// The next recurring payment is not yet due.
+    RecurringPaymentNotDue = 215,
+    /// The lazy slash queue has reached its maximum capacity.
+    QueueFull = 216,
+    // ── Cross-chain vote attestations ────────────────────────────────────────
+    /// Ed25519 signature verification failed for a cross-chain vote attestation.
+    InvalidVoteAttestationSignature = 217,
+    /// This origin-chain vote attestation nonce has already been consumed.
+    VoteAttestationNonceReused = 218,
+    /// The vote attestation is outside the accepted freshness window.
+    VoteAttestationExpired = 219,
 }

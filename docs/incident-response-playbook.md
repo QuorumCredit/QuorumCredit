@@ -124,9 +124,16 @@ Covers: indexer database corruption/loss, lost webhook registrations, lost off-c
    - On-chain state (loans, vouches, balances): always recoverable by re-indexing from genesis or the last checkpoint — not permanent data loss. See `backup-recovery-guide.md`.
    - Off-chain-only state (expense ledger, recurring-payment schedules, webhook registrations — all in-memory stores in `server/src/*Store.ts`): **not recoverable without a backup**, since it has no on-chain source of truth. This is the case that needs a real backup/restore path in production, not just re-indexing.
 3. **Restore from backup** per `backup-recovery-guide.md`, verifying backup integrity (checksum, row counts) before cutting traffic back over.
-4. **Re-index** if the loss is confined to the indexer's sqlite database:
+4. **Re-index** if the loss is confined to the indexer's database:
    ```bash
-   cd services/indexer && npm run reindex -- --from-genesis
+   # The TypeScript indexer (services/indexer) now has cursor persistence (#1366)
+   # and will automatically resume from the last processed ledger.
+   # Only use --from-genesis if the cursor is also lost or corrupt:
+   cd services/indexer && npm start -- --from-genesis
+   
+   # If the database is corrupt, it will be preserved with a .corrupt suffix.
+   # Use --allow-rebuild to explicitly start with an empty database:
+   npm start -- --allow-rebuild --from-genesis
    ```
 
 ### If no backup exists

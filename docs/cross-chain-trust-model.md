@@ -1,8 +1,9 @@
 # Cross-Chain Trust Model
 
-This document covers the two places QuorumCredit accepts data it cannot itself
-observe: the bridge attestation system (`src/cross_chain.rs`) and the oracle
-price feed (`src/helpers.rs`, wired into `src/loan.rs`). For both, it states
+This document covers the places QuorumCredit accepts data it cannot itself
+observe: the bridge attestation system (`src/cross_chain.rs`), cross-chain
+governance vote attestations (`src/cross_chain_governance.rs`), and the oracle
+price feed (`src/helpers.rs`, wired into `src/loan.rs`). For each, it states
 plainly what the contract verifies cryptographically versus what it has to
 trust from an off-chain party.
 
@@ -89,6 +90,64 @@ M-of-N attestor quorum instead of a single key per chain, or a fraud-proof
 window before mirrored data takes effect), that is a design change to
 `cross_chain.rs`, not a parameter tweak — flagging it here rather than
 overstating what the current signature check buys.
+
+## Cross-chain vote attestations
+
+### What changed
+
+Prior to this work, `aggregate_remote_votes` in `src/cross_chain_governance.rs`
+accepted any `VoteAttestation` without verifying its signature or protecting
+against nonce replay — the signature and nonce fields were declared but unused.
+A caller with admin approval could fabricate arbitrary vote weights from any
+chain and replay the same attestation multiple times to inflate voting power.
+
+`aggregate_remote_votes` now performs the same signature verification and
+nonce-replay protection as the bridge attestation system, reusing the existing
+per-chain registered key infrastructure.
+
+### What the contract verifies
+
+For every `VoteAttestation` submitted to `aggregate_remote_votes`, the contract
+checks, in order:
+
+1. **Nonce has not been used before** for that chain
+   (`DataKey::VoteAttestationNonceUsed(origin_chain, nonce)`) — replay protection.
+   The nonce is consumed only after successful verification, so a rejected
+   attestation never consumes a nonce.
+2. **Timestamp is fresh**: not older than `VOTE_ATTESTATION_MAX_AGE_SECS`
+   (10 minutes) and not more than `VOTE_ATTESTATION_MAX_SKEW_SECS` (60 seconds)
+   in the future relative to the ledger clock.
+3. **An attestor key is configured** for that chain
+   (`DataKey::BridgePublicKey(origin_chain)`) — set via `set_bridge_public_key`,
+   admin-gated the same way every other admin action.
+4. **Signature verifies**: the canonical message —
+   `sha256(xdr(origin_chain, proposal_id, approve_stake, reject_stake, voter_count, attested_at, nonce))` —
+   must be a valid Ed25519 signature under the registered key for that chain.
+   This is a real cryptographic check (`env.crypto().ed25519_verify`), which
+   traps the transaction on failure rather than returning a soft error; the
+   checks above run first so ordinary failures (replay, staleness, missing key)
+   return a proper `ContractError` instead of a trap.
+
+### What remains a trust assumption
+
+**The contract cannot observe the origin chain or verify the claimed vote weights.**
+It has no way to independently confirm that the `approve_stake` and `reject_stake`
+values in the attestation actually represent votes from that chain, or that the
+votes are from unique voters. What it verifies is: *someone holding the private
+key registered for this chain signed exactly this claim*.
+
+As with bridge attestations, this collapses the trust model to one question:
+**is the registered attestor key controlled only by an honest party who won't
+sign false claims?** A compromised or malicious attestor for a chain can:
+
+- fabricate arbitrary `approve_stake` / `reject_stake` values to skew votes on
+  any proposal, or
+- submit multiple attestations with different nonces for the same (or stale)
+  vote data to multiply its weight.
+
+Key rotation (`set_bridge_public_key`, callable again with a new key) is the
+mitigation for a suspected key compromise, gated by the same admin multi-sig
+as every other privileged action.
 
 ## Oracle price feed
 

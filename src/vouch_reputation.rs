@@ -23,8 +23,8 @@ pub fn calculate_weighted_vouch_strength(
         .unwrap_or(VoucherStats {
             successful_vouches: 0,
             total_vouches_slashed: 0,
-            total_stake: 0,
             total_yield_earned: 0,
+            total_slashed: 0,
         });
 
     // Calculate reputation score (0-1000 scale)

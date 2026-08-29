@@ -17,6 +17,9 @@
 
 use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
 
+use crate::interest_rate_options::OptionType;
+use crate::reputation_nft::BadgeType;
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Yield earned by vouchers on full repayment, in basis points (200 = 2%).
@@ -29,8 +32,9 @@ pub const BPS_DENOMINATOR: i128 = 10_000;
 /// the default 2% rate. Amounts below this truncate to zero yield.
 /// 1 XLM = 10,000,000 stroops.
 pub const DEFAULT_MIN_YIELD_STAKE: i128 = 50;
-/// Referral bonus paid to the referrer on full repayment, in basis points (100 = 1% of loan amount).
-pub const DEFAULT_REFERRAL_BONUS_BPS: u32 = 100; // 1% of loan amount
+/// Referral bonus paid to the referrer on full repayment, in basis points.
+/// Issue #1247 specifies 10% of the referrer's first interest earned (1000 bps).
+pub const DEFAULT_REFERRAL_BONUS_BPS: u32 = 1000; // 10% of first loan interest
 /// Minimum age of a vouch before it can be used for a loan, in seconds (60 = 1 minute).
 pub const MIN_VOUCH_AGE: u64 = 60; // 1 minute
 /// Default minimum vouch age before loan eligibility, in seconds (24 hours).
@@ -66,6 +70,14 @@ pub const MAX_HOT_VOUCH_HISTORY_ENTRIES: u32 = 20;
 /// oldest entries are cut over into a single `ArchivedVouchHistory` batch,
 /// bringing the hot window back down to `MAX_HOT_VOUCH_HISTORY_ENTRIES`.
 pub const VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
+/// Issue #1179: target size of the "hot" per-(borrower, voucher, token)
+/// vouch audit-trail window kept after an archival cutover. Mirrors the
+/// `MAX_HOT_VOUCH_HISTORY_ENTRIES` bounding strategy used for `VouchHistory`.
+pub const MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES: u32 = 20;
+/// Issue #1179: once the hot vouch audit-trail window reaches this length,
+/// the oldest entries are cut over into a single `ArchivedVouchAuditTrail`
+/// batch, bringing the hot window back down to `MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES`.
+pub const VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES: u32 = 30;
 /// Issue #1146: maximum number of items returned by a single page of any
 /// `*_page` read function, regardless of the caller-requested `limit`.
 pub const MAX_PAGE_SIZE: u32 = 50;
@@ -94,6 +106,10 @@ pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
 /// Maximum window after `eta` within which a timelocked action must be executed, in seconds (72 hours).
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+/// Cross-chain vote attestations older than this (relative to the ledger clock) are rejected as stale (10 minutes).
+pub const VOTE_ATTESTATION_MAX_AGE_SECS: u64 = 10 * 60;
+/// Cross-chain vote attestations timestamped further than this into the future are rejected, in seconds (60).
+pub const VOTE_ATTESTATION_MAX_SKEW_SECS: u64 = 60;
 /// Minimum lock period for a vouch before it can be withdrawn, in seconds (7 days).
 /// Protects against flash-loan-style attacks where an attacker stakes, borrows, then
 /// immediately withdraws.
@@ -123,6 +139,16 @@ pub const MAX_EXTENSIONS_PER_LOAN: u32 = 2;
 
 /// Default liquidity mining reward rate in basis points per epoch (50 = 0.5% per 7 days).
 pub const DEFAULT_LIQUIDITY_MINING_RATE_BPS: u32 = 50;
+
+/// Issue #1238: Precision scalar used in yield-per-token accounting (10^12).
+/// Yield-per-token is stored multiplied by this factor to preserve sub-stroop precision.
+pub const YIELD_PER_TOKEN_PRECISION: i128 = 1_000_000_000_000;
+
+/// Issue #1238: Default staking pool yield rate in basis points per year (500 = 5% APY).
+pub const DEFAULT_STAKING_POOL_APY_BPS: u32 = 500;
+
+/// Issue #1238: Minimum unstake queue delay in seconds (24 hours).
+pub const STAKING_UNSTAKE_DELAY_SECS: u64 = 24 * 60 * 60;
 
 /// Default dynamic slash threshold setting (false = disabled by default).
 pub const DEFAULT_DYNAMIC_SLASH_THRESHOLD: bool = false;
@@ -165,6 +191,10 @@ pub const DEFERMENT_PERIOD_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// Penalty applied to partial mid-loan withdrawals, in basis points (1000 = 10%).
 pub const PARTIAL_WITHDRAWAL_PENALTY_BPS: i128 = 1_000;
+
+/// Default reputation score decay per month in basis points (100 = 1% per month).
+/// Encourages active participation and prevents stale scores from granting perpetual benefits.
+pub const DEFAULT_REPUTATION_SCORE_DECAY_BPS: u32 = 100;
 
 /// Yield stream period in seconds (7 days).
 pub const YIELD_STREAM_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
@@ -575,6 +605,9 @@ pub enum DataKey {
     RepaymentCount(Address), // borrower → u32 total successful repayments
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
+    /// Issue #1371: protocol-wide total default count, incremented alongside every
+    /// per-borrower `DefaultCount` update. Feeds `circuit_breaker::get_current_default_rate`.
+    TotalDefaultCount,
     ProtocolFeeBps,  // u32: protocol fee in basis points
     FeeTreasury,     // Address: recipient of collected protocol fees
     LastVouchTimestamp(Address), // voucher → u64 last vouch timestamp
@@ -582,6 +615,7 @@ pub enum DataKey {
     Timelock(u64),   // proposal_id → TimelockProposal
     TimelockCounter, // u64 monotonically increasing proposal ID
     Blacklisted(Address), // borrower → bool permanently banned
+    BlacklistReason(Address), // borrower → Bytes reason for blacklisting (Issue #1073)
     VoucherWhitelist(Address), // voucher → bool allowed to vouch
     WhitelistEnabled, // bool: true when voucher whitelist is enabled (opt-in)
     ExtensionConsents(Address), // borrower → Vec<Address> vouchers who consented to extension
@@ -659,6 +693,8 @@ pub enum DataKey {
     PendingWithdrawal(Address, Address),
     /// Confidential vouch commitment: (voucher, borrower) → commitment record
     VouchCommitment(Address, Address),
+    /// Confidential loan commitment: borrower → commitment record
+    LoanCommitment(Address),
     /// Monotonic counter for confidential proof records
     ZkProofCounter,
     /// Confidential proof record by ID
@@ -885,6 +921,19 @@ pub enum DataKey {
     /// created so far for this relationship's vouch history. The index needed
     /// to enumerate `ArchivedVouchHistory` batches in order (0..count).
     VouchHistoryArchiveCount(Address, Address, Address),
+    // ── Vouch audit trail (Issue #1179) ──────────────────────────────────────
+    /// (borrower, voucher, token) → Vec<VouchAuditEvent>: bounded "hot" window
+    /// of audit events (created / stake increased / stake decreased /
+    /// withdrawn) for this vouch relationship.
+    VouchAuditTrail(Address, Address, Address),
+    /// Archived vouch audit trail: (borrower, voucher, token, batch_id) →
+    /// Vec<VouchAuditEvent>. Old audit events are moved here when the hot
+    /// window grows beyond `VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES`.
+    ArchivedVouchAuditTrail(Address, Address, Address, u32),
+    /// (borrower, voucher, token) → u32 number of archive batches created so
+    /// far for this relationship's audit trail. The index needed to
+    /// enumerate `ArchivedVouchAuditTrail` batches in order (0..count).
+    VouchAuditTrailArchiveCount(Address, Address, Address),
     // ── Vouch splitting (Issue #1167) ────────────────────────────────────────
     /// borrower → Vec<VouchSplitRecord> genealogy of every split performed
     /// against a vouch for this borrower (parent voucher → child voucher).
@@ -903,6 +952,34 @@ pub enum DataKey {
     // ── Refinance rate shopping (Issue #1166) ────────────────────────────────
     /// Global aggregate statistics for `refinance_loan` usage.
     RefinanceStats,
+    
+    // ── Issue #967: Arbitrage Prevention ──────────────────────────────────
+    /// (token_a, token_b) → ExchangeRate
+    ExchangeRate(Address, Address),
+    /// (token_a, token_b) → RateHistory
+    RateHistory(Address, Address),
+    
+    // ── Issue #970: Cross-Chain Governance ────────────────────────────────
+    /// proposal_id → CrossChainProposal
+    CrossChainProposal(u64),
+    /// (proposal_id, voter) → CrossChainVote
+    CrossChainVote(u64, Address),
+    /// (origin_chain, nonce) → true once a vote attestation with that nonce has been consumed.
+    VoteAttestationNonceUsed(u32, u64),
+    
+    // ── Issue #974: Cross-Chain Auction ───────────────────────────────────
+    /// auction_id → CrossChainAuction
+    CrossChainAuction(u64),
+    /// (auction_id, bidder) → Bid
+    AuctionBid(u64, Address),
+    /// auction_id → AuctionSettlement
+    AuctionSettlement(u64),
+    
+    // ── Issue #978: Liquidity Farming ─────────────────────────────────────
+    /// pool_id → LiquidityFarmPool
+    FarmPool(u64),
+    /// (pool_id, lp_provider) → FarmingPosition
+    FarmingPosition(u64, Address),
     // ── Liquidity Mining Campaigns (Issue #1257) ─────────────────────────────
     /// campaign_id → MiningCampaign
     MiningCampaign(u64),
@@ -923,6 +1000,193 @@ pub enum DataKey {
     BridgeTokenPrice(Address),
     /// Reentrancy guard for token transfer operations
     ReentrancyGuard,
+    // ── Issue #1070: Circuit Breaker for Rapid Default Cascade ─────────────────
+    /// Timestamp (u64) when the circuit breaker was last triggered (activated).
+    /// Used to enforce cooldown between successive circuit-breaker activations.
+    CircuitBreakerLastTriggered,
+    /// Default rate threshold (u32) in basis points at which the circuit breaker activates.
+    /// Stored separately to allow runtime updates via governance.
+    DefaultRateThreshold,
+    // ── Issue #1071: Insurance Fund Mechanism ──────────────────────────────────
+    /// Balance of the protocol's dedicated insurance fund (i128 stroops).
+    /// Pre-funded by admin or protocol fees; drawn down to cover slash shortfalls.
+    InsuranceFund,
+    /// Timestamp (u64) of the most recent insurance fund contribution.
+    InsuranceFundLastContribution,
+
+    // ── Issue #1172: Guarantor system ───────────────────────────────────────
+    /// loan_id → GuarantorRecord
+    GuarantorRecord(u64),
+    /// (guarantor, loan_id) → GuarantorObligation
+    GuarantorObligation(Address, u64),
+    /// guarantor → GuarantorStats
+    GuarantorStats(Address),
+
+    // ── Issue #1238: Staking Pool ────────────────────────────────────────────
+    /// pool_id → StakingPool
+    StakingPool(u64),
+    /// u64: monotonically increasing staking pool ID counter
+    StakingPoolCounter,
+    /// (pool_id, staker) → StakerPosition
+    StakingPoolStake(u64, Address),
+
+    // ── Vouch syndication ─────────────────────────────────────────────────────
+    /// pool_id → SyndicatePool
+    SyndicatePool(u64),
+    /// (pool_id, member) → SyndicateMember
+    SyndicateMember(u64, Address),
+    /// pool_id → SyndicatePerformance
+    SyndicatePerformance(u64),
+    /// pool_id → u64: monotonically increasing proposal ID counter for that pool
+    SyndicateProposalCounter(u64),
+    /// (pool_id, proposal_id) → SyndicateProposal
+    SyndicateProposal(u64, u64),
+    /// (pool_id, proposal_id, voter) → bool: has this member voted
+    SyndicateProposalVote(u64, u64, Address),
+
+    // ── Issue #1183: Flash loans ─────────────────────────────────────────────
+    /// Aggregate flash loan statistics (volume, fees, count)
+    FlashLoanStats,
+    /// contract → PerContractCap: per-contract flash-loan borrowing cap state
+    FlashLoanPerContractCap(Address),
+    /// Recent flash loan activity records (bounded ring buffer)
+    FlashLoanHistory,
+
+    // ── Cross-chain / multi-token bridge ─────────────────────────────────────
+    /// token → i128: bridged balance for that token
+    BridgedTokenBalance(Address),
+    /// token → u32: bridge conversion price in basis points
+    BridgeTokenPrice(Address),
+    /// token → TokenBridgeMetadata
+    TokenBridgeMetadata(Address),
+    /// Reentrancy guard lock (u32: 0 = unlocked, 1 = locked)
+    ReentrancyGuard,
+    /// loan_id → TokenSwapConfig
+    LoanTokenSwapConfig(u64),
+    /// Address of the configured DEX contract used for token swaps
+    DexContractAddress,
+    /// token → u32: liquidity tier for that token
+    TokenLiquidityTier(Address),
+    /// Vec<i128>: yield bonus (bps) per liquidity tier
+    LiquidityTierYieldBonuses,
+
+    // ── Weighted vouch reputation ─────────────────────────────────────────────
+    /// vouch_id → weight record
+    VouchReputationWeight(u64),
+    /// (borrower, token) → WeightedVouchDistribution
+    WeightedVouchDistribution(Address, Address),
+
+    // ── Issue #1169: Milestone-based vouch release ───────────────────────────
+    /// (loan_id, voucher, milestone_index) → bool: has this release been paid
+    VouchMilestoneRelease(u64, Address, u32),
+    /// (loan_id, milestone_index) → bool: has this milestone been achieved
+    MilestoneAchieved(u64, u32),
+
+    // ── Recurring payments ────────────────────────────────────────────────────
+    /// borrower → RecurringPaymentConfig
+    RecurringPayment(Address),
+
+    // ── Issue #1247: Referral rewards ─────────────────────────────────────────
+    /// referrer → i128: total referral rewards earned
+    ReferralRewardsEarned(Address),
+    /// referrer → BytesN<32>: referral code hash (lookup by owner)
+    ReferralCode(Address),
+    /// code hash → Address: referrer address (reverse lookup)
+    ReferralCodeOwner(BytesN<32>),
+    /// referrer → u32: number of successful referrals
+    ReferralCount(Address),
+
+    // ── Reputation badges (NFT-style achievements) ───────────────────────────
+    /// (owner, badge_type) → Badge
+    ReputationBadge(Address, BadgeType),
+    /// badge_type → BadgeStats
+    BadgeStats(BadgeType),
+    /// address → u32: reputation score
+    ReputationScore(Address),
+    /// address → u32: number of vouches this address has backed
+    VoucherBackedCount(Address),
+
+    // ── Prediction markets ────────────────────────────────────────────────────
+    /// u64: monotonically increasing prediction market ID counter
+    PredictionMarketCounter,
+    /// market_id → PredictionMarket
+    PredictionMarket(u64),
+    /// (market_id, participant) → MarketPosition
+    MarketPosition(u64, Address),
+    /// participant → PredictionAccuracy
+    PredictionAccuracy(Address),
+
+    // ── Community treasury / DAO ─────────────────────────────────────────────
+    /// i128: current treasury balance
+    TreasuryBalance,
+    /// u64: monotonically increasing treasury proposal ID counter
+    TreasuryProposalCounter,
+    /// proposal_id → TreasuryProposal
+    TreasuryProposal(u64),
+    /// (proposal_id, voter) → bool: has this address voted
+    TreasuryVote(u64, Address),
+    /// month_id → TreasuryReport
+    TreasuryReport(u64),
+
+    // ── Governance token / DAO proposals ─────────────────────────────────────
+    /// Aggregate governance participation metrics
+    GovParticipationMetrics,
+    /// holder → i128: governance token balance
+    GovTokenBalance(Address),
+    /// u64: monotonically increasing DAO proposal ID counter
+    DaoProposalCounter,
+    /// delegator → GovDelegation
+    GovDelegation(Address),
+    /// proposal_id → DaoProposal
+    DaoProposal(u64),
+
+    // ── Interest rate options ─────────────────────────────────────────────────
+    /// u32: implied volatility in basis points per day
+    ImpliedVolatility,
+    /// u64: monotonically increasing option ID counter
+    OptionCounter,
+    /// option_id → InterestRateOption
+    InterestRateOption(u64),
+    /// option_type → OptionOpenInterest
+    OptionOpenInterest(OptionType),
+
+    // ── Dynamic interest rate ─────────────────────────────────────────────────
+    /// Utilization-rate model configuration
+    UtilizationRateConfig,
+    /// Latest computed utilization-rate snapshot
+    UtilizationRateSnapshot,
+
+    // ── Loyalty program ───────────────────────────────────────────────────────
+    /// user → LoyaltyRecord
+    LoyaltyRecord(Address),
+
+    // ── Protocol-wide aggregate counters ─────────────────────────────────────
+    /// u32: total number of currently active loans
+    TotalActiveLoans,
+    /// i128: total value locked across the protocol
+    TotalValueLocked,
+    /// Vec<Address>: registry of all addresses that have ever vouched
+    VoucherRegistry,
+
+    // ── Issue #1080: Request idempotency ─────────────────────────────────────
+    /// idempotency_key → IdempotencyRecord
+    IdempotencyKey(String),
+    /// (user, role) → rate limit tracking state
+    RateLimitByRole(Address, UserRole),
+
+    // ── Issue #1361: Cross-Chain Relay Pipeline ──────────────────────────────
+    /// source_chain → Ed25519 public key trusted to sign relay messages
+    RelayPublicKey(u32),
+    /// (source_chain, nonce) → bool: has this nonce been consumed
+    RelayNonceUsed(u32, u64),
+    /// (dest_chain, seq) → RelayEvent: outbound event stored for retrieval
+    OutboundRelayEvent(u32, u64),
+    /// dest_chain → u64: latest outbound sequence number for that chain
+    OutboundRelaySeq(u32),
+    /// dest_chain → u64: last acknowledged outbound sequence (for delivery tracking)
+    LastAcknowledgedRelaySeq(u32),
+    /// (source_chain, seq) → bool: has this inbound event been processed
+    RelayEventProcessed(u32, u64),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -997,6 +1261,88 @@ pub struct MiningCampaign {
     pub total_participation: i128,
     /// Number of unique participants who have recorded participation.
     pub participant_count: u64,
+}
+
+// ── Issue #1238: Staking Pool with Yield Farming ──────────────────────────────
+
+/// Lifecycle state of a staking pool.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StakingPoolStatus {
+    /// Pool is open and accepting stakes.
+    Active,
+    /// Pool is processing withdrawals; no new stakes accepted.
+    Draining,
+    /// Pool is closed; all stakes have been returned.
+    Closed,
+}
+
+/// Issue #1238: A yield-bearing staking pool that lets capital holders earn
+/// returns sourced from the protocol's lending operations.
+///
+/// Stakers deposit tokens and receive a proportional share of yield accrued
+/// from the lending yield reserve over time.  Withdrawals are queued to
+/// prevent bank-run dynamics; the queue is drained when yield is collected.
+#[contracttype]
+#[derive(Clone)]
+pub struct StakingPool {
+    /// Unique pool identifier (1-indexed monotonic counter).
+    pub pool_id: u64,
+    /// Token staked in this pool (must be the protocol token or an allowed token).
+    pub token: Address,
+    /// Total tokens currently deposited by all stakers, in stroops.
+    pub total_staked: i128,
+    /// Accumulated yield per stroop (scaled by 1e12 for precision).
+    /// Updated each time yield is distributed from the lending reserve.
+    pub yield_per_token_scaled: i128,
+    /// Annual Percentage Yield in basis points, computed lazily on each distribution.
+    pub current_apy_bps: u32,
+    /// Total yield distributed to stakers since pool creation, in stroops.
+    pub total_yield_distributed: i128,
+    /// Timestamp of the last yield distribution event.
+    pub last_yield_timestamp: u64,
+    /// Pool lifecycle status.
+    pub status: StakingPoolStatus,
+    /// Timestamp when the pool was created.
+    pub created_at: u64,
+}
+
+/// Issue #1238: Per-staker position in a staking pool.
+/// Stored under `DataKey::StakingPoolStake(pool_id, staker)`.
+#[contracttype]
+#[derive(Clone)]
+pub struct StakerPosition {
+    /// Staker address.
+    pub staker: Address,
+    /// Amount currently staked, in stroops.
+    pub amount: i128,
+    /// Snapshot of `yield_per_token_scaled` at time of last claim/stake.
+    /// Used to compute pending rewards: (current - snapshot) * amount / 1e12.
+    pub yield_snapshot_scaled: i128,
+    /// Accumulated rewards not yet withdrawn, in stroops.
+    pub pending_rewards: i128,
+    /// Timestamp of the staker's last action (stake/unstake/claim).
+    pub last_action_timestamp: u64,
+    /// Whether there is a pending unstake in the withdrawal queue.
+    pub pending_unstake: bool,
+    /// Amount queued for unstaking (0 when `pending_unstake` is false).
+    pub queued_unstake_amount: i128,
+}
+
+// ── Issue #1247: Referral Rewards Program ─────────────────────────────────────
+
+/// Issue #1247: Referral leaderboard entry for a single referrer.
+#[contracttype]
+#[derive(Clone)]
+pub struct ReferralStats {
+    /// The referrer's address.
+    pub referrer: Address,
+    /// Number of referred borrowers who have completed at least one loan.
+    pub conversion_count: u64,
+    /// Total referral rewards earned (in stroops).
+    pub total_rewards_earned: i128,
+    /// Timestamp of the most recent referral conversion.
+    pub last_conversion_at: u64,
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────
@@ -1310,6 +1656,8 @@ pub struct CreditScore {
     pub tier: CreditTier,
     /// Ledger timestamp when the score was last updated
     pub last_updated: u64,
+    /// Ledger timestamp when the score was last decayed (Issue #1072)
+    pub last_decay_timestamp: u64,
     /// Total number of loans taken
     pub total_loans: u32,
     /// Number of successfully repaid loans
@@ -1723,10 +2071,24 @@ pub struct Config {
     /// Index 0 = Tier 0 (most liquid, no bonus), 3 = Tier 3 (illiquid, max bonus).
     /// Example: [0, 50, 150, 300] means tier-3 tokens earn +300 bps extra yield.
     pub liquidity_tier_yield_bonus: Vec<i128>,
+    /// Issue #1072: Credit score decay rate per month in basis points (e.g. 100 = 1% per month).
+    /// Applied monthly to encourage active participation and prevent stale scores.
+    pub score_decay_per_month: u32,
     /// Issue #1287: Governance-adjustable cap on withdrawal-queue priority fees,
     /// in basis points of the voucher's own stake (default 1_000 = 10%).
     /// Replaces the compile-time constant `MAX_PRIORITY_FEE_BPS`.
     pub max_priority_fee_cap_bps: i128,
+    /// Issue #1070: Default rate threshold (in basis points) that triggers circuit breaker.
+    /// Default: 10_000 = 100 basis points = 10% of total loans defaulted.
+    /// When `(default_count / total_loan_count) * 10_000 >= default_rate_threshold`,
+    /// the circuit breaker automatically pauses the protocol.
+    pub default_rate_threshold: u32,
+    /// Issue #1071: Insurance fund configuration — premium percentage of loan principal
+    /// to be collected and routed to the insurance pool (in basis points, e.g. 50 = 0.5%).
+    pub insurance_fund_premium_bps: u32,
+    /// Issue #1071: Maximum insurance payout as a percentage of total slashed amount
+    /// (in basis points, e.g. 2500 = 25%).
+    pub insurance_max_payout_bps: u32,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -2299,6 +2661,37 @@ pub struct VouchHistoryEntry {
     pub delegate: Option<Address>,
 }
 
+/// Issue #1179: kind of event recorded in a vouch's audit trail.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VouchAuditEventType {
+    /// The vouch was first created.
+    Created,
+    /// The voucher increased their stake on an existing vouch.
+    StakeIncreased,
+    /// The voucher decreased their stake on an existing vouch.
+    StakeDecreased,
+    /// The vouch was fully withdrawn.
+    Withdrawn,
+}
+
+/// Issue #1179: a single immutable audit-trail entry for a (borrower,
+/// voucher, token) vouch relationship, suitable for compliance and
+/// transparency reporting.
+#[contracttype]
+#[derive(Clone)]
+pub struct VouchAuditEvent {
+    /// Kind of event this entry records.
+    pub event_type: VouchAuditEventType,
+    /// Ledger timestamp at which the event occurred.
+    pub timestamp: u64,
+    /// Amount involved in the event: the stake for `Created`, the delta for
+    /// `StakeIncreased`/`StakeDecreased`, and the returned stake for `Withdrawn`.
+    pub amount: i128,
+    /// The vouch's total stake immediately after this event (0 after `Withdrawn`).
+    pub resulting_stake: i128,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct LoanPoolRecord {
@@ -2340,6 +2733,16 @@ pub struct PendingSlashRecord {
     pub approved_at: u64,
     pub executable_at: u64,
     pub executed: bool,
+}
+
+/// A queued slash entry for lazy/deferred batch execution.
+/// Created via `queue_slash`; executed via `execute_queued_slashes`.
+#[contracttype]
+#[derive(Clone)]
+pub struct LazySlashEntry {
+    pub borrower: Address,
+    pub amount: i128,
+    pub queued_at: u64,
 }
 
 /// Controls where redistributable slash funds flow after insurance allocation.
@@ -2915,6 +3318,19 @@ pub struct VouchMerkleRoot {
     pub computed_at: u64,
 }
 
+/// Issue #1056/#1372: emergency governance-voted waiver of the vouch cooldown.
+/// See docs/vouch-cooldown-bypass-1056.md for the full design.
+#[contracttype]
+#[derive(Clone)]
+pub struct CooldownBypassRequest {
+    pub voucher: Address,
+    pub borrower: Address,
+    pub reason: String,
+    pub requested_at: u64,
+    pub approvers: Vec<Address>,
+    pub approved: bool,
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct AdminActionProposal {
@@ -2999,13 +3415,19 @@ pub struct PeriodicPaymentStatus {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayEvent {
+    pub source_chain: u32,
+    pub dest_chain: u32,
+    pub event_type: soroban_sdk::Symbol,
+    pub payload: Bytes,
     pub seq: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelayAttestation {
-    pub signature: Bytes,
+    pub signature: BytesN<64>,
+    pub nonce: u64,
+    pub timestamp: u64,
 }
 
 #[contracttype]
@@ -3024,7 +3446,6 @@ pub struct VoucherFraudScore {
 /// Issue #1193: Loan covenant monitoring types
 /// Covenants are financial and operational requirements that borrowers must maintain
 /// throughout the loan lifecycle. Violations trigger escalation protocols.
-
 /// Covenant type enumeration for different monitoring requirements
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -3548,3 +3969,52 @@ pub fn loyalty_gold_benefits() -> LoyaltyBenefits {
 
 /// Anniversary period in seconds (365 days).
 pub const LOYALTY_ANNIVERSARY_PERIOD_SECS: u64 = 365 * 24 * 60 * 60;
+
+// ── Issue #1075: Non-Stellar token bridge metadata ─────────────────────────────
+
+/// Metadata for a token bridged in from a non-Stellar chain.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenBridgeMetadata {
+    /// The local (Stellar) address representing the bridged token.
+    pub token_address: Address,
+    /// The bridge contract responsible for this token.
+    pub bridge_contract: Address,
+    /// The token's address on its origin chain.
+    pub source_token_address: Address,
+    /// Chain ID of the token's origin chain.
+    pub source_chain_id: u32,
+    /// Conversion price in basis points relative to the primary protocol token.
+    pub price_bps: i128,
+    /// Timestamp of the last price update.
+    pub price_updated_at: u64,
+    /// Whether this bridged token is currently accepted.
+    pub enabled: bool,
+    /// Maximum balance this contract will hold of the bridged token (0 = unlimited).
+    pub max_balance_cap: i128,
+}
+
+// ── Issue #1076: Token swap on repayment mismatch ──────────────────────────────
+
+/// Configuration allowing a borrower to repay a loan in an alternative token via DEX swap.
+#[contracttype]
+#[derive(Clone)]
+pub struct TokenSwapConfig {
+    /// Loan this configuration applies to.
+    pub loan_id: u64,
+    /// The loan's primary denomination token.
+    pub primary_token: Address,
+    /// Tokens the borrower may repay with instead of the primary token.
+    pub allowed_swap_tokens: Vec<Address>,
+    /// DEX contract used to perform the swap.
+    pub dex_contract: Address,
+    /// Maximum acceptable slippage, in basis points.
+    pub max_slippage_bps: i128,
+    /// Whether swaps are currently enabled for this loan.
+    pub swaps_enabled: bool,
+    /// Timestamp this configuration was created.
+    pub created_at: u64,
+}
+
+/// Default yield bonus (basis points) per liquidity tier (0 = highest liquidity, 3 = lowest).
+pub const DEFAULT_LIQUIDITY_TIER_BONUSES: [i128; 4] = [0, 50, 100, 200];

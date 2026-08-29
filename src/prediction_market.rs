@@ -502,13 +502,20 @@ pub fn get_position(env: &Env, market_id: u64, participant: &Address) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-    use soroban_sdk::{Env, String};
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::{Env, String, Vec};
 
-    fn setup() -> Env {
+    fn setup() -> (Env, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        env
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
+        (env, contract_id)
     }
 
     fn make_description(env: &Env) -> String {
@@ -517,38 +524,39 @@ mod tests {
 
     #[test]
     fn test_create_market() {
-        let env = setup();
+        let (env, contract_id) = setup();
         // We need a valid Config in storage for require_admin_approval.
         // Since we can't easily bootstrap a full contract here, we test
         // the data path by verifying the counter increments.
         // Full integration is covered via lib.rs entry points.
-        let counter: u64 = env
-            .storage()
-            .persistent()
-            .get::<DataKey, u64>(&DataKey::PredictionMarketCounter)
-            .unwrap_or(0);
+        let counter: u64 = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, u64>(&DataKey::PredictionMarketCounter)
+                .unwrap_or(0)
+        });
         assert_eq!(counter, 0);
     }
 
     #[test]
     fn test_market_status_default() {
-        let env = setup();
-        let market = get_market(&env, 999);
+        let (env, contract_id) = setup();
+        let market = env.as_contract(&contract_id, || get_market(&env, 999));
         assert!(market.is_none());
     }
 
     #[test]
     fn test_prediction_accuracy_default() {
-        let env = setup();
+        let (env, contract_id) = setup();
         let addr = Address::generate(&env);
-        let acc = get_prediction_accuracy(&env, &addr);
+        let acc = env.as_contract(&contract_id, || get_prediction_accuracy(&env, &addr));
         assert_eq!(acc.total, 0);
         assert_eq!(acc.correct, 0);
     }
 
     #[test]
     fn test_invalid_amount_for_zero_stake() {
-        let env = setup();
+        let (env, contract_id) = setup();
         // place_prediction with stake=0 should return InvalidAmount.
         // We seed a market manually.
         let market_id = 1u64;
@@ -564,19 +572,21 @@ mod tests {
             outcome: None,
             status: MarketStatus::Open,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PredictionMarket(market_id), &market);
 
         let participant = Address::generate(&env);
         let token = Address::generate(&env);
-        let result = place_prediction(&env, participant, market_id, PredictionSide::Yes, 0, token);
+        let result = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::PredictionMarket(market_id), &market);
+            place_prediction(&env, participant, market_id, PredictionSide::Yes, 0, token)
+        });
         assert_eq!(result, Err(ContractError::InvalidAmount));
     }
 
     #[test]
     fn test_cannot_predict_on_resolved_market() {
-        let env = setup();
+        let (env, contract_id) = setup();
         let market_id = 1u64;
         let now = env.ledger().timestamp();
         let market = PredictionMarket {
@@ -590,14 +600,15 @@ mod tests {
             outcome: Some(true),
             status: MarketStatus::Resolved,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PredictionMarket(market_id), &market);
 
         let participant = Address::generate(&env);
         let token = Address::generate(&env);
-        let result =
-            place_prediction(&env, participant, market_id, PredictionSide::Yes, 1000, token);
+        let result = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::PredictionMarket(market_id), &market);
+            place_prediction(&env, participant, market_id, PredictionSide::Yes, 1000, token)
+        });
         assert_eq!(result, Err(ContractError::VotingPeriodEnded));
     }
 }
