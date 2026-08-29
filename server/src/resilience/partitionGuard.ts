@@ -2,6 +2,8 @@ import { metrics } from "../http/metricsRegistry.js";
 
 export type QueuedWrite = () => Promise<void> | void;
 
+export type ReconcileFn = () => Promise<void> | void;
+
 export interface PartitionGuardConfig {
   /** Consecutive failed bridge ticks (bus/store errors — see Bridge.tick) before this
    * instance declares itself partitioned from the validator/indexer network and enters
@@ -12,6 +14,9 @@ export interface PartitionGuardConfig {
    * drop-oldest policy) — a documented tradeoff, not a guarantee that every write survives
    * an extended partition. See docs/network-partition-guide.md. */
   maxQueuedWrites: number;
+  /** Optional reconciliation function called after recovery when droppedWrites > 0.
+   * Should diff local projected state against the indexer to detect diverged state. */
+  reconcile?: ReconcileFn;
 }
 
 export interface PartitionStatus {
@@ -61,6 +66,22 @@ export class PartitionGuard {
       this.partitionedSince = undefined;
       metrics.incCounter("qc_partition_recovered_total");
       void this.flush();
+      if (this.droppedWrites > 0) {
+        const dropped = this.droppedWrites;
+        console.warn(
+          `[PartitionGuard] ALERT: Recovery completed but ${dropped} write(s) were dropped ` +
+          `during the partition. Local state may have diverged from the indexer. ` +
+          `Run a manual reconciliation or check docs/network-partition-guide.md for recovery steps.`
+        );
+        metrics.incCounter('qc_partition_dropped_writes_on_recovery_total');
+        if (this.config.reconcile) {
+          void Promise.resolve(this.config.reconcile()).catch((err: unknown) => {
+            console.error('[PartitionGuard] Reconciliation callback failed:', err);
+            metrics.incCounter('qc_partition_reconcile_failed_total');
+          });
+          metrics.incCounter('qc_partition_reconcile_triggered_total');
+        }
+      }
     }
   }
 
@@ -98,6 +119,11 @@ export class PartitionGuard {
     }
     this.queue.push(write);
     metrics.setGauge("qc_partition_queue_depth", this.queue.length);
+  }
+
+  /** Reset the dropped writes counter — call after a successful manual reconciliation. */
+  resetDroppedWrites(): void {
+    this.droppedWrites = 0;
   }
 
   private async flush(): Promise<void> {
