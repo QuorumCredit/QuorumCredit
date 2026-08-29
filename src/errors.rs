@@ -261,4 +261,8 @@ EmergencyBypassNotAuthorised = 131,
     /// A large-loan approval was proposed for an amount at or below the
     /// configured large-loan threshold, so it does not require multi-sig.
     BelowLargeLoanThreshold = 186,
+    /// A slash appeal is already in progress for this borrower via the other
+    /// appeal mechanism. Only one appeal mechanism (evidence-based #552 or
+    /// escrow-quorum #841) may be active at a time to prevent double-refunds.
+    AppealAlreadyPending = 187,
 }
