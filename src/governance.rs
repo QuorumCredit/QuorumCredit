@@ -857,6 +857,17 @@ pub fn appeal_slash_with_evidence(
     voucher.require_auth();
     require_not_paused(&env)?;
 
+    // Issue #1450: Mutual exclusion — reject if a #841 escrow appeal is already pending.
+    if let Some(escrow) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, SlashEscrow>(&DataKey::SlashEscrow(borrower.clone()))
+    {
+        if escrow.status == AppealStatus::Pending {
+            return Err(ContractError::AppealAlreadyPending);
+        }
+    }
+
     // Verify the loan was defaulted
     let loan = get_latest_loan_record(&env, &borrower)
         .ok_or(ContractError::NoActiveLoan)?;
@@ -877,6 +888,11 @@ pub fn appeal_slash_with_evidence(
     env.storage()
         .persistent()
         .set(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()), &appeal);
+
+    // Issue #1450: Mark that a #552-style evidence appeal is now in progress.
+    env.storage()
+        .persistent()
+        .set(&DataKey::EvidenceAppealPending(borrower.clone()), &true);
 
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("appeal")),
@@ -915,6 +931,14 @@ pub fn vote_on_slash_appeal(
     env.storage()
         .persistent()
         .set(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()), &appeal);
+
+    // Issue #1450: If the appeal is rejected (approve=false), clear the mutual-exclusion flag
+    // so the #841 escrow path may be initiated.
+    if !approve {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::EvidenceAppealPending(borrower.clone()));
+    }
 
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("appl_vote")),
@@ -983,6 +1007,11 @@ pub fn execute_slash_appeal(
     env.storage()
         .persistent()
         .remove(&DataKey::SlashAppeal(borrower.clone(), voucher.clone()));
+
+    // Issue #1450: Clear the mutual-exclusion flag now that the evidence appeal is resolved.
+    env.storage()
+        .persistent()
+        .remove(&DataKey::EvidenceAppealPending(borrower.clone()));
 
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("appl_exec")),
@@ -1393,6 +1422,16 @@ pub fn appeal_slash(
 
     let now = env.ledger().timestamp();
 
+    // Issue #1450: Mutual exclusion — reject if a #552 evidence-based appeal is already pending.
+    let evidence_appeal_pending: bool = env
+        .storage()
+        .persistent()
+        .get(&DataKey::EvidenceAppealPending(borrower.clone()))
+        .unwrap_or(false);
+    if evidence_appeal_pending {
+        return Err(ContractError::AppealAlreadyPending);
+    }
+
     // Check if an appeal already exists
     if let Some(existing_escrow) = env
         .storage()
@@ -1632,10 +1671,27 @@ fn finalize_appeal_internal(
         let token_client = soroban_sdk::token::Client::new(env, &loan.token_address);
         let contract_address = env.current_contract_address();
 
+        // Issue #1451: Track cumulative distributed amount and pay the last voucher any
+        // remainder to eliminate truncating-division dust. Without this, summing
+        // `(stake * BPS / total_stake) * escrow_amount / BPS` across N vouchers can
+        // systematically underpay by up to N-1 stroops, leaving dust permanently stuck.
+        let mut distributed: i128 = 0;
+        let vouches_count = vouches.len();
+        let mut vouch_idx: u32 = 0;
+
         // Return funds to each voucher proportionally
         for vouch in vouches.iter() {
-            let voucher_proportion = (vouch.stake.checked_mul(BPS_DENOMINATOR).ok_or(ContractError::ArithmeticError)? / total_stake) as u32;
-            let return_amount = escrow.escrow_amount.checked_mul(voucher_proportion as i128).ok_or(ContractError::ArithmeticError)? / BPS_DENOMINATOR;
+            vouch_idx += 1;
+
+            let return_amount = if vouch_idx == vouches_count {
+                // Last voucher receives any remainder so the entire escrow_amount is distributed.
+                escrow.escrow_amount.checked_sub(distributed).ok_or(ContractError::ArithmeticError)?
+            } else {
+                let voucher_proportion = (vouch.stake.checked_mul(BPS_DENOMINATOR).ok_or(ContractError::ArithmeticError)? / total_stake) as u32;
+                escrow.escrow_amount.checked_mul(voucher_proportion as i128).ok_or(ContractError::ArithmeticError)? / BPS_DENOMINATOR
+            };
+
+            distributed = distributed.checked_add(return_amount).ok_or(ContractError::ArithmeticError)?;
 
             if return_amount > 0 {
                 // Transfer tokens back to voucher from escrow
