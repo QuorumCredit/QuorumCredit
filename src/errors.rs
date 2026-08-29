@@ -337,4 +337,9 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
+    // ── Cross-chain auctions ──────────────────────────────────────────────────
+    /// A bid claiming a non-local chain_id must include a verified bridge attestation.
+    BridgeAttestationRequired = 221,
+    /// No unclaimed escrowed bid exists for this (auction, bidder) pair.
+    NoRefundAvailable = 222,
 }
