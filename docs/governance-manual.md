@@ -134,6 +134,80 @@ decision is reversed, log the reversal as a new entry that references the origin
 > the existing code/ADR history; backfill exact dates from `git log` on the referenced files
 > where precision matters for an audit.
 
+---
+
+## Admin Set Changes — Decision Tree
+
+Three separate code paths exist for changing the admin set. Use this decision tree to choose
+the right one for your situation.
+
+```
+Is the change routine (adding a new key, rotating before expiry, removing an unneeded admin
+when you still have full threshold coverage)?
+├── YES → Use direct multi-sig: add_admin / remove_admin / rotate_admin
+│         Requires: admin_threshold current admin signatures
+│         Speed: immediate on-chain (no timelock beyond governance proposal queue)
+│         See: src/admin.rs → add_admin, remove_admin, rotate_admin
+│
+Is the target admin unresponsive or their key suspected compromised (you cannot assemble
+threshold-many uncompromised signers that include the target)?
+├── YES → Use governance-vote removal: propose_admin_removal / vote_admin_removal / finalize_admin_removal
+│         Requires: Config.removal_vote_threshold approvals (default separate from admin_threshold
+│         so the target's own key is not needed)
+│         Speed: governed by voting_period_seconds (default 7 days) + timelock delay
+│         See: src/governance.rs → propose_admin_removal, vote_admin_removal, finalize_admin_removal
+│         Also see: docs/incident-response-playbook.md#compromised-admin-key
+│
+Is this a planned handoff to a successor (e.g. key rotation with human acceptance required,
+ensuring the receiving party explicitly acknowledges control)?
+└── YES → Use successor transfer: set_successor_admin → claim_successor_admin
+          Requires: current admin calls set_successor_admin; the new keyholder must call
+          claim_successor_admin to accept (two-step prevents unilateral reassignment)
+          Speed: immediate once the new keyholder accepts
+          See: src/admin.rs → set_successor_admin, claim_successor_admin
+```
+
+### Interaction: Removal Vote vs. Pending Successor (`successor_admin`)
+
+If `set_successor_admin` has been called for address `X` (setting `Config.successor_admin =
+Some(X)`) and a governance-vote removal against `X` is initiated and finalized *before* `X`
+calls `claim_successor_admin`:
+
+- The removal removes `X` from `Config.admins` (if `X` is an existing admin being rotated)
+  and clears `Config.successor_admin`.
+- `X` calling `claim_successor_admin` after the removal will fail because the successor slot
+  was cleared during finalization.
+- **Practical guidance:** do not set a successor for an address that is simultaneously the
+  target of a removal proposal. The race condition is resolvable but confusing. Cancel the
+  removal proposal first (if circumstances allow), or wait for it to finalize before setting
+  a new successor.
+
+### Interaction: Governance-Vote Removal vs. `PendingAdmin`
+
+`propose_admin` creates a `DataKey::PendingAdmin` entry for a new address that has not yet
+accepted via `accept_admin`. A governance removal vote targets addresses already in
+`Config.admins` — it does **not** operate on pending-admin entries. A pending admin who has
+not yet accepted is not in `Config.admins` and therefore cannot be targeted by a removal
+vote. If you need to cancel a pending admin invitation, use the appropriate admin action to
+clear `DataKey::PendingAdmin` rather than filing a removal vote.
+
+### Which Path Supersedes the Other?
+
+| Scenario | Recommended path | Reason |
+|---|---|---|
+| Routine rotation with key availability | Direct multi-sig (`rotate_admin`) | Fastest, least overhead |
+| Adding a net-new admin | Direct multi-sig (`add_admin`) | Straightforward append to admin set |
+| Removing a trustworthy admin who no longer participates | Direct multi-sig (`remove_admin`) if threshold is still achievable | Only requires existing quorum |
+| Removing a potentially compromised or uncooperative admin | Governance-vote removal | Does not require the target's cooperation or signature |
+| Handing off control to a successor who must explicitly accept | Successor transfer | Two-step safety: prevents accidental reassignment to an unreachable address |
+
+### Emergency Reference
+
+For the step-by-step response when an admin key is suspected compromised, see
+[incident-response-playbook.md — Compromised Admin Key](./incident-response-playbook.md#compromised-admin-key).
+
+---
+
 ## Amending This Manual
 
 Changes to governance **procedure** (this document) do not themselves require an on-chain
