@@ -7,8 +7,9 @@
 
 #![allow(dead_code)]
 
-use soroban_sdk::{Address, Env, String as SorobanString};
+use soroban_sdk::{Address, Env, String as SorobanString, Vec};
 use crate::errors::ContractError;
+use crate::types::VouchAuditEvent;
 
 /// Placeholder: log a vouch audit event (not yet implemented)
 pub fn log_vouch_audit_event(
@@ -25,7 +26,19 @@ pub fn log_vouch_audit_event(
     Ok(())
 }
 
+/// Get the audit trail for a vouch (all historical events).
+pub fn get_vouch_audit_trail(
+    _env: Env,
+    _borrower: Address,
+    _voucher: Address,
+) -> Vec<VouchAuditEvent> {
+    // TODO: Implement when audit trail types are defined
+    // For now, return empty vector
+    Vec::new(&_env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 }
+

@@ -27,7 +27,7 @@ pub enum AdminAction {
 }
 
 /// Map each AdminAction to the required AdminPermission
-fn get_required_permission(action: AdminAction) -> AdminPermission {
+pub fn get_required_permission(action: AdminAction) -> AdminPermission {
     match action {
         AdminAction::AddAdmin
         | AdminAction::RemoveAdmin

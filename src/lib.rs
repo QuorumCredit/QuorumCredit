@@ -61,6 +61,14 @@ pub mod recurring_payment;
 pub mod loan_priority;
 pub mod audit_verification;
 pub mod large_loan_approval;
+pub mod liquidity_mining;
+pub mod loan_attribution;
+pub mod loan_cart;
+pub mod governance_token;
+pub mod community_treasury;
+pub mod interest_rate_options;
+pub mod prediction_market;
+pub mod reputation_nft;
 
 #[cfg(test)]
 mod governance_test;
