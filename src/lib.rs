@@ -7,6 +7,10 @@ mod helpers;
 mod types;
 mod vouch;
 mod vouch_snapshot;
+// Issue #110 — circuit breaker for webhook delivery
+pub mod webhook_retry;
+// Issue #111 — max webhook subscriptions per caller
+pub mod webhook_registry;
 
 use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, Env, String, Vec};
 

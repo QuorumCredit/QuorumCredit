@@ -253,6 +253,12 @@ pub enum DataKey {
     ExternalCreditScore(Address),
     // #666: Escrowed repayment amount per borrower (held pending oracle verification)
     EscrowAmount(Address),
+    // Issue #111: Per-subject webhook subscription limit override
+    WebhookLimit,
+    // Issue #112: Off-chain sub-system health sentinels
+    PubSubHealthy,              // bool: true when PubSub relay last checked in successfully
+    RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
+    WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
 }
 
 // ── Governance ────────────────────────────────────────────────────────────────

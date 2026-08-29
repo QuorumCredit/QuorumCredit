@@ -187,6 +187,11 @@ pub enum DataKey {
     PartialDefaultCount(Address),
     // #664: Slash record with forgiveness info per loan
     SlashRecord(u64),
+    // Issue #112: Off-chain sub-system health sentinels
+    // Written by external relayers via a restricted set_subsystem_health() call.
+    PubSubHealthy,              // bool: true when PubSub relay last checked in successfully
+    RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
+    WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
 }
 
 // ── Audit Log ─────────────────────────────────────────────────────────────────

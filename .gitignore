@@ -1,23 +1,26 @@
 # Build artifacts
 /target
 **/target
+target/
+*.wasm
+*.wasm.gz
+
+# Windows installer binaries
+*.exe
 
 # Environment files
 .env
-.env.example
+.env.*
+!.env.example
 .env.local
 .env.*.local
 
 # Test snapshots
+*.snap
+__snapshots__/
+tests/snapshots/
 test_snapshots/
 **/test_snapshots/
-**/*.snap
-
-# WASM build artifacts
-*.wasm
-
-# Windows installer binaries
-*.exe
 
 # IDE / editor
 .vscode/
@@ -31,11 +34,17 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
 
-# Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
-# Cargo.lock  # intentionally tracked
+# Node/JS artifacts (if any)
+node_modules/
+dist/
+build/
 
 # Coverage reports
 lcov.info
 coverage/
 tarpaulin-report.html
+
+# Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
+# Cargo.lock  # intentionally tracked
