@@ -593,3 +593,199 @@ describe("#1299 useLoanSocket — missed events replayed from cursor on reconnec
     expect(testStore.getState().loans.loans.some((l) => l.id === 2)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1511 — useLoanSocket connect_error: auth vs transient distinction
+// ---------------------------------------------------------------------------
+
+describe("#1511 useLoanSocket — connect_error auth vs transient", () => {
+  beforeEach(() => {
+    mockSocket.emit = vi.fn();
+    mockSocket.disconnect = vi.fn();
+    mockSocket.handlers = {};
+    // Default: socket is active (socket.io will retry) — transient mode
+    (mockSocket as unknown as { active: boolean }).active = true;
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules();
+  });
+
+  it("dispatches socketError with kind=transient on a network-level connect_error", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC", apiKey: "good-key" });
+      return null;
+    }
+
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    // socket.active=true means socket.io is retrying → transient error
+    (mockSocket as unknown as { active: boolean }).active = true;
+    const networkError = new Error("websocket error");
+
+    await act(async () => {
+      mockSocket.handlers["connect_error"]?.(networkError);
+    });
+
+    const state = testStore.getState().loans;
+    expect(state.socketError).not.toBeNull();
+    expect(state.socketError?.kind).toBe("transient");
+    expect(state.socketError?.message).toBe("websocket error");
+    // connected should remain false (never connected)
+    expect(state.connected).toBe(false);
+  });
+
+  it("dispatches socketError with kind=auth when socket.active is false (server rejection)", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC", apiKey: "bad-key" });
+      return null;
+    }
+
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    // socket.active=false signals that socket.io will NOT retry → auth error
+    (mockSocket as unknown as { active: boolean }).active = false;
+    const authError = new Error("invalid credentials");
+
+    await act(async () => {
+      mockSocket.handlers["connect_error"]?.(authError);
+    });
+
+    const state = testStore.getState().loans;
+    expect(state.socketError).not.toBeNull();
+    expect(state.socketError?.kind).toBe("auth");
+    expect(state.socketError?.message).toBe("invalid credentials");
+  });
+
+  it("dispatches socketError with kind=auth when err.data.type is AuthError", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC", apiKey: "bad-key" });
+      return null;
+    }
+
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    // socket.active=true but err.data carries an auth error signal
+    (mockSocket as unknown as { active: boolean }).active = true;
+    const authError = Object.assign(new Error("not authorized"), {
+      data: { type: "AuthError", message: "API key not recognized" },
+    });
+
+    await act(async () => {
+      mockSocket.handlers["connect_error"]?.(authError);
+    });
+
+    const state = testStore.getState().loans;
+    expect(state.socketError?.kind).toBe("auth");
+  });
+
+  it("dispatches socketError with kind=auth when err.data.message contains 'unauthorized'", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC", apiKey: "expired-key" });
+      return null;
+    }
+
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    (mockSocket as unknown as { active: boolean }).active = true;
+    const authError = Object.assign(new Error("connection refused"), {
+      data: { message: "Unauthorized: token expired" },
+    });
+
+    await act(async () => {
+      mockSocket.handlers["connect_error"]?.(authError);
+    });
+
+    expect(testStore.getState().loans.socketError?.kind).toBe("auth");
+  });
+
+  it("dispatches socketError with kind=auth when err.message contains 'unauthorized'", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC", apiKey: "bad-key" });
+      return null;
+    }
+
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    (mockSocket as unknown as { active: boolean }).active = true;
+    const authError = new Error("Unauthorized");
+
+    await act(async () => {
+      mockSocket.handlers["connect_error"]?.(authError);
+    });
+
+    expect(testStore.getState().loans.socketError?.kind).toBe("auth");
+  });
+
+  it("clears socketError when socket successfully connects after a transient failure", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC", apiKey: "good-key" });
+      return null;
+    }
+
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    // First: transient connect_error
+    (mockSocket as unknown as { active: boolean }).active = true;
+    await act(async () => {
+      mockSocket.handlers["connect_error"]?.(new Error("ECONNREFUSED"));
+    });
+
+    expect(testStore.getState().loans.socketError?.kind).toBe("transient");
+
+    // Then: successful connect clears the error
+    await act(async () => {
+      mockSocket.handlers["connect"]?.();
+    });
+
+    expect(testStore.getState().loans.socketError).toBeNull();
+    expect(testStore.getState().loans.connected).toBe(true);
+  });
+
+  it("socketError is initially null", async () => {
+    const { useLoanSocket } = await import("../useLoanSocket");
+    const testStore = makeStore();
+
+    function TestHook() {
+      useLoanSocket({ url: "http://localhost:3000", borrower: "GABC" });
+      return null;
+    }
+
+    await act(async () => {
+      render(<Provider store={testStore}><TestHook /></Provider>);
+    });
+
+    expect(testStore.getState().loans.socketError).toBeNull();
+  });
+});
