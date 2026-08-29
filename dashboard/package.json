@@ -6,7 +6,8 @@
     "start": "vite",
     "build": "tsc && vite build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:locales": "node scripts/check-locale-keys.mjs"
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.12.0",
