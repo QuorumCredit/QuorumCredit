@@ -429,16 +429,28 @@ pub fn get_proposal_results(
     ))
 }
 
-/// Query per-chain vote breakdown
+/// Query per-chain vote breakdown, paginated so the call stays within
+/// Soroban's read/return-size budget regardless of how many chains have
+/// voted on the proposal.
+///
+/// Returns the requested page plus `next_cursor`: `Some(offset)` to pass on
+/// the next call, or `None` once the end of the list has been reached.
 pub fn get_chain_vote_breakdown(
     env: Env,
     proposal_id: u64,
-) -> Result<Vec<ChainVoteAggregate>, ContractError> {
+    offset: u32,
+    limit: u32,
+) -> Result<(Vec<ChainVoteAggregate>, Option<u32>), ContractError> {
     let proposal: CrossChainProposal = env
         .storage()
         .persistent()
         .get(&DataKey::CrossChainProposal(proposal_id))
         .ok_or(ContractError::ProposalNotFound)?;
 
-    Ok(proposal.chain_votes)
+    Ok(crate::helpers::paginate_vec(
+        &env,
+        &proposal.chain_votes,
+        offset,
+        limit,
+    ))
 }
