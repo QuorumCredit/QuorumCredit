@@ -76,6 +76,8 @@ Proof generation (`crate::merkle_tree::generate_proof`) needs the full leaf set 
 - Inclusion proofs verifying for every genuine member of a tree (including an odd-sized, 17-leaf tree, to exercise lone-node promotion).
 - Inclusion proofs failing for non-members, for proofs borrowed from a different leaf, for tampered (single-byte-flipped or truncated) proofs, and against the wrong root.
 - Proptest-based fuzzing (`fuzz` submodule) generating random vouch sets and confirming inclusion holds for members and fails for non-members and byte-tampered proofs across many randomized cases.
+- A subset/superset fuzz case confirming a proof generated for leaf A against its original leaf set never verifies against the root of a different set that also contains A plus extra, unrelated leaves — a proof commits to a specific leaf set, not merely to A's membership in some superset.
+- A large-tree fuzz case (`fuzz::large_trees`) at 1,000–1,200 random leaves, confirming every leaf's proof verifies against the computed root at sizes where the odd-node-promotion logic runs across many tree levels, not just near the root. Across the CI-run cases at this scale, no divergence has been observed: `verify_inclusion(root, leaf, generate_proof(leaves, leaf))` held for every leaf in every generated set.
 - Gas benchmarks (`gas_benchmarks` submodule) at 5/25/50/100-vouch sizes for both `build_merkle_root` and `verify_inclusion`.
 
 ## See also
