@@ -15,7 +15,7 @@
 //! to XLM. When accepting user input in XLM, multiply by `10_000_000`
 //! before passing to contract functions.
 
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Symbol, Vec};
 
 use crate::interest_rate_options::OptionType;
 use crate::reputation_nft::BadgeType;
@@ -1099,6 +1099,10 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+    /// Generic namespaced key used by modules that keep their own
+    /// self-contained storage layout (e.g. loan tokenization, pool
+    /// composability) instead of a dedicated `DataKey` variant per field.
+    Custom(Symbol),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
