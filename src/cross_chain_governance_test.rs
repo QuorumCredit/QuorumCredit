@@ -7,7 +7,7 @@ mod tests {
     use crate::cross_chain_governance::*;
     use crate::errors::ContractError;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{Address as _, Events, Ledger};
     use soroban_sdk::token::StellarAssetClient;
     use soroban_sdk::{Address, Bytes, BytesN, Env, String, Vec};
 
@@ -94,9 +94,62 @@ mod tests {
 
     #[test]
     fn test_cannot_execute_twice() {
-        // Test that proposals cannot be executed multiple times
+        // A proposal that passed and cleared its timelock can be executed
+        // once; a second execution attempt (e.g. a retried transaction)
+        // must be rejected rather than silently no-op'ing or re-running the
+        // action, and only the first, state-changing call emits the
+        // execution event.
+        let env = Env::default();
+        let (contract_id, admin) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let voting_period = 1_000u64;
 
-        assert!(true); // Placeholder
+        let proposal_id = env.as_contract(&contract_id, || {
+            let proposal_id = create_cross_chain_proposal(
+                env.clone(),
+                admin_signers.clone(),
+                String::from_str(&env, "double-execution guard"),
+                String::from_str(&env, "update_config"),
+                Bytes::new(&env),
+                1,
+                voting_period,
+            )
+            .unwrap();
+
+            let voter = Address::generate(&env);
+            submit_cross_chain_vote(env.clone(), voter, proposal_id, true, 1).unwrap();
+
+            proposal_id
+        });
+
+        // Advance past the voting period and the 24h timelock.
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + voting_period + 24 * 60 * 60 + 1);
+
+        // Each execution attempt runs in its own invocation frame (mirroring
+        // separate transactions), since re-authorizing the same admin signer
+        // twice within a single frame is a mock-auth artifact, not something
+        // a real retried transaction would hit. `env.events().all()` reports
+        // events for the current root invocation, so each frame's own event
+        // count is checked independently.
+        env.as_contract(&contract_id, || {
+            execute_cross_chain_proposal(env.clone(), admin_signers.clone(), proposal_id).unwrap();
+            // The state-changing execution published exactly one event.
+            assert_eq!(env.events().all().events().len(), 1);
+        });
+
+        env.as_contract(&contract_id, || {
+            let err = execute_cross_chain_proposal(env.clone(), admin_signers.clone(), proposal_id)
+                .unwrap_err();
+            assert_eq!(err, ContractError::ProposalAlreadyFinalized);
+            // The rejected re-execution attempt published no event at all.
+            assert_eq!(env.events().all().events().len(), 0);
+        });
+
+        env.as_contract(&contract_id, || {
+            let proposal = get_cross_chain_proposal(env.clone(), proposal_id).unwrap();
+            assert!(proposal.executed);
+        });
     }
 
     #[test]
