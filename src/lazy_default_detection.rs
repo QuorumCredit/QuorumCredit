@@ -119,20 +119,91 @@ pub fn get_default_detection_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{EscrowStatus, RateType};
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::{String, Vec};
+
+    /// Build a minimal `LoanRecord` for `is_loan_defaulted` checks. Only
+    /// `status`, `amount`, `amount_repaid` and `deadline` are meaningful here.
+    fn mk_loan(
+        env: &Env,
+        status: LoanStatus,
+        amount: i128,
+        amount_repaid: i128,
+        deadline: u64,
+    ) -> LoanRecord {
+        let dummy = Address::generate(env);
+        LoanRecord {
+            id: 1,
+            borrower: dummy.clone(),
+            guarantor: None,
+            buyback_price: 0,
+            auto_repay_enabled: false,
+            auto_repay_attempts: 0,
+            escrow_status: EscrowStatus::None,
+            co_borrowers: Vec::new(env),
+            amount,
+            amount_repaid,
+            total_yield: 0,
+            status,
+            repaid: false,
+            defaulted: false,
+            created_at: 0,
+            disbursement_timestamp: 0,
+            repayment_timestamp: None,
+            deadline,
+            loan_purpose: String::from_str(env, "test"),
+            token_address: dummy,
+            amortization_schedule: Vec::new(env),
+            reminder_sent: false,
+            risk_score: 0,
+            deferment_periods: 0,
+            maturity_date: None,
+            rate_type: RateType::Fixed,
+            index_reference: None,
+            last_interest_calc: 0,
+            accrued_interest: 0,
+            milestone_bonus_applied: 0,
+            retry_count: 0,
+            suspension_timestamp: None,
+            suspension_amount_repaid: 0,
+        }
+    }
 
     #[test]
     fn test_is_loan_defaulted_active_loan_not_past_deadline() {
-        // This would require a mock Env, so we'll skip for now
-        // In real tests, we'd verify that a loan not past deadline returns false
+        let env = Env::default();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        // Active loan, deadline still in the future, nothing repaid.
+        let loan = mk_loan(&env, LoanStatus::Active, 1_000_000, 0, 5_000);
+        assert!(!is_loan_defaulted(&env, &loan));
     }
 
     #[test]
     fn test_is_loan_defaulted_repaid() {
-        // Verify that a fully repaid loan (even if past deadline) returns false
+        let env = Env::default();
+        env.ledger().with_mut(|l| l.timestamp = 10_000);
+        // Deadline is in the past, but the loan is fully repaid.
+        let loan = mk_loan(&env, LoanStatus::Active, 1_000_000, 1_000_000, 5_000);
+        assert!(!is_loan_defaulted(&env, &loan));
     }
 
     #[test]
     fn test_is_loan_defaulted_past_deadline_unpaid() {
-        // Verify that an unpaid loan past deadline returns true
+        let env = Env::default();
+        env.ledger().with_mut(|l| l.timestamp = 10_000);
+        // Deadline passed and the borrower still owes money.
+        let loan = mk_loan(&env, LoanStatus::Active, 1_000_000, 400_000, 5_000);
+        assert!(is_loan_defaulted(&env, &loan));
+    }
+
+    #[test]
+    fn test_is_loan_defaulted_already_defaulted_returns_false() {
+        let env = Env::default();
+        env.ledger().with_mut(|l| l.timestamp = 10_000);
+        // Past deadline and unpaid, but the status is no longer Active: the
+        // lazy check only transitions loans out of the Active state.
+        let loan = mk_loan(&env, LoanStatus::Defaulted, 1_000_000, 0, 5_000);
+        assert!(!is_loan_defaulted(&env, &loan));
     }
 }
