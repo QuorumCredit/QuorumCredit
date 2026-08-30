@@ -1,4 +1,20 @@
 import math
+import os
+import sys
+
+# Ensure parent directory is in Python path for scripts.fixtures imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+try:
+    from scripts.fixtures.vouch_graph import (
+        VouchEdge,
+        VouchGraph,
+        generate_legitimate_vouch_graph,
+        generate_sybil_vouch_graph,
+        generate_sybil_attack_scenario,
+    )
+except ImportError:
+    pass
 
 # Constants
 C_ADDR = 1.5  # XLM to stand up a Stellar account (minimum reserve + trustline)
