@@ -138,11 +138,11 @@ mod cross_chain_auction_test;
 #[cfg(test)]
 mod liquidity_farming_test;
 #[cfg(test)]
-mod guarantor_test;
+mod loan_cart_test;
 #[cfg(test)]
-mod syndicate_execution_test;
+mod repay_validation_test;
 #[cfg(test)]
-mod vouch_reputation_test;
+mod unimplemented_stubs_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -234,6 +234,8 @@ impl QuorumCreditContract {
                 default_rate_threshold: 0,
                 insurance_fund_premium_bps: 0,
                 insurance_max_payout_bps: 0,
+                max_refinances_per_loan_chain: crate::types::DEFAULT_MAX_REFINANCES_PER_LOAN_CHAIN,
+                refinance_cooldown_secs: crate::types::DEFAULT_REFINANCE_COOLDOWN_SECS,
             },
         );
 
@@ -1622,7 +1624,9 @@ impl QuorumCreditContract {
 
     /// Stage a loan request in the borrower's cart instead of submitting it
     /// immediately. Multiple items can be staged and submitted together via
-    /// `submit_batch_loan_request`.
+    /// `submit_batch_loan_request` — though the protocol's single-active-loan
+    /// constraint means only one item per submission can actually disburse;
+    /// see that function's docs (issue #1397).
     pub fn add_to_loan_cart(
         env: Env,
         borrower: Address,
@@ -1637,14 +1641,43 @@ impl QuorumCreditContract {
         loan_cart::get_loan_cart(env, borrower)
     }
 
+    /// Remove a single staged item from the borrower's cart by index,
+    /// without discarding the rest of the cart (#1396). Panics with
+    /// `ContractError::NotFound` if the borrower has no cart, or if
+    /// `item_index` is out of range for it.
+    pub fn remove_cart_item(env: Env, borrower: Address, item_index: u32) -> loan_cart::LoanCart {
+        loan_cart::remove_cart_item(env, borrower, item_index)
+    }
+
+    /// Replace the amount/tenure of a single staged cart item in place,
+    /// without disturbing its position or the rest of the cart (#1396).
+    /// Panics with `ContractError::NotFound` if the borrower has no cart, or
+    /// if `item_index` is out of range for it.
+    pub fn update_cart_item(
+        env: Env,
+        borrower: Address,
+        item_index: u32,
+        amount: i128,
+        tenure_secs: u64,
+    ) -> loan_cart::LoanCart {
+        loan_cart::update_cart_item(env, borrower, item_index, amount, tenure_secs)
+    }
+
     /// Clear a borrower's cart without submitting it (recorded as abandoned).
     pub fn abandon_loan_cart(env: Env, borrower: Address) {
         loan_cart::abandon_loan_cart(env, borrower)
     }
 
     /// Submit every staged cart item as an individual loan request. Batches
-    /// of 3 or more items receive a 1% volume discount on requested
-    /// principal. Returns a per-item result.
+    /// of 3 or more items are eligible for a 1% volume discount on requested
+    /// principal — but the protocol only allows a single *active* loan per
+    /// borrower, so at most one item per submission can actually disburse;
+    /// every item after the first success fails with `ActiveLoanExists`
+    /// (see the `loan_cart` module docs). Only an item that actually
+    /// succeeds can carry a realized discount in the returned result; a
+    /// failed item's `discounted_amount` is left undiscounted rather than
+    /// advertising a price for a loan that was never funded (issue #1397).
+    /// Returns a per-item result.
     pub fn submit_batch_loan_request(
         env: Env,
         borrower: Address,
@@ -1879,41 +1912,55 @@ impl QuorumCreditContract {
 
     // ── Loan Priority / Subordination (senior-junior debt structures) ────────
 
-    /// Build (or replace) the loan priority queue, tagging each loan Senior,
-    /// Mezzanine, or Junior.
+    /// Build (or replace) the loan priority queue for a specific pool/batch,
+    /// tagging each loan Senior, Mezzanine, or Junior.
+    ///
+    /// Issue #12: `pool_id` parameter added so each syndication pool maintains
+    /// its own independent priority queue rather than sharing one global queue.
     pub fn create_loan_priority_queue(
         env: Env,
         admin_signers: Vec<Address>,
+        pool_id: u64,
         loans: Vec<loan_priority::PriorityLoanEntry>,
     ) -> Result<(), ContractError> {
-        loan_priority::create_loan_priority_queue(env, admin_signers, loans)
+        loan_priority::create_loan_priority_queue(env, admin_signers, pool_id, loans)
     }
 
-    pub fn get_loan_priority_queue(env: Env) -> Vec<loan_priority::PriorityLoanEntry> {
-        loan_priority::get_loan_priority_queue(env)
+    /// Read the priority queue for a specific pool/batch.
+    ///
+    /// Issue #12: `pool_id` parameter added.
+    pub fn get_loan_priority_queue(env: Env, pool_id: u64) -> Vec<loan_priority::PriorityLoanEntry> {
+        loan_priority::get_loan_priority_queue(env, pool_id)
     }
 
-    /// Route recovered default proceeds through the Senior/Mezzanine/Junior waterfall.
+    /// Route recovered default proceeds through the Senior/Mezzanine/Junior
+    /// waterfall for a specific pool/batch.
+    ///
+    /// Issue #12: `pool_id` parameter added.
     pub fn route_default_proceeds(
         env: Env,
         admin_signers: Vec<Address>,
+        pool_id: u64,
         total_proceeds: i128,
     ) -> Result<loan_priority::WaterfallRun, ContractError> {
-        loan_priority::route_default_proceeds(env, admin_signers, total_proceeds)
+        loan_priority::route_default_proceeds(env, admin_signers, pool_id, total_proceeds)
     }
 
     pub fn get_waterfall_run(env: Env, run_id: u64) -> Option<loan_priority::WaterfallRun> {
         loan_priority::get_waterfall_run(env, run_id)
     }
 
-    /// Propose a governance change to a loan's priority tranche.
+    /// Propose a governance change to a loan's priority tranche within a pool.
+    ///
+    /// Issue #12: `pool_id` parameter added.
     pub fn propose_priority_change(
         env: Env,
         proposer: Address,
+        pool_id: u64,
         loan_id: u64,
         new_priority: loan_priority::LoanPriority,
     ) -> Result<u64, ContractError> {
-        loan_priority::propose_priority_change(env, proposer, loan_id, new_priority)
+        loan_priority::propose_priority_change(env, proposer, pool_id, loan_id, new_priority)
     }
 
     /// Approve a pending priority-change proposal; executes once threshold is met.
