@@ -4357,6 +4357,21 @@ impl QuorumCreditContract {
     pub fn check_per_contract_cap(env: Env, contract: Address) -> Result<i128, ContractError> {
         flash_loan::check_per_contract_cap(&env, &contract)
     }
+
+    /// Admin: allow or revoke a callback contract's ability to receive flash loans.
+    pub fn set_flash_loan_callback_allowed(
+        env: Env,
+        admin_signers: Vec<Address>,
+        callback_contract: Address,
+        allowed: bool,
+    ) -> Result<(), ContractError> {
+        flash_loan::set_flash_loan_callback_allowed(&env, admin_signers, callback_contract, allowed)
+    }
+
+    /// Whether a callback contract is on the flash loan allowlist.
+    pub fn is_flash_loan_callback_allowed(env: Env, callback_contract: Address) -> bool {
+        flash_loan::is_flash_loan_callback_allowed(&env, &callback_contract)
+    }
 }
 
 // ── Issue #1171: Vouch syndication for risk pooling ────────────────────────────

@@ -337,4 +337,10 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
+    // ── Flash loan anti-abuse ────────────────────────────────────────────────
+    /// A flash loan was requested for this callback contract before the
+    /// minimum cooldown interval since its last flash loan has elapsed.
+    FlashLoanCooldownActive = 222,
+    /// The callback contract is not on the admin-managed flash loan allowlist.
+    FlashLoanCallbackNotAllowlisted = 223,
 }

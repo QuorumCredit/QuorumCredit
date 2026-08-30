@@ -963,6 +963,10 @@ pub enum DataKey {
     FlashLoanPerContractCap(Address),
     /// Recent flash loan activity records (bounded ring buffer)
     FlashLoanHistory,
+    /// contract → u64: ledger timestamp of that contract's last flash loan
+    FlashLoanLastTimestamp(Address),
+    /// contract → bool: whether this callback contract is allowed to receive flash loans
+    AllowedFlashLoanCallbacks(Address),
 
     // ── Cross-chain / multi-token bridge ─────────────────────────────────────
     /// token → i128: bridged balance for that token
