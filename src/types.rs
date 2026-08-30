@@ -2306,6 +2306,11 @@ pub struct GuarantorRecord {
     pub signature_verified: bool,
     /// Amount guaranteed (in stroops) — can be less than full loan amount
     pub guarantee_amount: i128,
+    /// Token this guarantee's stake is denominated and locked in (#1406).
+    /// Recorded once at `request_guarantor_for_loan` time and authoritative for
+    /// the entire lifetime of the guarantee — `claim_guarantor_coverage` pays
+    /// out in this token rather than trusting a caller-supplied token address.
+    pub token: Address,
     /// Timestamp when guarantor was requested for this loan
     pub requested_at: u64,
     /// Timestamp when guarantor was released (None if still active)
@@ -2533,7 +2538,8 @@ pub struct VouchRecord {
 #[contracttype]
 #[derive(Clone)]
 pub struct VouchReputationWeight {
-    /// Vouch ID (same as loan_id for now)
+    /// Identifies the vouch this record belongs to — see
+    /// `vouch_reputation::derive_vouch_id` (#1408) for how it's derived.
     pub vouch_id: u64,
     /// Base strength of the vouch (the raw stake)
     pub base_strength: i128,
@@ -3588,6 +3594,10 @@ pub enum SyndicateProposalStatus {
     Pending,
     Approved,
     Rejected,
+    /// #1409: the approved action has been carried out (pool dissolved,
+    /// principal returned to members). Terminal — execution can never run
+    /// twice against the same proposal.
+    Executed,
 }
 
 /// A member-raised governance proposal within a syndicate pool (e.g. dissolve

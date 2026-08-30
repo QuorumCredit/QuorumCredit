@@ -59,12 +59,15 @@ pub fn check_and_mark_default(
     loan.status = LoanStatus::Defaulted;
     env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
 
-    // Increment default count for the borrower
-    let current_count: u32 = env.storage().instance()
+    // Increment default count for the borrower. Issue #1407's audit found this used
+    // `.instance()` while every other DefaultCount read/write site (credit_score.rs,
+    // governance.rs, loan.rs, lib.rs) uses `.persistent()` — a lazily-detected default
+    // silently never counted toward credit score or interest-rate risk pricing.
+    let current_count: u32 = env.storage().persistent()
         .get(&DataKey::DefaultCount(loan.borrower.clone()))
         .unwrap_or(0u32);
 
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &DataKey::DefaultCount(loan.borrower.clone()),
         &(current_count + 1),
     );
