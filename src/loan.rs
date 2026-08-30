@@ -409,13 +409,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
 
-    let total_owed = loan.amount.checked_add(loan.total_yield).ok_or(ContractError::ArithmeticError)?;
-    let outstanding = total_owed.checked_sub(loan.amount_repaid).ok_or(ContractError::ArithmeticError)?;
-
-    if payment > outstanding {
-        panic_with_error!(&env, ContractError::InvalidAmount);
-    }
-
     // ── Step 1: Accrue compound interest ─────────────────────────────────────
     let now = env.ledger().timestamp();
     let elapsed_secs = now.saturating_sub(loan.last_interest_calc);
@@ -450,10 +443,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         .unwrap_or(0)
         .max(0);
 
-    assert!(
-        payment > 0 && payment <= outstanding,
-        "invalid payment amount"
-    );
+    if payment > outstanding {
+        return Err(ContractError::InvalidAmount);
+    }
 
     // ── Step 3: Apply payment ─────────────────────────────────────────────────
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
@@ -1303,6 +1295,24 @@ pub fn get_refinance_stats(env: Env) -> RefinanceStats {
         })
 }
 
+// ── Unimplemented stubs (issue #1394) ────────────────────────────────────
+//
+// Audited: none of the seven functions below (down to `check_acceleration`)
+// are wired up as contract entry points in lib.rs — they are dead code from
+// `lib.rs`'s perspective, reachable only by another Rust module calling them
+// directly (and nothing in this crate does). They cannot silently mislead an
+// external caller (API server, dashboard) today, since there is no entry
+// point to call. They are left in place, clearly marked, as scaffolding for
+// features that are not yet built; see docs/unimplemented-stubs.md for the
+// full audit and each function's actual current behavior.
+//
+// If any of these is ever wired into lib.rs, it must be implemented first —
+// do not expose a stub as a live entry point, or callers integrating against
+// it will get the silent non-functional behavior this audit exists to flag.
+
+/// STUB — always returns `Err(InvalidStateTransition)`. No collateral is
+/// ever recorded. Not exposed as a contract entry point (see module note
+/// above). See docs/unimplemented-stubs.md.
 pub fn deposit_collateral(
     _env: Env,
     _borrower: Address,
@@ -1312,14 +1322,25 @@ pub fn deposit_collateral(
     Err(ContractError::InvalidStateTransition)
 }
 
+/// STUB — always returns `0`, regardless of any prior `deposit_collateral`
+/// call (which always fails anyway). Not exposed as a contract entry point.
+/// See docs/unimplemented-stubs.md.
 pub fn get_borrower_collateral(_env: Env, _borrower: Address) -> i128 {
     0
 }
 
+/// STUB — no-op; sends no reminders. Not exposed as a contract entry point.
+/// See docs/unimplemented-stubs.md.
 pub fn emit_repayment_reminders(_env: Env) {}
+
+/// STUB — no-op that always reports success; mints no NFT. Not exposed as a
+/// contract entry point. See docs/unimplemented-stubs.md.
 pub fn mint_reputation_nft(_env: Env, _borrower: Address) -> Result<(), ContractError> {
     Ok(())
 }
+
+/// STUB — no-op that always reports success; sends no reminder. Not exposed
+/// as a contract entry point. See docs/unimplemented-stubs.md.
 pub fn send_repayment_reminder(_env: Env, _loan_id: u64) -> Result<(), ContractError> {
     Ok(())
 }
@@ -1494,12 +1515,20 @@ pub fn get_extension_request(
         .get(&DataKey::LoanExtension(borrower))
 }
 
+/// STUB — always returns `Err(InvalidStateTransition)` (after checking auth
+/// and the thaw state, so a caller does get a real auth/thaw error first if
+/// either applies). No payment is ever deferred. Not exposed as a contract
+/// entry point (see the module note above `deposit_collateral`). See
+/// docs/unimplemented-stubs.md.
 pub fn defer_payment(env: Env, borrower: Address) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_thawing(&env)?;
     Err(ContractError::InvalidStateTransition)
 }
 
+/// STUB — always returns `Err(InvalidStateTransition)`. No acceleration
+/// check ever runs. Not exposed as a contract entry point. See
+/// docs/unimplemented-stubs.md.
 pub fn check_acceleration(_env: Env, _borrower: Address) -> Result<(), ContractError> {
     Err(ContractError::InvalidStateTransition)
 }
