@@ -337,4 +337,10 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
+    /// A revealed (amount, blinding) pair did not hash to the stored commitment.
+    CommitmentMismatch = 221,
+    /// This commitment has already been revealed and cannot be revealed again.
+    CommitmentAlreadyRevealed = 222,
+    /// No commitment was found to reveal for this (voucher, borrower) or borrower key.
+    CommitmentNotFound = 223,
 }

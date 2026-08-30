@@ -548,6 +548,7 @@ pub fn increase_stake(
 
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("increase")),
@@ -614,10 +615,11 @@ pub fn decrease_stake(
         
         // Invalidate the weighted stake cache
         invalidate_weighted_stake_cache(&env, &borrower, &token);
+        crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
         // Issue #1285: extend TTL on the queued-withdrawal write path.
         bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
-        
+
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_rec.token, false, 0);
     }
 
@@ -641,6 +643,7 @@ pub fn decrease_stake(
 
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     // Issue #1285: extend TTL on decrease_stake write path.
     bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
@@ -703,10 +706,11 @@ pub fn withdraw_vouch(
         
         // Invalidate the weighted stake cache
         crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &vouch_token);
+        crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
         // Issue #1285: extend TTL on withdraw_vouch queued path.
         bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
-        
+
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_token, false, 0);
     }
 
@@ -721,6 +725,7 @@ pub fn withdraw_vouch(
 
     // Invalidate the weighted stake cache
     crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &vouch_token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     token_client.transfer(&env.current_contract_address(), &voucher, &vouch_stake);
 

@@ -24,7 +24,17 @@ const VOUCH_AGE_BONUS_MAX_BPS: i128 = 200;                   // cap at 200 bps
 
 /// Get or compute the yield rate for a single vouch (Issue #934).
 pub fn vouch_yield_bps(env: &Env, vouch: &VouchRecord, borrower: &Address, now: u64) -> i128 {
-    vouch_yield_bps_uncached(env, vouch, borrower, now)
+    let base_yield_bps = config(env).yield_bps;
+
+    if let Some(cached) =
+        crate::cache::get_cached_yield(env, borrower, &vouch.voucher, base_yield_bps)
+    {
+        return cached;
+    }
+
+    let yield_bps = vouch_yield_bps_uncached(env, vouch, borrower, now);
+    crate::cache::set_cached_yield(env, borrower, &vouch.voucher, yield_bps, base_yield_bps);
+    yield_bps
 }
 
 /// Compute the yield rate (in bps) for a single vouch, incorporating:
