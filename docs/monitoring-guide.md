@@ -344,5 +344,254 @@ curl 'http://localhost:9090/metrics' | grep -E 'qc_active_loans|qc_loan_count_to
 
 ## References
 
+Test protocol health with periodic transactions:
+
+```python
+import schedule
+import time
+from stellar_sdk import Keypair
+
+def synthetic_test():
+    """Run synthetic vouch -> loan -> repay cycle"""
+    try:
+        # Create test accounts
+        voucher = Keypair.random()
+        borrower = Keypair.random()
+        
+        # Fund accounts (testnet only)
+        # ...
+        
+        # Vouch
+        vouch(CONTRACT_ID, voucher, borrower.public_key, 100 * 10_000_000, TOKEN_ADDRESS)
+        
+        # Request loan
+        request_loan(CONTRACT_ID, borrower, 50 * 10_000_000, 100 * 10_000_000, "Test", TOKEN_ADDRESS)
+        
+        # Repay
+        repay(CONTRACT_ID, borrower, 51 * 10_000_000)
+        
+        print("Synthetic test passed")
+    except Exception as e:
+        print(f"Synthetic test failed: {e}")
+
+schedule.every(1).hours.do(synthetic_test)
+
+while True:
+    schedule.run_pending()
+    time.sleep(60)
+```
+
+---
+
+## Health Endpoint (Issue #112)
+
+The `health_check()` function in `QuorumCredit/src/health.rs` provides a structured view of contract operational status. Poll it from your monitoring stack to detect degraded conditions before they become outages.
+
+### Invocation
+
+```bash
+stellar contract invoke \
+  --id $CONTRACT_ID \
+  --fn health_check \
+  --network testnet \
+  --source $READ_ONLY_KEY
+```
+
+### Response Shape
+
+```json
+{
+  "overall_status": "Healthy",
+  "is_healthy": true,
+  "initialized": true,
+  "paused": false,
+  "yield_reserve_solvent": true,
+  "pubsub_connected": true,
+  "revocation_store_connected": true,
+  "webhook_registry_connected": true,
+  "issues": []
+}
+```
+
+### Status Levels
+
+| `overall_status` | `is_healthy` | Meaning | Action |
+|---|---|---|---|
+| `Healthy` | `true` | All checks pass. Contract fully operational. | None |
+| `Degraded` | `false` | Non-critical sub-system(s) unavailable; local fallbacks serving. | Investigate sub-system connectivity. Non-urgent. |
+| `Down` | `false` | Critical check(s) failed. Contract cannot operate correctly. | **Page on-call immediately.** |
+
+### Checks Performed
+
+| Check | Field | Critical? | Down Condition |
+|-------|-------|-----------|----------------|
+| Contract initialized | `initialized` | ✅ Yes | `DataKey::Config` missing from storage |
+| Yield reserve solvent | `yield_reserve_solvent` | ✅ Yes | Token balance < 10,000,000 stroops (1 XLM) |
+| Contract paused | `paused` | ❌ No | Paused = `true` (informational; does not affect `overall_status`) |
+| PubSub bus connected | `pubsub_connected` | ❌ No | Sentinel `DataKey::PubSubHealthy` is `false` or absent |
+| RevocationStore connected | `revocation_store_connected` | ❌ No | Sentinel `DataKey::RevocationStoreHealthy` is `false` or absent |
+| WebhookRegistry connected | `webhook_registry_connected` | ❌ No | Sentinel `DataKey::WebhookRegistryHealthy` is `false` or absent |
+
+> [!NOTE]
+> `paused` is reported as a field but does **not** by itself change `overall_status` to `Down`. The contract being paused is an intentional admin action, not a failure condition. Monitor `paused` separately if you want to alert on long pause windows.
+
+### Degraded Status
+
+When any non-critical sub-system sentinel is `false` or absent (never set), `overall_status` transitions from `Healthy` to `Degraded`. This indicates that:
+
+- Redis-backed components (PubSub, RevocationStore, WebhookRegistry) are unavailable **but**
+- The core contract is still processing loans, vouches, and repayments normally using local fallbacks.
+
+A `Degraded` state should generate a **warning-severity alert**, not a page.
+
+### Sub-System Sentinels
+
+Off-chain relayer processes write boolean sentinels into contract instance storage via a restricted admin call. The health check reads these sentinels to determine sub-system connectivity.
+
+```bash
+# Example: relayer marks PubSub as healthy
+stellar contract invoke \
+  --id $CONTRACT_ID \
+  --fn set_subsystem_health \
+  --network testnet \
+  --source $RELAYER_KEY \
+  -- \
+  --admin_signers '["'$ADMIN_ADDRESS'"]' \
+  --key PubSub \
+  --healthy true
+```
+
+Keys and their defaults:
+
+| Key                    | DataKey                     | Default (absent) |
+|------------------------|-----------------------------|------------------|
+| PubSub bus             | `DataKey::PubSubHealthy`    | `false` → Degraded |
+| RevocationStore        | `DataKey::RevocationStoreHealthy` | `false` → Degraded |
+| WebhookRegistry        | `DataKey::WebhookRegistryHealthy` | `false` → Degraded |
+
+### Example Responses by Status
+
+**Healthy — all systems operational:**
+```json
+{
+  "overall_status": "Healthy",
+  "is_healthy": true,
+  "initialized": true,
+  "paused": false,
+  "yield_reserve_solvent": true,
+  "pubsub_connected": true,
+  "revocation_store_connected": true,
+  "webhook_registry_connected": true,
+  "issues": []
+}
+```
+
+**Degraded — Redis backing services unreachable, contract serving normally:**
+```json
+{
+  "overall_status": "Degraded",
+  "is_healthy": false,
+  "initialized": true,
+  "paused": false,
+  "yield_reserve_solvent": true,
+  "pubsub_connected": false,
+  "revocation_store_connected": false,
+  "webhook_registry_connected": true,
+  "issues": [
+    "PubSub bus unreachable or sentinel not set — local event fallback active",
+    "RevocationStore unreachable or sentinel not set — local cache fallback active"
+  ]
+}
+```
+
+**Down — contract not initialized or yield reserve depleted:**
+```json
+{
+  "overall_status": "Down",
+  "is_healthy": false,
+  "initialized": true,
+  "paused": false,
+  "yield_reserve_solvent": false,
+  "pubsub_connected": false,
+  "revocation_store_connected": false,
+  "webhook_registry_connected": false,
+  "issues": [
+    "Yield reserve below minimum threshold (1 XLM)"
+  ]
+}
+```
+
+### Prometheus Integration
+
+Expose health check results as Prometheus metrics from your off-chain collector:
+
+```python
+from prometheus_client import Gauge
+
+# Gauge: 1 = Healthy, 0.5 = Degraded, 0 = Down
+health_level = Gauge('qc_health_level', 'Contract health level (1=Healthy, 0.5=Degraded, 0=Down)')
+pubsub_up    = Gauge('qc_pubsub_connected', 'PubSub bus connectivity (1=up, 0=down)')
+revstore_up  = Gauge('qc_revocation_store_connected', 'RevocationStore connectivity')
+webhook_up   = Gauge('qc_webhook_registry_connected', 'WebhookRegistry connectivity')
+yield_solvent = Gauge('qc_yield_reserve_solvent', 'Yield reserve solvency (1=solvent)')
+
+def update_health_metrics(health_response: dict):
+    status = health_response['overall_status']
+    health_level.set(1.0 if status == 'Healthy' else (0.5 if status == 'Degraded' else 0.0))
+    pubsub_up.set(1 if health_response['pubsub_connected'] else 0)
+    revstore_up.set(1 if health_response['revocation_store_connected'] else 0)
+    webhook_up.set(1 if health_response['webhook_registry_connected'] else 0)
+    yield_solvent.set(1 if health_response['yield_reserve_solvent'] else 0)
+```
+
+### Alert Rules
+
+Add to your existing `alerts.yml`:
+
+```yaml
+groups:
+  - name: quorum-credit-health
+    rules:
+      # Page: contract is down
+      - alert: ContractDown
+        expr: qc_health_level == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "QuorumCredit contract is DOWN"
+          description: "Health check returned Down status. Immediate investigation required."
+
+      # Warning: degraded for more than 5 minutes
+      - alert: ContractDegraded
+        expr: qc_health_level == 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "QuorumCredit contract is DEGRADED"
+          description: "Non-critical sub-systems unavailable for >5m. Contract serving via fallbacks."
+
+      # Warning: yield reserve getting low
+      - alert: YieldReserveInsufficient
+        expr: qc_yield_reserve_solvent == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Yield reserve is insufficient"
+          description: "Contract token balance is below 1 XLM. Repayments will fail."
+
+      # Warning: PubSub disconnected for extended period
+      - alert: PubSubDisconnected
+        expr: qc_pubsub_connected == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PubSub bus disconnected for >15m"
+          description: "Event delivery is running on local fallback. Check the relay process."
+```
+
 - [Event Indexing Guide](./event-indexing-guide.md) — full event schema and indexer documentation
 - [tools/indexer/](../tools/indexer/) — indexer source code and integration tests
