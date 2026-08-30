@@ -14,6 +14,7 @@
 use crate::errors::ContractError;
 use crate::helpers::require_admin_approval;
 use crate::types::{DataKey, VOTE_ATTESTATION_MAX_AGE_SECS, VOTE_ATTESTATION_MAX_SKEW_SECS};
+use crate::vouch;
 use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec};
 
 /// Cross-chain governance proposal
@@ -91,7 +92,7 @@ pub struct CrossChainVote {
 }
 
 /// Canonical bytes a vote attestor key must sign for this attestation.
-fn vote_attestation_message(
+pub(crate) fn vote_attestation_message(
     env: &Env,
     origin_chain: u32,
     proposal_id: u64,
@@ -119,6 +120,14 @@ fn is_vote_attestation_nonce_used(env: Env, origin_chain: u32, nonce: u64) -> bo
     env.storage()
         .persistent()
         .get(&DataKey::VoteAttestationNonceUsed(origin_chain, nonce))
+        .unwrap_or(false)
+}
+
+/// Check if a `submit_cross_chain_vote` (chain_id, nonce) pair has already been used.
+fn is_cross_chain_vote_nonce_used(env: Env, chain_id: u32, nonce: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CrossChainVoteNonceUsed(chain_id, nonce))
         .unwrap_or(false)
 }
 
@@ -169,14 +178,24 @@ pub fn create_cross_chain_proposal(
 
 /// Submit a vote on a cross-chain proposal
 /// Can only be called by active vouchers
+///
+/// `nonce` must be unique per `chain_id` (mirroring `is_bridge_nonce_used` in
+/// `cross_chain.rs`) so the same voter's weight from a given origin chain
+/// cannot be resubmitted and double-counted across separate calls. See
+/// `docs/governance-manual.md` for the nonce scheme.
 pub fn submit_cross_chain_vote(
     env: Env,
     voter: Address,
     proposal_id: u64,
     approve: bool,
     chain_id: u32,
+    nonce: u64,
 ) -> Result<(), ContractError> {
     voter.require_auth();
+
+    if is_cross_chain_vote_nonce_used(env.clone(), chain_id, nonce) {
+        return Err(ContractError::VoteAttestationNonceReused);
+    }
 
     let now = env.ledger().timestamp();
     let mut proposal: CrossChainProposal = env
@@ -246,6 +265,12 @@ pub fn submit_cross_chain_vote(
         .persistent()
         .set(&DataKey::CrossChainProposal(proposal_id), &proposal);
 
+    // Mark nonce as used (after successful tallying) so this exact
+    // (chain_id, nonce) cannot be resubmitted.
+    env.storage()
+        .persistent()
+        .set(&DataKey::CrossChainVoteNonceUsed(chain_id, nonce), &true);
+
     Ok(())
 }
 
@@ -262,6 +287,11 @@ pub fn aggregate_remote_votes(
     if attestation.proposal_id != proposal_id {
         return Err(ContractError::InvalidStateTransition);
     }
+
+    // The origin chain must be an actively registered bridge, not just any
+    // chain ID an admin happens to supply -- mirrors the bridge attestation
+    // model in `cross_chain.rs::check_attestation`.
+    vouch::validate_bridge(&env, attestation.origin_chain)?;
 
     // Verify nonce has not been used (replay protection)
     if is_vote_attestation_nonce_used(env.clone(), attestation.origin_chain, attestation.nonce) {
@@ -340,7 +370,32 @@ pub fn aggregate_remote_votes(
     Ok(())
 }
 
-/// Check if a proposal has passed (approve stake > reject stake)
+/// Whether `proposal` has a legitimate quorum: approve stake exceeds reject
+/// stake, AND a strict majority of currently registered, active bridge chains
+/// have reported vote data (via `submit_cross_chain_vote` and/or
+/// `aggregate_remote_votes`). Without the second check, a proposal could pass
+/// on votes from a single reporting chain while every other registered chain
+/// simply never checked in (offline, censored, or never attested), silently
+/// excluding their voting weight from the outcome.
+fn proposal_meets_quorum(env: &Env, proposal: &CrossChainProposal) -> bool {
+    if proposal.approve_stake <= proposal.reject_stake {
+        return false;
+    }
+
+    let active_chains = vouch::get_bridges(env.clone())
+        .iter()
+        .filter(|b| b.active)
+        .count() as u32;
+
+    if active_chains == 0 {
+        return true;
+    }
+
+    proposal.chain_votes.len() * 2 > active_chains
+}
+
+/// Check if a proposal has passed (approve stake > reject stake, with a
+/// minimum-chains-reporting quorum requirement — see `proposal_meets_quorum`)
 pub fn has_proposal_passed(env: Env, proposal_id: u64) -> Result<bool, ContractError> {
     let proposal: CrossChainProposal = env
         .storage()
@@ -348,8 +403,7 @@ pub fn has_proposal_passed(env: Env, proposal_id: u64) -> Result<bool, ContractE
         .get(&DataKey::CrossChainProposal(proposal_id))
         .ok_or(ContractError::ProposalNotFound)?;
 
-    // Proposal passes if approve stake > reject stake
-    Ok(proposal.approve_stake > proposal.reject_stake)
+    Ok(proposal_meets_quorum(&env, &proposal))
 }
 
 /// Execute a cross-chain governance proposal (after voting period and timelock)
@@ -378,8 +432,8 @@ pub fn execute_cross_chain_proposal(
         return Err(ContractError::TimelockDelayNotElapsed);
     }
 
-    // Check proposal passed
-    if proposal.approve_stake <= proposal.reject_stake {
+    // Check proposal passed (majority stake AND minimum-chains-reporting quorum)
+    if !proposal_meets_quorum(&env, &proposal) {
         return Err(ContractError::QuorumNotMet);
     }
 

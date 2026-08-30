@@ -109,6 +109,25 @@ number of admins (never require unanimity in a set where losing one key means pe
 lockout) and should be high enough that no minority collusion (e.g. 1-of-5) can act alone.
 A common pattern is `ceil(2/3 * N)` admins for `N` total admins.
 
+## Cross-Chain Vote Replay Protection
+
+`submit_cross_chain_vote` (`src/cross_chain_governance.rs`) takes a caller-supplied
+`nonce: u64` alongside the voter, proposal, and origin `chain_id`. Before tallying a
+vote, the contract checks `DataKey::CrossChainVoteNonceUsed(chain_id, nonce)`; once a
+`(chain_id, nonce)` pair has been used, submitting it again is rejected with
+`VoteAttestationNonceReused` rather than being tallied a second time. The nonce is
+marked used only after the vote is successfully recorded, so a rejected call never
+consumes it.
+
+This mirrors the existing nonce-replay guards elsewhere in the cross-chain surface —
+`DataKey::BridgeNonceUsed` in `src/cross_chain.rs` and `DataKey::VoteAttestationNonceUsed`
+in `src/cross_chain_governance.rs`'s own `aggregate_remote_votes` — and exists for the
+same reason: without it, the same voter's weight from a given origin chain could be
+resubmitted and double-counted into a proposal's tally across separate calls. Callers
+(off-chain relayers or the voter's own client) are responsible for choosing a nonce they
+have not used before for that chain — a monotonic counter or a fresh random `u64` both
+work, since uniqueness (not ordering) is all the contract enforces.
+
 ## Assumptions and Trust Model
 
 Governance in this protocol assumes admin-set honesty-in-aggregate below the threshold, and

@@ -889,7 +889,11 @@ pub enum DataKey {
     CrossChainVote(u64, Address),
     /// (origin_chain, nonce) → true once a vote attestation with that nonce has been consumed.
     VoteAttestationNonceUsed(u32, u64),
-    
+    /// (chain_id, nonce) → true once a `submit_cross_chain_vote` call with that
+    /// (chain, nonce) pair has been processed. Prevents the same voter's weight
+    /// from a given origin chain being resubmitted and double-counted.
+    CrossChainVoteNonceUsed(u32, u64),
+
     // ── Issue #974: Cross-Chain Auction ───────────────────────────────────
     /// auction_id → CrossChainAuction
     CrossChainAuction(u64),
