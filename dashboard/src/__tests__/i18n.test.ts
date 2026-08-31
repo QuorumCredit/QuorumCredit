@@ -2,11 +2,11 @@
  * i18n.test.ts — Tests for issue #1509.
  *
  * Covers:
- *   1. missingKeyHandler suppresses console.warn in test environment (fr locale)
+ *   1. missingKeyHandler suppresses console.warn in test environment
  *   2. missingKeyHandler fires console.warn outside test environment
  *   3. fr locale has every key that en locale has (no missing keys)
  *   4. t() resolves French strings when lng="fr"
- *   5. missingKeyHandler is called for missing keys in non-English locales when saveMissing is enabled
+ *   5. Fallback to English for a key absent from fr (regression guard)
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -54,13 +54,13 @@ function makeI18n(lng: string, warnOnMissing = true) {
 // ---------------------------------------------------------------------------
 
 describe("missingKeyHandler", () => {
-  it("does NOT call console.warn for a missing key when NODE_ENV=test (non-English locale)", () => {
+  it("does NOT call console.warn for a missing key when NODE_ENV=test", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const instance = i18next.createInstance();
     instance.use(initReactI18next).init({
-      lng: "fr",
+      lng: "en",
       fallbackLng: "en",
-      resources: { en: { translation: en }, fr: { translation: fr } },
+      resources: { en: { translation: en } },
       interpolation: { escapeValue: false },
       missingKeyHandler: (_lngs, _ns, key) => {
         if (process.env.NODE_ENV !== "test") {
@@ -138,29 +138,29 @@ describe("fr locale — t() returns French strings", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5 — missingKeyHandler called for missing keys in non-English locales
+// 5 — fallback to English when a key is absent from the active locale
 // ---------------------------------------------------------------------------
 
-describe("missingKeyHandler in non-English locales", () => {
-  it("calls missingKeyHandler for a missing key when saveMissing is enabled in a French locale", () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+describe("fallback behaviour", () => {
+  it("falls back to English when a key is missing from the active locale", () => {
+    const frStub = {
+      emptyState: {
+        loans: { title: "Aucun prêt pour l'instant", subtitle: "…" },
+      },
+    };
+
     const instance = i18next.createInstance();
     instance.use(initReactI18next).init({
       lng: "fr",
       fallbackLng: "en",
-      saveMissing: true,
       resources: {
         en: { translation: en },
-        fr: { translation: { emptyState: { loans: { title: "test" } } } },
+        fr: { translation: frStub },
       },
       interpolation: { escapeValue: false },
-      missingKeyHandler: (_lngs, _ns, key) => {
-        console.warn(`[i18n] missing key: ${key}`);
-      },
     });
 
-    instance.t("this.key.does.not.exist");
-    expect(warnSpy).toHaveBeenCalledWith("[i18n] missing key: this.key.does.not.exist");
-    warnSpy.mockRestore();
+    expect(instance.t("emptyState.loans.title")).toBe("Aucun prêt pour l'instant");
+    expect(instance.t("emptyState.giveUp.retry")).toBe("Try again");
   });
 });

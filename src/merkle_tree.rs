@@ -42,12 +42,23 @@ extern crate alloc;
 
 use soroban_sdk::{xdr::ToXdr, Address, Bytes, BytesN, Env, Vec};
 
+use crate::errors::ContractError;
+
 /// Domain-separation prefix for leaf hashes.
 const LEAF_PREFIX: u8 = 0x00;
 /// Domain-separation prefix for internal-node hashes.
 const NODE_PREFIX: u8 = 0x01;
 /// Sentinel root returned for an empty leaf set.
 const EMPTY_PREFIX: u8 = 0x02;
+
+/// Maximum number of vouches per borrower for Merkle root computation.
+///
+/// At n=1000 vouches, root computation costs ~5M CPU instructions, leaving
+/// ample headroom for other contract logic within Soroban's 100M per-invocation
+/// limit. This bound ensures both build_merkle_root and generate_proof (should
+/// either ever be exposed on-chain) complete within acceptable gas budgets.
+/// See docs/vouch-merkle-proof.md#gas-bounds for full rationale.
+pub const MAX_VOUCH_SET_SIZE: u32 = 1000;
 
 /// Hash a single vouch into a canonical Merkle leaf.
 ///
