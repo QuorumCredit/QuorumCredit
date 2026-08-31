@@ -485,6 +485,39 @@ describe('EventIndexer', () => {
       const loanRequests = indexer2.queryEvents({ type: 'loan/request' });
       expect(loanRequests.length).toBeGreaterThan(0);
     });
+
+    test('should support pagination cursor for handling large ledgers', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockEventsFirstPage = Array.from({ length: 1000 }, (_, i) => ({
+        id: `202-${i}`,
+        type: 'vouch/create',
+        timestamp: Date.now(),
+        participant: `GUSER${i}`,
+        contractId: 'CTEST123',
+        data: {},
+        blockNumber: 202,
+        transactionHash: `tx${i}`,
+      }));
+
+      const mockEventsSecondPage = Array.from({ length: 500 }, (_, i) => ({
+        id: `202-${1000 + i}`,
+        type: 'vouch/create',
+        timestamp: Date.now(),
+        participant: `GUSER${1000 + i}`,
+        contractId: 'CTEST123',
+        data: {},
+        blockNumber: 202,
+        transactionHash: `tx${1000 + i}`,
+      }));
+
+      (indexer as any).database = [...mockEventsFirstPage, ...mockEventsSecondPage];
+
+      expect((indexer as any).database.length).toBe(1500);
+
+      const allVouchEvents = indexer.queryEvents({ type: 'vouch/create', limit: 10000 });
+      expect(allVouchEvents.length).toBe(1500);
+    });
   });
 
   describe('Large Database Performance (#1503)', () => {

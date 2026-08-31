@@ -230,56 +230,77 @@ class EventIndexer extends EventEmitter {
       // Main indexing loop
       while (this.isIndexing) {
         try {
-          // Get events for the current ledger
-          const events = await server.getEvents({
-            startLedger,
-            filters: [
-              {
-                contractIds: [this.contractId],
-              },
-            ],
-            limit: 1000,
-          });
+          let allLedgerEventsProcessed = false;
+          let cursor: string | undefined;
 
-          if (events.events && events.events.length > 0) {
-            const newEvents = this.processEvents(events.events);
-            
-            // Deduplicate before adding
-            const deduplicatedEvents = newEvents.filter(event => {
-              if (this.eventSet.has(event.id)) {
-                console.log(`Skipping duplicate event: ${event.id}`);
-                return false;
-              }
-              return true;
+          while (!allLedgerEventsProcessed && this.isIndexing) {
+            // Get events for the current ledger with pagination cursor
+            const events = await server.getEvents({
+              startLedger,
+              filters: [
+                {
+                  contractIds: [this.contractId],
+                },
+              ],
+              limit: 1000,
+              cursor: cursor,
             });
-            
-            if (deduplicatedEvents.length > 0) {
-              // Add to database
-              this.database.push(...deduplicatedEvents);
-              
-              // Update deduplication set
-              deduplicatedEvents.forEach(event => this.eventSet.add(event.id));
-              
-              // Save database and cursor atomically
-              this.saveDatabase();
+
+            if (events.events && events.events.length > 0) {
+              const newEvents = this.processEvents(events.events);
+
+              // Deduplicate before adding
+              const deduplicatedEvents = newEvents.filter(event => {
+                if (this.eventSet.has(event.id)) {
+                  console.log(`Skipping duplicate event: ${event.id}`);
+                  return false;
+                }
+                return true;
+              });
+
+              if (deduplicatedEvents.length > 0) {
+                // Add to database
+                this.database.push(...deduplicatedEvents);
+
+                // Update deduplication set
+                deduplicatedEvents.forEach(event => this.eventSet.add(event.id));
+
+                // Save database and cursor atomically
+                this.saveDatabase();
+                this.saveCursor(startLedger);
+
+                console.log(`Indexed ${deduplicatedEvents.length} new events from ledger ${startLedger} (${newEvents.length - deduplicatedEvents.length} duplicates skipped)`);
+
+                // Emit event for real-time processing
+                this.emit('newEvents', deduplicatedEvents);
+              }
+
+              // Check if response is truncated (at limit means more events might exist)
+              if (events.events.length === 1000) {
+                console.warn(`Detected potential truncation at ledger ${startLedger} with ${events.events.length} events, continuing pagination`);
+                cursor = events.paging?.cursor;
+
+                if (!cursor) {
+                  allLedgerEventsProcessed = true;
+                  this.saveCursor(startLedger);
+                }
+              } else {
+                allLedgerEventsProcessed = true;
+                this.saveCursor(startLedger);
+              }
+            } else {
+              // Even if no events, update cursor to mark progress
               this.saveCursor(startLedger);
-              
-              console.log(`Indexed ${deduplicatedEvents.length} new events from ledger ${startLedger} (${newEvents.length - deduplicatedEvents.length} duplicates skipped)`);
-              
-              // Emit event for real-time processing
-              this.emit('newEvents', deduplicatedEvents);
+              allLedgerEventsProcessed = true;
             }
-          } else {
-            // Even if no events, update cursor to mark progress
-            this.saveCursor(startLedger);
           }
 
           // Move to next ledger
           startLedger++;
-          
+
           // Wait before next poll (5 seconds)
           await new Promise(resolve => setTimeout(resolve, 5000));
-          
+
         } catch (error) {
           console.error('Error indexing ledger', startLedger, error);
           // Wait longer on error
