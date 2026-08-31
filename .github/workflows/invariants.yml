@@ -12,6 +12,7 @@ on:
       - "src/types.rs"
       - "src/errors.rs"
       - "src/invariants_test.rs"
+      - "src/differential_testing.rs"
       - "Cargo.toml"
       - ".github/workflows/invariants.yml"
   push:
@@ -26,6 +27,7 @@ on:
       - "src/types.rs"
       - "src/errors.rs"
       - "src/invariants_test.rs"
+      - "src/differential_testing.rs"
       - "Cargo.toml"
       - ".github/workflows/invariants.yml"
 
