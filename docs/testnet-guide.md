@@ -120,6 +120,54 @@ To run them in CI, set the following repository secrets:
 
 ---
 
+## Recurring Payment Execution (Issue #1362 / #1490)
+
+The server can execute on-chain recurring payments via the Soroban RPC client.
+
+### Prerequisites
+
+| Variable | Description |
+|----------|-------------|
+| `SOROBAN_RPC_URL` | RPC endpoint (e.g. `https://soroban-testnet.stellar.org`) |
+| `QUORUM_CREDIT_CONTRACT_ID` | Deployed contract ID |
+| `SOROBAN_KEEPER_SECRET_KEY` | Secret key of the keeper account (must be funded and authorized) |
+
+### Setup
+
+1. Fund the keeper account on testnet:
+   ```bash
+   curl "https://friendbot.stellar.org?addr=$KEEPER_PUBLIC_KEY"
+   ```
+
+2. Set the environment variables in `.env`:
+   ```bash
+   SOROBAN_RPC_URL="https://soroban-testnet.stellar.org"
+   QUORUM_CREDIT_CONTRACT_ID="C..."
+   SOROBAN_KEEPER_SECRET_KEY="S..."
+   ```
+
+### Execution
+
+Trigger a recurring payment via the REST API:
+
+```bash
+curl -X POST http://localhost:4000/loans/<borrower-address>/recurring-payment/execute
+```
+
+The server will:
+1. Derive the borrower address from the loanId (URL path parameter).
+2. Build and sign a Soroban `invoke_host_function` transaction calling
+   `execute_recurring_payment(borrower)`.
+3. Submit the transaction via Soroban RPC.
+4. Poll for confirmation and return the transaction hash.
+
+### Monitoring
+
+- `qc_recurring_payments_chain_attempts_total` — counter for every on-chain attempt.
+- `qc_recurring_payments_chain_success_total` — counter for successful executions.
+- `qc_recurring_payments_chain_failed_total` — counter for failed executions.
+- `qc_recurring_payments_rpc_unconfigured_total` — counter when RPC client is missing.
+
 ## See Also
 
 - [Deployment Guide](./deployment-guide.md)

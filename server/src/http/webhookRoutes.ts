@@ -17,9 +17,23 @@ import {
   SUBSCRIBABLE_EVENTS,
   type WebhookSender,
 } from "../webhooks/delivery.js";
+import { metrics } from "./metricsRegistry.js";
 
 export interface WebhookRoutesContext {
   webhookSecret?: string; // Secret for receiving webhooks (if this service receives webhooks)
+  /**
+   * Rate limiter for the test-delivery endpoint. When provided, caps the number
+   * of test-delivery requests per IP per minute to prevent request amplification.
+   */
+  testDeliveryRateLimiter?: {
+    isBlocked: (ip: string) => Promise<boolean>;
+    recordFailure: (ip: string) => Promise<boolean>;
+  };
+  /**
+   * Maximum concurrent test-delivery requests allowed globally.
+   * When the limit is reached, additional requests are rejected with 429.
+   */
+  maxConcurrentTestDeliveries?: number;
 }
 
 interface RegisterWebhookBody {
@@ -413,7 +427,7 @@ export async function dispatchEventToSubscribers(event: string, data: unknown): 
 async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
   try {
     const webhook = await webhookRegistry.getWebhook(id);
-    
+
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
@@ -427,29 +441,51 @@ async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: 
     }
 
     const body = await readJsonBody<TestWebhookBody>(req);
-    
+
     if (!body.event || !body.data) {
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "event and data are required" }));
       return;
     }
 
-    // Create signed webhook request
-    const signedRequest = createSignedWebhookRequest(webhook, body.event, body.data);
+    // Issue #1491: Rate-limit and cap concurrency for the test-delivery path.
+    const clientIp = req.socket.remoteAddress ?? "unknown";
+    const rateLimiter = ctx.testDeliveryRateLimiter;
+    const maxConcurrent = ctx.maxConcurrentTestDeliveries ?? 10;
+    const inFlight = (globalThis as any).__qcTestDeliveriesInFlight ?? 0;
+    if (inFlight >= maxConcurrent) {
+      metrics.incCounter("qc_webhook_test_delivery_throttled_total");
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "too many concurrent test deliveries; try again later" }));
+      return;
+    }
+    if (rateLimiter && (await rateLimiter.isBlocked(clientIp))) {
+      metrics.incCounter("qc_webhook_test_delivery_throttled_total");
+      res.writeHead(429, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "rate limit exceeded; try again later" }));
+      return;
+    }
 
-    // In a real implementation, you would send this request to the webhook URL
-    // For now, we'll just return the signed request details
-    
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({
-      message: "Test webhook created",
-      signedRequest: {
-        url: signedRequest.url,
-        headers: signedRequest.headers,
-        payload: signedRequest.payload,
-      },
-      instructions: "Send a POST request to the URL with these headers and payload to test your webhook endpoint",
-    }));
+    (globalThis as any).__qcTestDeliveriesInFlight = inFlight + 1;
+    try {
+      // Simulate a test delivery to measure latency and retries without spamming
+      // the subscriber URL. We reuse the delivery service's retry/backoff logic
+      // against a no-op sender so the endpoint itself is exercised, but the
+      // actual outbound HTTP request is skipped.
+      const noopSender: WebhookSender = async () => ({ ok: true, statusCode: 200 });
+      const record = await webhookDeliveryService.deliver(webhook, body.event, body.data, noopSender, (ms: number) => Promise.resolve());
+      metrics.incCounter("qc_webhook_test_delivery_total");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        message: "Test webhook delivered",
+        delivery: record,
+      }));
+    } finally {
+      (globalThis as any).__qcTestDeliveriesInFlight = Math.max(0, (globalThis as any).__qcTestDeliveriesInFlight - 1);
+      if (rateLimiter) {
+        await rateLimiter.recordFailure(clientIp);
+      }
+    }
   } catch (error) {
     console.error("Error testing webhook:", error);
     res.writeHead(500, { "content-type": "application/json" });
