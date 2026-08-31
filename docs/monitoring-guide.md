@@ -43,6 +43,7 @@ The indexer exposes the following metrics sourced entirely from the Soroban even
 | `qc_slash_events_total` | Counter | — | Total slash events |
 | `qc_slash_amount_total` | Counter | `token` | Total stroops slashed |
 | `qc_vouch_count` | Gauge | — | Currently active vouches |
+| `qc_ws_queue_drops_total` | Counter | `type` | WebSocket queue overflow drops (`loan` or `metrics`) |
 
 ### Metric Semantics
 
