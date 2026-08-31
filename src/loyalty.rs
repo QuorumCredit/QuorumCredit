@@ -25,6 +25,10 @@ use crate::types::{
 };
 use soroban_sdk::{symbol_short, Address, Env};
 
+/// Number of repayments to subtract from a user's count when they default.
+/// This drives tier demotion in `record_default_for_loyalty`.
+const DEFAULT_LOYALTY_PENALTY_PER_DEFAULT: u32 = 5;
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Load a user's loyalty record, creating a default Bronze record if absent.
@@ -116,6 +120,59 @@ pub fn record_repayment_for_loyalty(env: &Env, user: &Address) {
 
     env.events().publish(
         (symbol_short!("loyalty"), symbol_short!("repay")),
+        (user.clone(), record.repayment_count, record.tier),
+    );
+}
+
+/// Penalise a user's loyalty standing after a loan default.
+///
+/// Subtracts `DEFAULT_LOYALTY_PENALTY_PER_DEFAULT` from the user's repayment
+/// count (floored at 0), then re-derives their tier. If the new tier is lower
+/// than the current one (a downgrade), the tier and `last_tier_upgrade_at` are
+/// updated and a `loyalty/downgrade` event is emitted.
+///
+/// A `loyalty/default` event is **always** emitted so off-chain indexers can
+/// track every default regardless of whether a tier change occurred.
+///
+/// This function is **not** guarded by `require_not_paused` — it is called
+/// from within the slash flow that already checked pause state.
+pub fn record_default_for_loyalty(env: &Env, user: &Address) {
+    let mut record = load_loyalty_record(env, user);
+
+    // Apply the demotion penalty, floored at 0.
+    record.repayment_count = record
+        .repayment_count
+        .saturating_sub(DEFAULT_LOYALTY_PENALTY_PER_DEFAULT);
+
+    let old_tier = record.tier;
+    let new_tier = tier_for_count(record.repayment_count);
+
+    // Determine if this is a downgrade:
+    // Gold  → Silver or Bronze
+    // Silver → Bronze
+    let is_downgrade = matches!(
+        (&old_tier, &new_tier),
+        (LoyaltyTier::Gold, LoyaltyTier::Silver)
+            | (LoyaltyTier::Gold, LoyaltyTier::Bronze)
+            | (LoyaltyTier::Silver, LoyaltyTier::Bronze)
+    );
+
+    if is_downgrade {
+        record.tier = new_tier;
+        record.last_tier_upgrade_at = env.ledger().timestamp();
+
+        env.events().publish(
+            (symbol_short!("loyalty"), symbol_short!("downgrade")),
+            (user.clone(), old_tier, new_tier),
+        );
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::LoyaltyRecord(user.clone()), &record);
+
+    env.events().publish(
+        (symbol_short!("loyalty"), symbol_short!("default")),
         (user.clone(), record.repayment_count, record.tier),
     );
 }

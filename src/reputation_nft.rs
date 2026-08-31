@@ -423,19 +423,32 @@ pub fn delist_badge(
     Ok(())
 }
 
-/// Purchase a badge from the marketplace (off-chain token transfer assumed).
+/// Purchase a badge from the marketplace with on-chain payment enforcement.
 ///
-/// This transfers badge ownership on-chain.  Token payment is handled by the
-/// caller (client-side) before invoking this function.
+/// This transfers `payment_amount` tokens from `buyer` to `seller` on-chain
+/// before transferring badge ownership.  Payment is validated and executed
+/// atomically within this function — no client-side pre-payment is required
+/// or trusted.
+///
+/// # Parameters
+/// - `buyer`           — Address purchasing the badge (must authorise the call).
+/// - `seller`          — Address that owns the listed badge.
+/// - `badge_type`      — The badge type being purchased.
+/// - `token`           — SEP-41 token contract address used for payment.
+/// - `payment_amount`  — Amount in stroops to transfer from buyer to seller;
+///                       must be ≥ the badge's `listing_price`.
 ///
 /// # Errors
 /// - `InvalidAmount`          — badge not found or not listed.
+/// - `InsufficientFunds`      — `payment_amount` is less than `listing_price`.
 /// - `ContractPaused`         — contract is paused.
 pub fn purchase_badge(
     env: &Env,
     buyer: Address,
     seller: Address,
     badge_type: BadgeType,
+    token: Address,
+    payment_amount: i128,
 ) -> Result<(), ContractError> {
     require_not_paused(env)?;
     buyer.require_auth();
@@ -450,6 +463,14 @@ pub fn purchase_badge(
     if !badge.listed_for_sale {
         return Err(ContractError::InvalidAmount);
     }
+
+    // Enforce on-chain payment: buyer must send at least the listing price.
+    if payment_amount < badge.listing_price {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    // Transfer payment from buyer to seller on-chain.
+    soroban_sdk::token::Client::new(env, &token).transfer(&buyer, &seller, &payment_amount);
 
     // Remove badge from seller.
     env.storage().persistent().remove(&key);
@@ -518,23 +539,26 @@ mod tests {
     /// Helper: create an env with a registered, initialized contract, since the
     /// free functions under test access `env.storage()` / `config()`, which
     /// requires an `as_contract` frame around a deployed+initialized instance.
-    fn setup() -> (Env, Address, Address) {
+    ///
+    /// Returns `(env, contract_id, owner, token_address)`.
+    fn setup() -> (Env, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
         let deployer = Address::generate(&env);
         let admin = Address::generate(&env);
         let admins = Vec::from_array(&env, [admin.clone()]);
         let token_id = env.register_stellar_asset_contract_v2(admin);
+        let token_address = token_id.address();
         let contract_id = env.register_contract(None, crate::QuorumCreditContract);
         let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
-        client.initialize(&deployer, &admins, &1, &token_id.address());
+        client.initialize(&deployer, &admins, &1, &token_address);
         let owner = Address::generate(&env);
-        (env, contract_id, owner)
+        (env, contract_id, owner, token_address)
     }
 
     #[test]
     fn test_mint_badge_idempotent() {
-        let (env, contract_id, owner) = setup();
+        let (env, contract_id, owner, _token_address) = setup();
         let stats = env.as_contract(&contract_id, || {
             mint_badge(&env, &owner, BadgeType::FirstLoan);
             mint_badge(&env, &owner, BadgeType::FirstLoan); // second call is no-op
@@ -545,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_stake_and_unstake() {
-        let (env, contract_id, owner) = setup();
+        let (env, contract_id, owner, _token_address) = setup();
         env.as_contract(&contract_id, || mint_badge(&env, &owner, BadgeType::TenLoans));
         env.as_contract(&contract_id, || {
             stake_badge(&env, owner.clone(), BadgeType::TenLoans).unwrap()
@@ -567,7 +591,7 @@ mod tests {
 
     #[test]
     fn test_cannot_stake_listed_badge() {
-        let (env, contract_id, owner) = setup();
+        let (env, contract_id, owner, _token_address) = setup();
         env.as_contract(&contract_id, || mint_badge(&env, &owner, BadgeType::Centurion));
         env.as_contract(&contract_id, || {
             list_badge_for_sale(&env, owner.clone(), BadgeType::Centurion, 1_000_000).unwrap()
@@ -580,13 +604,25 @@ mod tests {
 
     #[test]
     fn test_list_and_purchase_badge() {
-        let (env, contract_id, seller) = setup();
+        let (env, contract_id, seller, token_address) = setup();
         let buyer = Address::generate(&env);
+
+        // Mint tokens to the buyer so they can pay for the badge.
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+        token_client.mint(&buyer, &500_000i128);
 
         env.as_contract(&contract_id, || {
             mint_badge(&env, &seller, BadgeType::TopVoucher);
             list_badge_for_sale(&env, seller.clone(), BadgeType::TopVoucher, 500_000).unwrap();
-            purchase_badge(&env, buyer.clone(), seller.clone(), BadgeType::TopVoucher).unwrap();
+            purchase_badge(
+                &env,
+                buyer.clone(),
+                seller.clone(),
+                BadgeType::TopVoucher,
+                token_address.clone(),
+                500_000i128,
+            )
+            .unwrap();
         });
 
         env.as_contract(&contract_id, || {
@@ -601,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_total_staked_yield_bonus() {
-        let (env, contract_id, owner) = setup();
+        let (env, contract_id, owner, _token_address) = setup();
         env.as_contract(&contract_id, || {
             mint_badge(&env, &owner, BadgeType::FirstLoan);
             mint_badge(&env, &owner, BadgeType::TenLoans);
@@ -622,7 +658,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_mint_first_loan_badge() {
-        let (env, contract_id, borrower) = setup();
+        let (env, contract_id, borrower, _token_address) = setup();
         env.as_contract(&contract_id, || {
             // Set repayment count to 1.
             env.storage()
@@ -636,7 +672,7 @@ mod tests {
 
     #[test]
     fn test_evaluate_and_mint_ten_loans_badge() {
-        let (env, contract_id, borrower) = setup();
+        let (env, contract_id, borrower, _token_address) = setup();
         env.as_contract(&contract_id, || {
             env.storage()
                 .persistent()

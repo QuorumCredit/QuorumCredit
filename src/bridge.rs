@@ -643,6 +643,193 @@ mod tests {
         });
         assert_eq!(balance, 0i128);
     }
+
+    // ── #1454/#1455: `repay_cross_chain_atomic` replay + reentrancy ──────────
+
+    use crate::cross_chain::{BridgeAttestation, CrossChainLoanMetadata};
+    use crate::types::{EscrowStatus, RateType};
+    use ed25519_dalek::{Signer, SigningKey};
+    use soroban_sdk::{token::StellarAssetClient, BytesN, String};
+
+    fn sign(key: &SigningKey, message: &soroban_sdk::Bytes) -> [u8; 64] {
+        let mut buf = [0u8; 32];
+        message.copy_into_slice(&mut buf);
+        key.sign(&buf).to_bytes()
+    }
+
+    /// Set up a registered bridge + attestor key for `chain_id` directly in
+    /// storage, since `register_bridge`/`set_bridge_public_key` live in a
+    /// plain (non-`#[contractimpl]`) `impl` block in lib.rs and aren't
+    /// reachable via the generated contract client.
+    fn setup_bridge(
+        env: &Env,
+        contract_id: &Address,
+        admins: &Vec<Address>,
+        chain_id: u32,
+        public_key: &BytesN<32>,
+    ) {
+        // Each call is its own `as_contract` frame: `require_admin_approval`
+        // calls `require_auth()` per admin signer, and the test host's
+        // mock-auth recorder rejects a second `require_auth` for the same
+        // address within one still-open frame ("frame is already
+        // authorized") -- so these can't be combined into a single closure.
+        env.as_contract(contract_id, || {
+            crate::vouch::register_bridge(
+                env.clone(),
+                admins.clone(),
+                chain_id,
+                String::from_str(env, "test-chain"),
+                Address::generate(env),
+            )
+            .unwrap();
+        });
+        env.as_contract(contract_id, || {
+            crate::cross_chain::set_bridge_public_key(
+                env.clone(),
+                admins.clone(),
+                chain_id,
+                public_key.clone(),
+            )
+            .unwrap();
+        });
+    }
+
+    /// Audit finding (#1454): `repay_cross_chain_atomic` must consume the
+    /// attestation's nonce (via `validate_bridge_attestation`), not merely
+    /// perform the read-only `verify_bridge_message` check -- otherwise the
+    /// same signed attestation could be replayed to record repeated
+    /// repayments against the loan. Replays the same attestation twice and
+    /// asserts the second call fails with `ReplayAttackDetected`.
+    #[test]
+    fn test_repay_cross_chain_atomic_rejects_replayed_attestation() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = token_id.address();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let borrower = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&borrower, &1_000_000);
+
+        let chain_id = 5u32;
+        let key = SigningKey::from_bytes(&[11u8; 32]);
+        let public_key = BytesN::from_array(&env, &key.verifying_key().to_bytes());
+        setup_bridge(&env, &contract_id, &admins, chain_id, &public_key);
+
+        let payment_amount = 100_000i128;
+        let metadata = CrossChainLoanMetadata {
+            origin_chain: chain_id,
+            loan_id: 1u64,
+            borrower: borrower.clone(),
+            amount: payment_amount,
+            status: LoanStatus::Repaid,
+            reputation_score: 0,
+        };
+        let nonce = 1u64;
+        let timestamp = env.ledger().timestamp();
+        let confirmations = 20u32;
+        let message =
+            crate::cross_chain::bridge_attestation_message(&env, &metadata, nonce, timestamp, confirmations);
+        let signature = BytesN::from_array(&env, &sign(&key, &message));
+        let attestation = BridgeAttestation {
+            nonce,
+            timestamp,
+            confirmations,
+            signature,
+        };
+
+        env.as_contract(&contract_id, || {
+            let now = env.ledger().timestamp();
+            let loan = LoanRecord {
+                id: 1u64,
+                borrower: borrower.clone(),
+                guarantor: None,
+                buyback_price: 0,
+                auto_repay_enabled: false,
+                auto_repay_attempts: 0,
+                escrow_status: EscrowStatus::None,
+                co_borrowers: Vec::new(&env),
+                amount: 1_000_000,
+                amount_repaid: 0,
+                total_yield: 0,
+                status: LoanStatus::Active,
+                repaid: false,
+                defaulted: false,
+                created_at: now,
+                disbursement_timestamp: now,
+                repayment_timestamp: None,
+                deadline: now + 1_000_000,
+                loan_purpose: String::from_str(&env, "test"),
+                token_address: token.clone(),
+                amortization_schedule: Vec::new(&env),
+                reminder_sent: false,
+                risk_score: 50,
+                deferment_periods: 0,
+                maturity_date: None,
+                rate_type: RateType::Fixed,
+                index_reference: None,
+                last_interest_calc: now,
+                accrued_interest: 0,
+                milestone_bonus_applied: 0,
+                retry_count: 0,
+                suspension_timestamp: None,
+                suspension_amount_repaid: 0,
+            };
+            env.storage().persistent().set(&DataKey::Loan(1u64), &loan);
+            env.storage()
+                .persistent()
+                .set(&DataKey::ActiveLoan(borrower.clone()), &1u64);
+        });
+
+        // First call succeeds and must consume the attestation's nonce.
+        client.repay_cross_chain_atomic(&chain_id, &1u64, &borrower, &payment_amount, &attestation);
+
+        // Replaying the identical attestation must be rejected.
+        let replay = client.try_repay_cross_chain_atomic(
+            &chain_id,
+            &1u64,
+            &borrower,
+            &payment_amount,
+            &attestation,
+        );
+        assert_eq!(replay, Err(Ok(ContractError::ReplayAttackDetected)));
+    }
+
+    /// Audit finding (#1455): every other state-mutating bridge entry point
+    /// wraps its body in `acquire_lock`/`release_lock`; `repay_cross_chain_atomic`
+    /// must do the same so a reentrant call is rejected rather than allowed to
+    /// interleave with another locked bridge operation.
+    #[test]
+    fn test_repay_cross_chain_atomic_rejects_reentrant_call() {
+        let (env, contract_id) = make_env();
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        let borrower = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            acquire_lock(&env).unwrap();
+        });
+
+        let dummy_attestation = BridgeAttestation {
+            nonce: 0,
+            timestamp: 0,
+            confirmations: 0,
+            signature: BytesN::from_array(&env, &[0u8; 64]),
+        };
+
+        let result = client.try_repay_cross_chain_atomic(
+            &0u32,
+            &1u64,
+            &borrower,
+            &1i128,
+            &dummy_attestation,
+        );
+        assert_eq!(result, Err(Ok(ContractError::Reentrancy)));
+    }
 }
 
 /// Issue #965: Atomic cross-chain repayment with bridge attestation verification.
@@ -669,6 +856,12 @@ mod tests {
 /// - `NoActiveLoan`: Borrower has no active or defaulted loan
 /// - `UnauthorizedCaller`: Attestation doesn't match borrower address
 /// - `StaleBridgeAttestation`: Attestation timestamp is too old
+/// - `Reentrancy`: Another guarded bridge call is already in progress
+///
+/// **Locking convention**: every state-mutating bridge entry point
+/// (`bridge_token`, `repay_with_swap`, `repay_cross_chain_atomic`) must wrap
+/// its body in `acquire_lock`/`release_lock` — new bridge entry points that
+/// transfer tokens or mutate loan state should follow this same pattern.
 pub fn repay_cross_chain_atomic(
     env: Env,
     origin_chain: u32,
@@ -679,7 +872,28 @@ pub fn repay_cross_chain_atomic(
 ) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_paused(&env)?;
-    
+    acquire_lock(&env)?;
+
+    let result = repay_cross_chain_atomic_inner(
+        &env,
+        origin_chain,
+        loan_id,
+        &borrower,
+        payment_amount,
+        attestation,
+    );
+    release_lock(&env);
+    result
+}
+
+fn repay_cross_chain_atomic_inner(
+    env: &Env,
+    origin_chain: u32,
+    loan_id: u64,
+    borrower: &Address,
+    payment_amount: i128,
+    attestation: crate::cross_chain::BridgeAttestation,
+) -> Result<(), ContractError> {
     // Load the active (or defaulted) loan for this borrower
     let active_loan_id: Option<u64> = env
         .storage()
@@ -724,10 +938,13 @@ pub fn repay_cross_chain_atomic(
         return Err(ContractError::InvalidAmount);
     }
 
-    // Phase 1: Verify the bridge attestation (all-or-nothing)
-    // This is the critical atomic boundary — if attestation fails, return immediately
+    // Phase 1: Verify AND consume the bridge attestation (all-or-nothing).
+    // This must be `validate_bridge_attestation` (nonce-consuming), not the
+    // read-only `verify_bridge_message` check — otherwise the same signed
+    // attestation could be replayed across multiple calls to record repeated
+    // repayments against this loan. If attestation fails, return immediately
     // without any state mutations.
-    crate::cross_chain::verify_bridge_message(
+    crate::cross_chain::validate_bridge_attestation(
         env.clone(),
         crate::cross_chain::CrossChainLoanMetadata {
             origin_chain,
@@ -741,10 +958,10 @@ pub fn repay_cross_chain_atomic(
     )?;
 
     // Phase 2: Attestation verified — atomically update local state
-    
+
     // Transfer payment from borrower to contract
-    let token_client = token::Client::new(&env, &loan.token_address);
-    token_client.transfer(&borrower, &env.current_contract_address(), &payment_amount);
+    let token_client = token::Client::new(env, &loan.token_address);
+    token_client.transfer(borrower, &env.current_contract_address(), &payment_amount);
 
     // Update loan record with repayment
     let now = env.ledger().timestamp();

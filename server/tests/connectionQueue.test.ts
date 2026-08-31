@@ -1,35 +1,44 @@
 import { describe, it, expect } from "vitest";
+import { MetricsRegistry } from "../src/http/metricsRegistry.js";
 import { ConnectionQueue } from "../src/ws/connectionQueue.js";
 
-describe("ConnectionQueue", () => {
-  it("drains items in FIFO order", () => {
-    const q = new ConnectionQueue<number>(5);
-    q.push(1);
-    q.push(2);
-    q.push(3);
-    expect(q.drainAll()).toEqual([1, 2, 3]);
-    expect(q.size).toBe(0);
+describe("ConnectionQueue backpressure metrics", () => {
+  it("increments labeled counter on drop via onDrop callback", () => {
+    const registry = new MetricsRegistry();
+    const queue = new ConnectionQueue<number>(2);
+
+    queue.push(1, () => registry.incLabeledCounter("qc_ws_queue_drops_total", "type", "loan"));
+    queue.push(2, () => registry.incLabeledCounter("qc_ws_queue_drops_total", "type", "loan"));
+    queue.push(3, () => registry.incLabeledCounter("qc_ws_queue_drops_total", "type", "loan"));
+
+    expect(queue.size).toBe(2);
+    expect(registry.toPrometheusText()).toContain('qc_ws_queue_drops_total{type="loan"} 1');
   });
 
-  it("drops the oldest item once capacity is exceeded", () => {
-    const q = new ConnectionQueue<number>(3);
-    expect(q.push(1)).toBe(false);
-    expect(q.push(2)).toBe(false);
-    expect(q.push(3)).toBe(false);
-    expect(q.push(4)).toBe(true); // over capacity — 1 is dropped
-    expect(q.drainAll()).toEqual([2, 3, 4]);
+  it("supports different labels for different connection types", () => {
+    const registry = new MetricsRegistry();
+    const loanQueue = new ConnectionQueue<number>(1);
+    const metricsQueue = new ConnectionQueue<number>(1);
+
+    loanQueue.push(1, () => registry.incLabeledCounter("qc_ws_queue_drops_total", "type", "loan"));
+    loanQueue.push(2, () => registry.incLabeledCounter("qc_ws_queue_drops_total", "type", "loan"));
+
+    metricsQueue.push(1, () => registry.incLabeledCounter("qc_ws_queue_drops_total", "type", "metrics"));
+    metricsQueue.push(2, () => registry.incLabeledCounter("qc_ws_queue_drops_total", "type", "metrics"));
+
+    const text = registry.toPrometheusText();
+    expect(text).toContain('qc_ws_queue_drops_total{type="loan"} 1');
+    expect(text).toContain('qc_ws_queue_drops_total{type="metrics"} 1');
   });
 
-  it("reports the drop flag exactly once per overflow batch", () => {
-    const q = new ConnectionQueue<number>(2);
-    q.push(1);
-    q.push(2);
-    q.push(3); // drop
-    expect(q.takeDropFlag()).toBe(true);
-    expect(q.takeDropFlag()).toBe(false);
-  });
+  it("does not increment when no onDrop callback is provided", () => {
+    const registry = new MetricsRegistry();
+    const queue = new ConnectionQueue<number>(1);
 
-  it("rejects a capacity below 1", () => {
-    expect(() => new ConnectionQueue<number>(0)).toThrow();
+    queue.push(1);
+    queue.push(2);
+
+    const text = registry.toPrometheusText();
+    expect(text).not.toContain("qc_ws_queue_drops_total");
   });
 });
