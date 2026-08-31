@@ -155,6 +155,24 @@ each executed slash with the live `TotalDefaultCount`/`LoanCounter` figures.
 
 ---
 
+## I12 — Monthly Slash Index Consistency (Issue #1444)
+
+Every executed slash record with ID `slash_id` executed at timestamp `t` must be indexed in
+`DataKey::SlashesByMonth(t / MONTHLY_PERIOD_SECS)`.
+
+```
+forall slash_id in 1..=SlashRecordCounter:
+  record = SlashRecord(slash_id)
+  slash_id in SlashesByMonth(record.slash_timestamp / MONTHLY_PERIOD_SECS)
+```
+
+**Maintained by:** `governance::execute_slash` at slash execution time, and `governance::backfill_slashes_by_month`
+for one-time migration of historical slash records. Enables $O(\text{slashes-in-month})$ performance for `generate_slashing_report`.
+
+**Violation trigger:** A slash path that creates a `SlashRecord` without pushing `slash_id` into `SlashesByMonth`.
+
+---
+
 ## On-Chain Aggregate View Functions (Issue #1288)
 
 Two new read-only entrypoints expose the TVL and active-loan counters for composability:

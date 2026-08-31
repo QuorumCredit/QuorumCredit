@@ -104,6 +104,8 @@ pub const INSTANCE_TTL_THRESHOLD_LEDGERS: u32 = 30 * 17_280; // 518_400
 pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum delay before a timelocked governance action may be executed, in seconds (24 hours).
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
+/// Default timelock delay before a designated successor admin may claim admin rights, in seconds (24 hours).
+pub const SUCCESSOR_CLAIM_TIMELOCK_SECS: u64 = 24 * 60 * 60;
 /// Maximum window after `eta` within which a timelocked action must be executed, in seconds (72 hours).
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
 /// Cross-chain vote attestations older than this (relative to the ledger clock) are rejected as stale (10 minutes).
@@ -242,6 +244,8 @@ pub enum AdminRole {
     SuperAdmin,
     Treasurer,
     Monitor,
+    Slasher,
+    GovernanceOperator,
 }
 
 #[contracttype]
@@ -539,6 +543,8 @@ pub enum DataKey {
     LoanPool(u64),   // pool_id → LoanPoolRecord
     LoanPoolCounter, // u64: monotonically increasing pool ID counter
     PendingAdmin,    // Address of the pending admin (two-step transfer)
+    /// Issue #1443: Earliest timestamp when the designated successor admin may claim admin rights
+    SuccessorAdminClaimableAt,
     RepaymentCount(Address), // borrower → u32 total successful repayments
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
@@ -660,6 +666,8 @@ pub enum DataKey {
     /// Monthly slashing transparency report: month_id → SlashingReportRecord.
     /// month_id = unix_timestamp / MONTHLY_PERIOD_SECS
     SlashingReport(u64),
+    /// Issue #1444: Per-month index of slash record IDs: month_id → Vec<u64>
+    SlashesByMonth(u64),
     /// Per-vouch insurance opt-in: (voucher, borrower) → bool (insured).
     VoucherInsurance(Address, Address),
     /// Cross-chain bridge validation status: (voucher, chain_id) → bool.
@@ -3273,10 +3281,10 @@ pub struct CooldownBypassRequest {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminActionProposal {
     pub id: u64,
-    pub action_type: soroban_sdk::String,
+    pub action_type: GovernanceAction,
     pub proposer: Address,
     pub approvals: Vec<Address>,
     pub created_at: u64,

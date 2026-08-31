@@ -693,6 +693,18 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         .persistent()
         .set(&DataKey::SlashAudit(borrower.clone()), &record);
 
+    // Issue #1444: Maintain per-month index of slash IDs for O(slashes-in-month) reporting
+    let month_id = now / MONTHLY_PERIOD_SECS;
+    let mut month_slashes: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SlashesByMonth(month_id))
+        .unwrap_or_else(|| Vec::new(env));
+    month_slashes.push_back(slash_id);
+    env.storage()
+        .persistent()
+        .set(&DataKey::SlashesByMonth(month_id), &month_slashes);
+
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("slashed")),
         (borrower.clone(), total_slashed, slash_id, effective_slash_bps),
@@ -1165,25 +1177,22 @@ pub fn get_slash_threshold_proposal(
 /// Generate (or refresh) the monthly slashing report for `month_id`.
 ///
 /// `month_id` = `unix_timestamp / MONTHLY_PERIOD_SECS`.
-/// Iterates all recorded slash events and aggregates those whose
-/// `slash_timestamp` falls within the requested month window.
+/// Reads slash records indexed for `month_id` under `DataKey::SlashesByMonth(month_id)`
+/// running in O(slashes-in-month) time instead of scanning all historical records.
 /// The result is persisted under `DataKey::SlashingReport(month_id)`.
 pub fn generate_slashing_report(env: Env, month_id: u64) -> SlashingReportRecord {
-    let total_ids: u64 = env
+    let month_slash_ids: Vec<u64> = env
         .storage()
-        .instance()
-        .get(&DataKey::SlashRecordCounter)
-        .unwrap_or(0);
-
-    let month_start = month_id * MONTHLY_PERIOD_SECS;
-    let month_end = month_start + MONTHLY_PERIOD_SECS;
+        .persistent()
+        .get(&DataKey::SlashesByMonth(month_id))
+        .unwrap_or_else(|| Vec::new(&env));
 
     let mut slash_ids: Vec<u64> = Vec::new(&env);
     let mut total_slashed: i128 = 0;
     let mut total_slashes: u32 = 0;
     let mut total_reversed: u32 = 0;
 
-    for id in 1..=total_ids {
+    for id in month_slash_ids.iter() {
         let record: crate::types::SlashRecord = match env
             .storage()
             .persistent()
@@ -1193,14 +1202,12 @@ pub fn generate_slashing_report(env: Env, month_id: u64) -> SlashingReportRecord
             None => continue,
         };
 
-        if record.slash_timestamp >= month_start && record.slash_timestamp < month_end {
-            total_slashes += 1;
-            total_slashed += record.total_slashed;
-            if record.reversed {
-                total_reversed += 1;
-            }
-            slash_ids.push_back(id);
+        total_slashes += 1;
+        total_slashed += record.total_slashed;
+        if record.reversed {
+            total_reversed += 1;
         }
+        slash_ids.push_back(id);
     }
 
     let report = SlashingReportRecord {
@@ -1221,6 +1228,58 @@ pub fn generate_slashing_report(env: Env, month_id: u64) -> SlashingReportRecord
     );
 
     report
+}
+
+/// Issue #1444: Backfill the `SlashesByMonth` index for historical slash records via a one-time migration.
+/// Admin-authorized. Iterates through all existing slash records from 1..=total_ids and indexes them by month.
+pub fn backfill_slashes_by_month(
+    env: Env,
+    admin_signers: Vec<Address>,
+) -> Result<u32, ContractError> {
+    require_not_paused(&env)?;
+    crate::rbac::require_admin_approval_for_action(
+        &env,
+        &admin_signers,
+        crate::rbac::AdminAction::UpdateConfig,
+    )?;
+
+    let total_ids: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::SlashRecordCounter)
+        .unwrap_or(0);
+
+    let mut backfilled_count: u32 = 0;
+
+    for id in 1..=total_ids {
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<_, SlashRecord>(&DataKey::SlashRecord(id))
+        {
+            let month_id = record.slash_timestamp / MONTHLY_PERIOD_SECS;
+            let mut month_slashes: Vec<u64> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SlashesByMonth(month_id))
+                .unwrap_or_else(|| Vec::new(&env));
+
+            if !month_slashes.iter().any(|existing_id| existing_id == id) {
+                month_slashes.push_back(id);
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::SlashesByMonth(month_id), &month_slashes);
+                backfilled_count += 1;
+            }
+        }
+    }
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("bf_slsh")),
+        backfilled_count,
+    );
+
+    Ok(backfilled_count)
 }
 
 /// Return the cached slashing report for `month_id`, or `None` if not yet generated.

@@ -119,8 +119,8 @@ mod tests;
 mod fuzz_stake_testing;
 #[cfg(test)]
 mod circuit_breaker_insurance_integration_test;
-// #[cfg(test)]
-// mod rbac_enforcement_test; // private API drift — blocks unrelated tests
+#[cfg(test)]
+mod rbac_enforcement_test;
 #[cfg(test)]
 mod contingent_loan_test;
 #[cfg(test)]
@@ -2591,6 +2591,23 @@ impl QuorumCreditContract {
         governance::finalize_appeal(env, borrower)
     }
 
+    // ── Slashing Transparency Reports & Backfill (Issue #656 / #1444) ─────────
+
+    pub fn generate_slashing_report(env: Env, month_id: u64) -> SlashingReportRecord {
+        governance::generate_slashing_report(env, month_id)
+    }
+
+    pub fn get_slashing_report(env: Env, month_id: u64) -> Option<SlashingReportRecord> {
+        governance::get_slashing_report(env, month_id)
+    }
+
+    pub fn backfill_slashes_by_month(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<u32, ContractError> {
+        governance::backfill_slashes_by_month(env, admin_signers)
+    }
+
     // ── Admin management ─────────────────────────────────────────────────────
 
     pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Address) {
@@ -2963,6 +2980,38 @@ impl QuorumCreditContract {
         admin::get_governance_proposal_count(env)
     }
 
+    // ── Admin Action Proposals (Issue #554 / #1442) ───────────────────────────
+
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        action_type: GovernanceAction,
+    ) -> Result<u64, ContractError> {
+        admin::propose_admin_action(env, proposer, action_type)
+    }
+
+    pub fn approve_admin_action(
+        env: Env,
+        admin: Address,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::approve_admin_action(env, admin, action_id)
+    }
+
+    pub fn execute_admin_action(
+        env: Env,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::execute_admin_action(env, action_id)
+    }
+
+    pub fn get_admin_action_proposal(
+        env: Env,
+        action_id: u64,
+    ) -> Option<AdminActionProposal> {
+        admin::get_admin_action_proposal(env, action_id)
+    }
+
     // ── On-Chain Credit Score with Tiered Rewards ───────────────────────────────
 
     pub fn update_credit_score(env: Env, borrower: Address) -> Result<(), ContractError> {
@@ -3056,6 +3105,13 @@ impl QuorumCreditContract {
 
     pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
         admin::claim_successor_admin(env)
+    }
+
+    pub fn cancel_successor_admin(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        admin::cancel_successor_admin(env, admin_signers)
     }
 
     // ── Issue #14: Cross-chain loan portability ───────────────────────────────
