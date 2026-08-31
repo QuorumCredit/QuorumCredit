@@ -43,6 +43,7 @@ The indexer exposes the following metrics sourced entirely from the Soroban even
 | `qc_slash_events_total` | Counter | — | Total slash events |
 | `qc_slash_amount_total` | Counter | `token` | Total stroops slashed |
 | `qc_vouch_count` | Gauge | — | Currently active vouches |
+| `qc_ws_queue_drops_total` | Counter | `type` | WebSocket queue overflow drops (`loan` or `metrics`) |
 
 ### Metric Semantics
 
@@ -328,6 +329,46 @@ curl 'http://localhost:9090/metrics' | grep -E 'qc_active_loans|qc_loan_count_to
 1. Check if borrowers are defaulting
 2. Review repayment rates
 3. Consider pausing new loans until existing ones are repaid
+
+### Alert: InsuranceFundLowBalance
+
+**Severity:** High
+
+**Introduced:** Issue #1436
+
+**Symptoms:**
+- The contract emitted an `insurance_fund` / `low_balance` event
+  (`qc_insurance_fund_low_balance_total` increased).
+- A `claim_insurance_for_shortfall` call pushed the fund balance below the
+  configured `insurance_fund_low_bal_thresh`.
+
+**Why it matters:**
+`claim_insurance_for_shortfall` only returns `InsurancePoolEmpty` once the fund
+hits *exactly zero*. The low-balance event is the earlier warning: once the fund
+is depleted, tail-risk voucher losses are absorbed by vouchers directly (see
+[loss-waterfall.md](loss-waterfall.md)).
+
+**Diagnosis:**
+```bash
+# Current fund balance vs. the configured threshold
+curl 'http://localhost:9090/metrics' | grep -E 'qc_insurance_fund_balance'
+# Recent low_balance events from the event store
+sqlite3 /data/indexer.db "SELECT ledger, value_json FROM events WHERE category = 'insurance' AND action = 'low_balance' ORDER BY ledger DESC LIMIT 20;"
+# Recent shortfall claims that drained the fund
+sqlite3 /data/indexer.db "SELECT ledger, value_json FROM events WHERE category = 'insurance' AND action = 'contrib' ORDER BY ledger DESC LIMIT 20;"
+```
+
+**Resolution:**
+1. Confirm the depletion is driven by legitimate defaults, not an attack
+   (cross-check with `ExcessiveSlashing`).
+2. Have admins top up the fund via `contribute_to_insurance_fund` (bounded by
+   `insurance_fund_max_contrib`; the contribution emits an
+   `insurance_fund` / `contrib` audit event).
+3. If defaults are systemic, consider raising `insurance_fund_premium_bps` so the
+   fund refills faster from organic fee accrual, and review the circuit breaker
+   threshold.
+4. Re-evaluate `insurance_fund_low_bal_thresh` if it is firing too early
+   or too late relative to typical claim sizes.
 
 ## Monitoring Setup Checklist
 

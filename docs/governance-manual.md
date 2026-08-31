@@ -22,6 +22,18 @@ issue to reconcile the docs.
 | **Borrower** | Anyone with an active or historical loan | No governance authority; subject to governance outcomes (config changes, slashing) |
 | **RBAC permission holders** | Granted fine-grained capability bits via `src/rbac.rs` (independent of the admin set) | Scoped capabilities (e.g. `can_request_loan`) that are not governance actions but are also access-controlled |
 
+### Admin RBAC Role Matrix (`src/rbac.rs`)
+
+Admins are assigned granular roles defining the permissions they may exercise. Every admin action requires both the numeric threshold of approvals AND that all signing admins possess the required permission for that action.
+
+| Admin Role | Permissions Granted | Allowed Admin Actions |
+|---|---|---|
+| **`SuperAdmin`** | `Slash`, `Pause`, `UpdateConfig`, `ManageFees`, `ReadAnalytics` | All admin actions (emergency pause, slashes, config updates, fee management, admin set rotations, upgrades). |
+| **`Treasurer`** | `UpdateConfig`, `ManageFees` | Fee management, parameter tuning, token allow-listing, config updates. |
+| **`Monitor`** | `ReadAnalytics` | Read-only access to metrics, reports, and audit logs. |
+| **`Slasher`** | `Slash`, `ReadAnalytics` | Queue and execute borrower slashes, view analytics and audit logs. |
+| **`GovernanceOperator`** | `UpdateConfig` | Propose and approve protocol config updates, threshold changes, and non-financial governance adjustments. |
+
 **Key distinction:** "Admin" is a set of addresses with a **threshold** (`Config.admin_threshold`),
 not a single privileged key. Every governance action below requires that many admin approvals,
 not just one — see [ADR 0005](./adr/0005-multisig-admin-and-governance.md) for why.
@@ -53,6 +65,21 @@ not just one — see [ADR 0005](./adr/0005-multisig-admin-and-governance.md) for
 7. **Expire (automatic).** If a proposal is not executed by `expires_at`, it lapses to
    `Expired` and must be re-proposed from scratch if still needed.
 
+### Multi-Sig Admin Action Proposals (`propose_admin_action`)
+
+For threshold-gated administrative operations without queued delay scheduling, the contract provides
+`propose_admin_action`, `approve_admin_action`, and `execute_admin_action`. These proposals take a typed
+`GovernanceAction` enum that encodes the target action and parameters:
+
+- **Emergency Controls**: `Pause`, `Unpause`
+- **Fee Management**: `SetProtocolFee(u32)`, `SetFeeTreasury(Address)`, `SetPrepaymentPenaltyBps(u32)`
+- **Token Allow-List**: `AddAllowedToken(Address)`, `RemoveAllowedToken(Address)`
+- **Parameter Tuning**: `SetMinStake(i128)`, `SetMaxLoanAmount(i128)`, `SetMinVouchers(u32)`, `SetMaxVouchersPerBorrower(u32)`, `SetMaxLoanToStakeRatio(u32)`, `SetGracePeriod(u64)`, `SetYieldBps(i128)`, `SetSlashBps(i128)`, `SetDynamicSlashThreshold(bool)`, `SetLoanSizeSlashEnabled(bool)`, `SetLoanSizeSlashMaxBps(i128)`, `SetConfirmationRequired(bool)`, `SetAdminCompensationBps(u32)`, `SetRemovalVoteThreshold(u32)`, `SetRateLimitConfig(RateLimitConfig)`
+- **Admin Set & Governance**: `SetAdminThreshold(u32)`, `AddAdmin(Address)`, `RemoveAdmin(Address)`, `RotateAdmin(Address, Address)`, `SetSuccessorAdmin(Option<Address>)`, `SetReputationNft(Address)`, `SetWhitelistEnabled(bool)`, `BlacklistBorrower(Address)`
+- **Contract Upgrades**: `Upgrade(BytesN<32>)`
+
+Upon reaching `Config.admin_threshold` approvals, calling `execute_admin_action` dispatches and applies the concrete state change on-chain immediately.
+
 ### Special case: Slash proposals
 
 Slashing a borrower's vouches is high-impact and time-sensitive, so it has its own
@@ -83,6 +110,7 @@ through the standard governance flow to enable/disable.
 | Slash proposal (per-borrower) | `SlashVoteQuorum` bps of eligible voucher stake | None beyond vote collection; executes once quorum is met | Re-proposal cooldown: `DEFAULT_SLASH_PROPOSAL_COOLDOWN_SECS` = 7 days after a completed slash | `src/types.rs` |
 | Auto-slash (deadline default) | None (permissionless) | Loan `deadline` must have passed | N/A | `src/lib.rs` |
 | Withdrawal requests (voucher-side, not admin governance but timelocked similarly) | N/A | `WITHDRAWAL_TIMELOCK_DELAY` = 24 hours | N/A | `src/types.rs` |
+| Successor admin claim delay (`claim_successor_admin`) | Multi-sig designation (`admin_threshold`) | `SUCCESSOR_CLAIM_TIMELOCK_SECS` = 24 hours | N/A (cancellable by admins via `cancel_successor_admin`) | `src/types.rs`, `src/admin.rs` |
 | Vouch cooldown between successive vouches by the same voucher | N/A | `DEFAULT_VOUCH_COOLDOWN_SECS` = 24 hours | N/A | `src/types.rs` |
 | Voting period referenced by `Config.voting_period_seconds` (general-purpose governance vote window, where applicable) | N/A | `DEFAULT_VOTING_PERIOD_SECONDS` = 7 days | N/A | `src/types.rs` |
 
