@@ -611,3 +611,41 @@ fn fuzz_yield_calculation() {
 - [Error Reference](../README.md#error-reference)
 - [Deployment Guide](./deployment-guide.md)
 - [Monitoring Guide](./monitoring-guide.md)
+
+---
+
+## Slash Appeal Mechanisms — Mutual Exclusion
+
+The contract implements **two parallel slash-appeal paths** that were historically independent:
+
+| Mechanism | Reference | Initiator | Decision body | Storage key |
+|---|---|---|---|---|
+| **Evidence-based appeal (#552)** | `appeal_slash_with_evidence` / `vote_on_slash_appeal` / `execute_slash_appeal` | Any slashed voucher | Admin multi-sig vote | `DataKey::SlashAppeal(borrower, voucher)` |
+| **Escrow-quorum appeal (#841)** | `appeal_slash` / `vote_appeal` / `finalize_appeal` | Borrower | 2/3 voucher-stake quorum | `DataKey::SlashEscrow(borrower)` |
+
+### Threat: Double-Refund via Concurrent Appeals
+
+**Description:** If both mechanisms could be active simultaneously for the same borrower,
+a voucher could receive a refund from both paths — first from an approved evidence-based appeal
+(`execute_slash_appeal` transfers restored_amount to the voucher) and then again from an
+approved escrow-quorum appeal (`finalize_appeal_internal` distributes escrow_amount pro-rata).
+
+**Impact:** A voucher's effective loss from a slash (which was legitimate) would be fully or
+partially reversed twice, draining up to `2 × slashed_amount` from the contract.
+
+**Mitigation (Issue #1450):** A mutual-exclusion flag `DataKey::EvidenceAppealPending(borrower)`
+is set to `true` when `appeal_slash_with_evidence` is called and cleared when
+`execute_slash_appeal` runs or when `vote_on_slash_appeal` rejects the appeal. The `appeal_slash`
+(#841 path) checks this flag and returns `ContractError::AppealAlreadyPending` if it is set.
+Symmetrically, `appeal_slash_with_evidence` checks for an active `DataKey::SlashEscrow` with
+`status == AppealStatus::Pending` and rejects with `ContractError::AppealAlreadyPending`.
+
+**Superseding rule:** Whichever mechanism is initiated first takes priority. The other
+mechanism is blocked until the active appeal is resolved (approved, rejected, or expired).
+There is no automatic escalation from one mechanism to the other.
+
+**Residual Risk: Low.** The mutual-exclusion check is a storage read (not a lock), so a
+theoretical TOCTOU window exists within a single ledger transaction if both calls could be
+batched by a malicious client. Soroban's single-threaded, sequential transaction model means
+two invocations cannot race within one ledger close, so the practical residual risk is
+negligible.

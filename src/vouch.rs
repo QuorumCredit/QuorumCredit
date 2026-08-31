@@ -203,6 +203,11 @@ fn validate_vouch<'a>(
         return Err(ContractError::Blacklisted);
     }
 
+    // Issue #1429: lazily settle the borrower's overdue loans before accepting a
+    // new vouch, so stake is never committed against a borrower whose default
+    // history has not yet been flagged.
+    crate::lazy_default_detection::check_all_defaults_for_borrower(env, borrower)?;
+
     if cfg.whitelist_enabled {
         let is_whitelisted: bool = env
             .storage()
@@ -377,6 +382,10 @@ fn commit_vouch(
         &DataKey::LastVouchTimestamp(voucher.clone()),
         &timestamp,
     );
+
+    // Issue #1422: (re)evaluate this voucher's fraud score on every new vouch so
+    // rapid vouch cycling / circular vouching is scored as it accrues.
+    let _ = crate::detection::update_fraud_score(env.clone(), voucher.clone());
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("create")),
@@ -1898,6 +1907,10 @@ pub fn compute_and_store_merkle_root(env: Env, borrower: Address) -> Result<soro
 
     if vouches.is_empty() {
         return Err(ContractError::NoVouchesForBorrower);
+    }
+
+    if vouches.len() > crate::merkle_tree::MAX_VOUCH_SET_SIZE as usize {
+        return Err(ContractError::InvalidAmount);
     }
 
     // Each leaf commits to a vouch's (voucher, stake, token, vouch_timestamp)
