@@ -400,6 +400,104 @@ pub fn get_syndicate_proposal(
         .get(&DataKey::SyndicateProposal(pool_id, proposal_id))
 }
 
+/// Allow a syndicate member to exit the pool and reclaim their proportional stake.
+///
+/// # Rules
+/// - The member must exist in the pool.
+/// - Exit is rejected if the pool is active and removing this member would leave `total_stake == 0`
+///   (i.e., the member holds 100% of the stake while active vouches may depend on it).
+/// - The member receives their `contribution` back (proportional share of current `total_stake`).
+/// - Remaining members' `share_bps` are recomputed from the reduced pool.
+/// - Emits `syndicat/exit` with `(pool_id, member, returned_stake)`.
+///
+/// # Errors
+/// - `SyndicatePoolNotFound` — pool does not exist.
+/// - `NotSyndicateMember` — caller is not a member of the pool.
+/// - `InvalidStateTransition` — exit would leave pool with zero stake while pool is active.
+pub fn leave_syndicate(
+    env: Env,
+    pool_id: u64,
+    member: Address,
+) -> Result<(), ContractError> {
+    // Step 1: Require auth from the exiting member.
+    member.require_auth();
+
+    // Step 2: Load the pool or return SyndicatePoolNotFound.
+    let mut pool = get_syndicate_pool(&env, pool_id).ok_or(ContractError::SyndicatePoolNotFound)?;
+
+    // Step 3: Check the member exists in the pool.
+    require_member(&env, pool_id, &member)?;
+
+    // Step 4: Load the SyndicateMember record.
+    let member_record: SyndicateMember = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SyndicateMember(pool_id, member.clone()))
+        .ok_or(ContractError::NotSyndicateMember)?;
+
+    // Step 5: Compute returned_stake as the member's proportional share of
+    // the current total_stake, derived from share_bps.  Cap at pool.total_stake
+    // to guard against rounding artefacts.
+    let returned_stake = {
+        let raw = (pool.total_stake * member_record.share_bps as i128) / 10_000;
+        raw.min(pool.total_stake)
+    };
+
+    // Step 6: Reject exit that would drain an active pool to zero stake.
+    if pool.active && (pool.total_stake - returned_stake) <= 0 {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    // Step 7: Transfer the member's stake back to them.
+    let token_client = require_allowed_token(&env, &pool.token)?;
+    token_client.transfer(&env.current_contract_address(), &member, &returned_stake);
+
+    // Step 8: Remove the member's SyndicateMember storage entry.
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SyndicateMember(pool_id, member.clone()));
+
+    // Step 9: Update the pool — deduct stake and remove from member list.
+    pool.total_stake -= returned_stake;
+    let mut new_members: Vec<Address> = Vec::new(&env);
+    for m in pool.members.iter() {
+        if m != member {
+            new_members.push_back(m);
+        }
+    }
+    pool.members = new_members;
+
+    // Step 10: Recompute share_bps for all remaining members.
+    let new_total_stake = pool.total_stake;
+    if new_total_stake > 0 {
+        for remaining_addr in pool.members.iter() {
+            let mut remaining: SyndicateMember = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SyndicateMember(pool_id, remaining_addr.clone()))
+                .ok_or(ContractError::NotSyndicateMember)?;
+            remaining.share_bps = bps_of(remaining.contribution, new_total_stake);
+            env.storage().persistent().set(
+                &DataKey::SyndicateMember(pool_id, remaining_addr.clone()),
+                &remaining,
+            );
+        }
+    }
+
+    // Step 11: Persist the updated pool.
+    env.storage()
+        .persistent()
+        .set(&DataKey::SyndicatePool(pool_id), &pool);
+
+    // Step 12: Emit syndicat/exit event.
+    env.events().publish(
+        (symbol_short!("syndicat"), symbol_short!("exit")),
+        (pool_id, member.clone(), returned_stake),
+    );
+
+    Ok(())
+}
+
 fn require_member(env: &Env, pool_id: u64, member: &Address) -> Result<(), ContractError> {
     if env
         .storage()

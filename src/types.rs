@@ -15,7 +15,7 @@
 //! to XLM. When accepting user input in XLM, multiply by `10_000_000`
 //! before passing to contract functions.
 
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Symbol, Vec};
 
 use crate::interest_rate_options::OptionType;
 use crate::reputation_nft::BadgeType;
@@ -104,6 +104,8 @@ pub const INSTANCE_TTL_THRESHOLD_LEDGERS: u32 = 30 * 17_280; // 518_400
 pub const DEFAULT_VOTING_PERIOD_SECONDS: u64 = 7 * 24 * 60 * 60;
 /// Minimum delay before a timelocked governance action may be executed, in seconds (24 hours).
 pub const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
+/// Default timelock delay before a designated successor admin may claim admin rights, in seconds (24 hours).
+pub const SUCCESSOR_CLAIM_TIMELOCK_SECS: u64 = 24 * 60 * 60;
 /// Maximum window after `eta` within which a timelocked action must be executed, in seconds (72 hours).
 pub const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
 /// Cross-chain vote attestations older than this (relative to the ledger clock) are rejected as stale (10 minutes).
@@ -242,6 +244,8 @@ pub enum AdminRole {
     SuperAdmin,
     Treasurer,
     Monitor,
+    Slasher,
+    GovernanceOperator,
 }
 
 #[contracttype]
@@ -515,6 +519,78 @@ pub struct SybilAttackCostEstimate {
     pub computed_at: u64,
 }
 
+// ── Issue #1074-1077: Multi-Token and Bridge Support ────────────────────────
+
+/// Metadata for a bridged (non-Stellar) token.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenBridgeMetadata {
+    /// Address of the bridge contract managing this token.
+    pub bridge_address: Address,
+    /// Source chain ID where this token originated.
+    pub source_chain_id: u32,
+    /// Source token address on the origin chain (may be a different format).
+    pub source_token_address: String,
+    /// Human-readable name of the bridged token.
+    pub name: String,
+    /// Number of decimal places for this token.
+    pub decimals: u32,
+    /// Whether this bridge is currently active.
+    pub active: bool,
+}
+
+/// Configuration for token swaps during repayment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenSwapConfig {
+    /// DEX contract address to use for swaps.
+    pub dex_address: Address,
+    /// Slippage tolerance in basis points (e.g. 300 = 3%).
+    pub slippage_tolerance_bps: u32,
+    /// Whether token swaps are enabled.
+    pub enabled: bool,
+    /// Minimum swap amount to avoid dust (in stroops).
+    pub min_swap_amount: i128,
+}
+
+/// Liquidity tier for dynamic yield bonuses.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiquidityTier {
+    /// Tier index (0-3): 0=most liquid, 3=illiquid.
+    pub tier: u32,
+    /// Yield bonus in basis points for this tier.
+    pub bonus_bps: i128,
+}
+
+/// Default liquidity tier bonuses (in basis points).
+pub const DEFAULT_LIQUIDITY_TIER_BONUSES: [i128; 4] = [0, 50, 150, 300];
+
+/// Audit event type for vouch history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VouchAuditEventType {
+    Created,
+    Modified,
+    Withdrawn,
+    Slashed,
+    Restored,
+}
+
+/// A single audit event in the vouch history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VouchAuditEvent {
+    /// Type of audit event.
+    pub event_type: VouchAuditEventType,
+    /// Timestamp when the event occurred.
+    pub timestamp: u64,
+    /// Amount involved (stake change, slash amount, etc.).
+    pub amount: i128,
+    /// Additional details as free text.
+    pub details: String,
+}
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -539,6 +615,8 @@ pub enum DataKey {
     LoanPool(u64),   // pool_id → LoanPoolRecord
     LoanPoolCounter, // u64: monotonically increasing pool ID counter
     PendingAdmin,    // Address of the pending admin (two-step transfer)
+    /// Issue #1443: Earliest timestamp when the designated successor admin may claim admin rights
+    SuccessorAdminClaimableAt,
     RepaymentCount(Address), // borrower → u32 total successful repayments
     LoanCount(Address), // borrower → u32 total historical loans disbursed
     DefaultCount(Address), // borrower → u32 total defaults (slash + auto_slash + claim_expired)
@@ -586,6 +664,11 @@ pub enum DataKey {
     AdminActionCounter,      // u64: monotonically increasing admin action ID
     SlashAppeal(Address, Address), // (borrower, voucher) → SlashAppealRecord (Issue #552)
     SlashEscrowAppeal(Address), // borrower → SlashAppealRecord (Issue #841: escrow-based appeal)
+    /// Mutual-exclusion flag: a #552-style evidence appeal is in progress for this borrower.
+    /// Set true by `appeal_slash_with_evidence`, cleared by `execute_slash_appeal` or
+    /// `vote_on_slash_appeal` (when approve=false). Prevents the #841 escrow path from
+    /// running concurrently and potentially double-refunding the same voucher. (Issue #1450)
+    EvidenceAppealPending(Address), // borrower → bool
     /// Slash-threshold governance proposal id → proposal record.
     SlashThresholdProposal(u64),
     SlashThresholdProposalCounter,
@@ -627,6 +710,10 @@ pub enum DataKey {
     VouchCommitment(Address, Address),
     /// Confidential loan commitment: borrower → commitment record
     LoanCommitment(Address),
+    /// Whether a confidential vouch commitment has already been revealed/settled: (voucher, borrower) → bool
+    VouchCommitmentRevealed(Address, Address),
+    /// Whether a confidential loan commitment has already been revealed/settled: borrower → bool
+    LoanCommitmentRevealed(Address),
     /// Monotonic counter for confidential proof records
     ZkProofCounter,
     /// Confidential proof record by ID
@@ -660,6 +747,8 @@ pub enum DataKey {
     /// Monthly slashing transparency report: month_id → SlashingReportRecord.
     /// month_id = unix_timestamp / MONTHLY_PERIOD_SECS
     SlashingReport(u64),
+    /// Issue #1444: Per-month index of slash record IDs: month_id → Vec<u64>
+    SlashesByMonth(u64),
     /// Per-vouch insurance opt-in: (voucher, borrower) → bool (insured).
     VoucherInsurance(Address, Address),
     /// Cross-chain bridge validation status: (voucher, chain_id) → bool.
@@ -890,6 +979,10 @@ pub enum DataKey {
     ExchangeRate(Address, Address),
     /// (token_a, token_b) → RateHistory
     RateHistory(Address, Address),
+    /// (token_a, token_b) → PendingRateUpdate (two-step rate change, Issue #1431)
+    PendingRateUpdate(Address, Address),
+    /// Global u64: max age of `RateHistory` before min/max decay (Issue #1433)
+    RateHistoryWindowSecs,
     
     // ── Issue #970: Cross-Chain Governance ────────────────────────────────
     /// proposal_id → CrossChainProposal
@@ -898,7 +991,11 @@ pub enum DataKey {
     CrossChainVote(u64, Address),
     /// (origin_chain, nonce) → true once a vote attestation with that nonce has been consumed.
     VoteAttestationNonceUsed(u32, u64),
-    
+    /// (chain_id, nonce) → true once a `submit_cross_chain_vote` call with that
+    /// (chain, nonce) pair has been processed. Prevents the same voter's weight
+    /// from a given origin chain being resubmitted and double-counted.
+    CrossChainVoteNonceUsed(u32, u64),
+
     // ── Issue #974: Cross-Chain Auction ───────────────────────────────────
     /// auction_id → CrossChainAuction
     CrossChainAuction(u64),
@@ -921,6 +1018,17 @@ pub enum DataKey {
     MiningClaimed(u64, Address),
     /// (campaign_id, participant) → i128 total participation (stake-seconds accumulated)
     MiningParticipation(u64, Address),
+    // ── Issue #1074-1077: Multi-Token and Bridge Support ────────────────────
+    /// token_addr → u32 liquidity tier (0-3) for dynamic yield bonuses
+    TokenLiquidityTier(Address),
+    /// token_addr → TokenBridgeMetadata for bridged tokens
+    BridgedTokenMetadata(Address),
+    /// source_token → i128 balance of bridged tokens held by the contract
+    BridgedTokenBalance(Address),
+    /// token_addr → u32 price in basis points relative to native token
+    BridgeTokenPrice(Address),
+    /// Reentrancy guard for token transfer operations
+    ReentrancyGuard,
     // ── Issue #1070: Circuit Breaker for Rapid Default Cascade ─────────────────
     /// Timestamp (u64) when the circuit breaker was last triggered (activated).
     /// Used to enforce cooldown between successive circuit-breaker activations.
@@ -972,6 +1080,10 @@ pub enum DataKey {
     FlashLoanPerContractCap(Address),
     /// Recent flash loan activity records (bounded ring buffer)
     FlashLoanHistory,
+    /// contract → u64: ledger timestamp of that contract's last flash loan
+    FlashLoanLastTimestamp(Address),
+    /// contract → bool: whether this callback contract is allowed to receive flash loans
+    AllowedFlashLoanCallbacks(Address),
 
     // ── Cross-chain / multi-token bridge ─────────────────────────────────────
     /// token → i128: bridged balance for that token
@@ -1114,6 +1226,12 @@ pub enum DataKey {
     RefinanceChainCount(Address),
     /// borrower → u64: timestamp of the most recent refinance
     LastRefinancedAt(Address),
+    // Issue #111: Per-subject webhook subscription limit override
+    WebhookLimit,
+    // Issue #112: Off-chain sub-system health sentinels
+    PubSubHealthy,              // bool: true when PubSub relay last checked in successfully
+    RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
+    WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -3273,10 +3391,10 @@ pub struct CooldownBypassRequest {
 }
 
 #[contracttype]
-#[derive(Clone)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminActionProposal {
     pub id: u64,
-    pub action_type: soroban_sdk::String,
+    pub action_type: GovernanceAction,
     pub proposer: Address,
     pub approvals: Vec<Address>,
     pub created_at: u64,
@@ -3299,6 +3417,22 @@ pub struct SlashAppealRecord {
 pub struct FraudScoreConfig {
     pub threshold: u32,
     pub enabled: bool,
+}
+
+/// Issue #1424: a single historical circuit-breaker activation, retained in the
+/// bounded `DataKey::CircuitBreakerHistory` log so operators can audit how often
+/// the breaker has fired and correlate incidents with default-rate spikes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CircuitBreakerTrigger {
+    /// Ledger timestamp at which the breaker activated.
+    pub timestamp: u64,
+    /// Protocol-wide defaulted-loan count at activation time.
+    pub default_count: u32,
+    /// Protocol-wide total-loan count at activation time.
+    pub total_loan_count: u32,
+    /// Default rate in basis points at activation time.
+    pub rate_bps: u32,
 }
 
 #[contracttype]

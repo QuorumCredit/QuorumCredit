@@ -24,7 +24,17 @@ const VOUCH_AGE_BONUS_MAX_BPS: i128 = 200;                   // cap at 200 bps
 
 /// Get or compute the yield rate for a single vouch (Issue #934).
 pub fn vouch_yield_bps(env: &Env, vouch: &VouchRecord, borrower: &Address, now: u64) -> i128 {
-    vouch_yield_bps_uncached(env, vouch, borrower, now)
+    let base_yield_bps = config(env).yield_bps;
+
+    if let Some(cached) =
+        crate::cache::get_cached_yield(env, borrower, &vouch.voucher, base_yield_bps)
+    {
+        return cached;
+    }
+
+    let yield_bps = vouch_yield_bps_uncached(env, vouch, borrower, now);
+    crate::cache::set_cached_yield(env, borrower, &vouch.voucher, yield_bps, base_yield_bps);
+    yield_bps
 }
 
 /// Compute the yield rate (in bps) for a single vouch, incorporating:
@@ -149,6 +159,10 @@ pub fn request_loan(
     crate::helpers::check_permission(&env, &borrower, |p| p.can_request_loan)?;
     register_borrower_if_needed(&env, &borrower);
 
+    // Issue #1429: lazily settle any overdue loans in the borrower's history so a
+    // fresh request cannot be granted while a past-due loan sits unflagged.
+    crate::lazy_default_detection::check_all_defaults_for_borrower(&env, &borrower)?;
+
     if has_active_loan(&env, &borrower) {
         return Err(ContractError::ActiveLoanExists);
     }
@@ -226,7 +240,13 @@ pub fn request_loan(
 
     let _deadline = now + cfg.loan_duration;
     let loan_id = next_loan_id(&env);
-    let total_yield = amount * cfg.yield_bps / 10_000;
+    // Issue #1391: `total_yield` above is already the sum of every entry pushed
+    // into `yield_distribution` in the loop — it must stay that way so
+    // repay()'s per-voucher payouts (read from YieldDistribution) can never sum
+    // to more than what the borrower actually owes (loan.total_yield). This
+    // used to be silently overwritten here with a flat `amount * cfg.yield_bps
+    // / 10_000`, discarding the age/reputation/tier-weighted computation above
+    // and letting the two figures drift apart.
 
     // Store yield distribution for repayment-time lookup
     env.storage()
@@ -270,6 +290,9 @@ pub fn request_loan(
     };
 
     env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+    // Issue #1429: index this loan under the borrower's history so future
+    // pre-checks can iterate every loan they have ever opened.
+    crate::lazy_default_detection::record_borrower_loan_id(&env, &borrower, loan_id);
     env.storage()
         .persistent()
         .set(&DataKey::ActiveLoan(borrower.clone()), &loan_id);
@@ -1548,17 +1571,29 @@ pub fn approve_extension(
     request.approvals.push_back(voucher.clone());
 
     // ── Stake-weighted quorum ────────────────────────────────────────────
-    // total_stake = sum of all vouchers' reputation-weighted stakes
-    // approval_stake = sum of approving vouchers' reputation-weighted stakes
-    // Extension executes when approval_stake > total_stake / 2 (strict majority)
+    // Cache each voucher's weighted stake once, then accumulate totals in a
+    // single pass. This avoids re-calling vouch_reputation_weight on every
+    // vote (previously O(n) per vote → O(n²) total) and avoids the nested
+    // approvals scan. Weighted stakes are locked in at request-approval time;
+    // mid-vote reputation changes are intentionally not reflected — the
+    // snapshot prevents manipulation of an in-flight vote by rapidly
+    // adjusting reputation scores.
     let mut total_stake: i128 = 0;
     let mut approval_stake: i128 = 0;
 
+    // Build a cached list of (voucher_addr, weighted_stake) in one pass.
+    let mut weighted_stakes: soroban_sdk::Vec<(Address, i128)> =
+        soroban_sdk::Vec::new(&env);
     for v in vouches.iter() {
         let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
         let weighted = v.stake * weight / crate::types::BPS_DENOMINATOR;
+        weighted_stakes.push_back((v.voucher.clone(), weighted));
         total_stake = total_stake.saturating_add(weighted);
-        if request.approvals.iter().any(|a| a == v.voucher) {
+    }
+
+    // Single O(n) pass: accumulate approval_stake from the cached values.
+    for (addr, weighted) in weighted_stakes.iter() {
+        if request.approvals.iter().any(|a| a == addr) {
             approval_stake = approval_stake.saturating_add(weighted);
         }
     }
@@ -1632,11 +1667,20 @@ pub fn set_maturity_date(
     env: Env,
     admin_signers: Vec<Address>,
     borrower: Address,
-    _maturity_date: u64,
+    maturity_date: u64,
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     let mut loan = get_active_loan_record(&env, &borrower)?;
-    loan.maturity_date = Some(_maturity_date);
+
+    let now = env.ledger().timestamp();
+    if maturity_date <= now {
+        return Err(ContractError::InvalidAmount);
+    }
+    if maturity_date <= loan.disbursement_timestamp {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    loan.maturity_date = Some(maturity_date);
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);

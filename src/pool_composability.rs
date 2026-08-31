@@ -22,6 +22,19 @@ pub struct ExternalPoolInterface {
     pub is_active: bool,
     /// Timestamp when pool was registered
     pub registered_at: u64,
+    /// Issue #1469: timestamp of the pool's last reported activity
+    /// (a yield earning or a portfolio snapshot touching this pool).
+    /// Used to detect pools that have stopped reporting.
+    pub last_updated: u64,
+}
+
+/// Issue #1469: an external pool paired with whether it is currently stale
+/// (has not reported within the configured freshness window).
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct ExternalPoolStatus {
+    pub pool: ExternalPoolInterface,
+    pub stale: bool,
 }
 
 /// Deposit record to external pool
@@ -88,6 +101,64 @@ const YIELD_EARNINGS_KEY: Symbol = symbol_short!("yld_ern");
 const PORTFOLIO_SNAPSHOTS_KEY: Symbol = symbol_short!("prt_snp");
 const NEXT_POOL_ID_KEY: Symbol = symbol_short!("nxt_pid");
 const NEXT_DEPOSIT_ID_KEY: Symbol = symbol_short!("nxt_did");
+const FRESHNESS_WINDOW_KEY: Symbol = symbol_short!("frsh_wnd");
+
+/// Issue #1469: default freshness window (7 days) used when no configurable
+/// value has been set — an external pool that hasn't reported (via
+/// `record_yield_earning` or `create_portfolio_snapshot`) within this window
+/// is treated as stale and excluded from aggregate TVL/APY figures.
+const DEFAULT_FRESHNESS_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
+
+fn freshness_window(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::Custom(FRESHNESS_WINDOW_KEY.into()))
+        .unwrap_or(DEFAULT_FRESHNESS_WINDOW_SECS)
+}
+
+/// Configure how long an external pool may go without reporting before it is
+/// considered stale.
+pub fn set_freshness_window(env: &Env, seconds: u64) -> Result<(), ContractError> {
+    if seconds == 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::Custom(FRESHNESS_WINDOW_KEY.into()), &seconds);
+    Ok(())
+}
+
+pub fn get_freshness_window(env: &Env) -> u64 {
+    freshness_window(env)
+}
+
+fn is_pool_stale(env: &Env, pool: &ExternalPoolInterface) -> bool {
+    let now = env.ledger().timestamp();
+    now.saturating_sub(pool.last_updated) > freshness_window(env)
+}
+
+/// Record that an external pool has just reported activity, resetting its
+/// staleness clock.
+fn touch_pool_last_updated(env: &Env, pool_id: u64, now: u64) {
+    let mut pools: Vec<ExternalPoolInterface> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Custom(EXTERNAL_POOLS_KEY.into()))
+        .unwrap_or(Vec::new(env));
+
+    for i in 0..pools.len() {
+        if pools.get(i).unwrap().pool_id == pool_id {
+            let mut pool = pools.get(i).unwrap();
+            pool.last_updated = now;
+            pools.set(i, pool);
+            break;
+        }
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::Custom(EXTERNAL_POOLS_KEY.into()), &pools);
+}
 
 /// Register an external pool for composability
 pub fn register_external_pool(
@@ -97,7 +168,7 @@ pub fn register_external_pool(
     strategy_type: String,
 ) -> Result<ExternalPoolInterface, ContractError> {
     if protocol_name.is_empty() || strategy_type.is_empty() {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let now = env.ledger().timestamp();
@@ -116,6 +187,7 @@ pub fn register_external_pool(
         strategy_type,
         is_active: true,
         registered_at: now,
+        last_updated: now,
     };
 
     // Store pool interface
@@ -145,7 +217,7 @@ pub fn deposit_to_external_pool(
     amount: i128,
 ) -> Result<ExternalPoolDeposit, ContractError> {
     if amount <= 0 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let now = env.ledger().timestamp();
@@ -193,7 +265,7 @@ pub fn record_yield_earning(
     apy_bps: u32,
 ) -> Result<YieldEarning, ContractError> {
     if amount <= 0 || apy_bps > 10_000 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let now = env.ledger().timestamp();
@@ -223,10 +295,12 @@ pub fn record_yield_earning(
         .get(&DataKey::Custom(EXTERNAL_DEPOSITS_KEY.into()))
         .unwrap_or(Vec::new(env));
 
+    let mut touched_pool_id: Option<u64> = None;
     for i in 0..deposits.len() {
         if deposits.get(i).unwrap().deposit_id == deposit_id {
             let mut deposit = deposits.get(i).unwrap();
             deposit.yield_earned = deposit.yield_earned.saturating_add(amount);
+            touched_pool_id = Some(deposit.external_pool_id);
             deposits.set(i, deposit);
             break;
         }
@@ -235,6 +309,11 @@ pub fn record_yield_earning(
     env.storage()
         .persistent()
         .set(&DataKey::Custom(EXTERNAL_DEPOSITS_KEY.into()), &deposits);
+
+    // Issue #1469: a reported earning counts as the pool being "alive".
+    if let Some(pool_id) = touched_pool_id {
+        touch_pool_last_updated(env, pool_id, now);
+    }
 
     Ok(earning)
 }
@@ -279,7 +358,7 @@ pub fn create_portfolio_snapshot(
     total_value: i128,
 ) -> Result<PortfolioSnapshot, ContractError> {
     if total_value <= 0 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let now = env.ledger().timestamp();
@@ -305,6 +384,9 @@ pub fn create_portfolio_snapshot(
             };
 
             allocations.push_back(allocation);
+
+            // Issue #1469: a snapshot touching this pool counts as fresh activity.
+            touch_pool_last_updated(env, deposit.external_pool_id, now);
         }
     }
 
@@ -366,8 +448,9 @@ pub fn get_portfolio_allocation(env: &Env, internal_pool_id: u64) -> Vec<PoolAll
     allocations
 }
 
-/// Get all active external pools
-pub fn get_active_pools(env: &Env) -> Vec<ExternalPoolInterface> {
+/// Get all active external pools, each flagged with whether it has gone
+/// stale (Issue #1469: no reported activity within the freshness window).
+pub fn get_active_pools(env: &Env) -> Vec<ExternalPoolStatus> {
     let pools: Vec<ExternalPoolInterface> = env
         .storage()
         .persistent()
@@ -377,7 +460,8 @@ pub fn get_active_pools(env: &Env) -> Vec<ExternalPoolInterface> {
     let mut active_pools = Vec::new(env);
     for pool in pools.iter() {
         if pool.is_active {
-            active_pools.push_back(pool);
+            let stale = is_pool_stale(env, &pool);
+            active_pools.push_back(ExternalPoolStatus { pool, stale });
         }
     }
 
@@ -428,18 +512,43 @@ pub fn deactivate_pool(env: &Env, pool_id: u64) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Get total value locked across all external pools
+/// Look up whether a given external pool id is currently stale. A pool that
+/// no longer exists is treated as stale (its figures should not be trusted).
+fn pool_is_stale_by_id(env: &Env, pools: &Vec<ExternalPoolInterface>, external_pool_id: u64) -> bool {
+    pools
+        .iter()
+        .find(|p| p.pool_id == external_pool_id)
+        .map(|p| is_pool_stale(env, &p))
+        .unwrap_or(true)
+}
+
+/// Get total value locked across all external pools. Issue #1469: deposits
+/// tied to a pool that has gone stale (no recent report) are excluded so a
+/// dead integration cannot keep inflating the aggregate TVL indefinitely.
 pub fn get_total_external_tvl(env: &Env) -> i128 {
     let deposits: Vec<ExternalPoolDeposit> = env
         .storage()
         .persistent()
         .get(&DataKey::Custom(EXTERNAL_DEPOSITS_KEY.into()))
         .unwrap_or(Vec::new(env));
+    let pools: Vec<ExternalPoolInterface> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Custom(EXTERNAL_POOLS_KEY.into()))
+        .unwrap_or(Vec::new(env));
 
-    deposits.iter().fold(0i128, |acc, d| acc.saturating_add(d.amount))
+    deposits.iter().fold(0i128, |acc, d| {
+        if pool_is_stale_by_id(env, &pools, d.external_pool_id) {
+            acc
+        } else {
+            acc.saturating_add(d.amount)
+        }
+    })
 }
 
-/// Calculate weighted average APY for a pool
+/// Calculate weighted average APY for a pool. Issue #1469: deposits tied to
+/// a stale external pool are excluded from both the weighting base and the
+/// APY sum.
 pub fn calculate_weighted_avg_apy(env: &Env, internal_pool_id: u64) -> Result<u32, ContractError> {
     let earnings: Vec<YieldEarning> = env
         .storage()
@@ -452,28 +561,35 @@ pub fn calculate_weighted_avg_apy(env: &Env, internal_pool_id: u64) -> Result<u3
         .persistent()
         .get(&DataKey::Custom(EXTERNAL_DEPOSITS_KEY.into()))
         .unwrap_or(Vec::new(env));
+    let pools: Vec<ExternalPoolInterface> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Custom(EXTERNAL_POOLS_KEY.into()))
+        .unwrap_or(Vec::new(env));
 
-    let pool_deposits: Vec<ExternalPoolDeposit> = deposits
+    let is_fresh_deposit = |d: &ExternalPoolDeposit| -> bool {
+        d.internal_pool_id == internal_pool_id && !pool_is_stale_by_id(env, &pools, d.external_pool_id)
+    };
+
+    let total_amount: i128 = deposits
         .iter()
-        .filter(|d| d.internal_pool_id == internal_pool_id)
-        .collect::<Vec<_>>();
+        .filter(|d| is_fresh_deposit(d))
+        .fold(0i128, |acc, d| acc.saturating_add(d.amount));
 
-    if pool_deposits.is_empty() {
+    if total_amount <= 0 {
         return Err(ContractError::NotFound);
     }
 
-    let total_amount: i128 = pool_deposits.iter().map(|d| d.amount).sum();
-
     let mut weighted_apy = 0u64;
-    for deposit in pool_deposits.iter() {
-        let relevant_earnings: Vec<YieldEarning> = earnings
-            .iter()
-            .filter(|e| e.deposit_id == deposit.deposit_id)
-            .collect::<Vec<_>>();
-
-        for earning in relevant_earnings.iter() {
-            let weight = ((deposit.amount as u128 * 10_000) / (total_amount as u128)) as u64;
-            weighted_apy = weighted_apy.saturating_add((earning.apy_bps as u64 * weight) / 10_000);
+    for deposit in deposits.iter() {
+        if !is_fresh_deposit(&deposit) {
+            continue;
+        }
+        let weight = ((deposit.amount as u128 * 10_000) / (total_amount as u128)) as u64;
+        for earning in earnings.iter() {
+            if earning.deposit_id == deposit.deposit_id {
+                weighted_apy = weighted_apy.saturating_add((earning.apy_bps as u64 * weight) / 10_000);
+            }
         }
     }
 

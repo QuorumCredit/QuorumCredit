@@ -15,10 +15,13 @@
 //!
 //! **Current Limitations:**
 //! - This is NOT a real zk-SNARK system and provides no cryptographic privacy. The voucher's balance, blacklist status,
-//!   borrower's eligibility, and vouch count are revealed to anyone who observes the on-chain call.
-//! - The commitment is stored but the reveal/settlement phase (to verify commitment ↔ proof matching) is not yet implemented.
-//!   A future upgrade should add a `reveal_commitment()` function to check that the commitment hash matches the amount
-//!   and blinding factor provided at settlement time.
+//!   borrower's eligibility, and vouch count are revealed to anyone who observes the on-chain call. See
+//!   `docs/threat-model.md` ("Confidentiality Model") for the full disclaimer — do not rely on this module for
+//!   privacy guarantees.
+//! - `reveal_commitment()` checks that a stored `ConfidentialCommitment` matches an amount/blinding factor supplied
+//!   at settlement time. `reveal_vouch_commitment()` / `reveal_loan_commitment()` in `lib.rs` wire this into the
+//!   settlement path for `vouch_confidential()` / `request_loan_confidential()`, and guard against replaying an
+//!   already-revealed commitment.
 //!
 //! **Integration Notes:**
 //! - `vouch_confidential()` and `request_loan_confidential()` now accept explicit amount and compute boolean flags from
@@ -185,6 +188,46 @@ pub fn commit_amount(env: &Env, amount: i128, blinding: &[u8]) -> Result<Confide
     Ok(ConfidentialCommitment {
         commitment: BytesN::from_array(env, &out),
     })
+}
+
+/// Blinding factors longer than this are rejected by `reveal_commitment_bytes` rather than
+/// silently truncated.
+const MAX_BLINDING_LEN: usize = 128;
+
+/// Verify that a previously-stored `ConfidentialCommitment` opens to `amount`/`blinding`.
+///
+/// Recomputes the SHA3-256 digest over `amount` and `blinding` the same way `commit_amount`
+/// does, and compares it against `commitment.commitment`. Returns `CommitmentMismatch` if the
+/// recomputed digest doesn't match — i.e. the caller is trying to settle with different values
+/// than they committed to.
+pub fn reveal_commitment(
+    env: &Env,
+    commitment: &ConfidentialCommitment,
+    amount: i128,
+    blinding: &[u8],
+) -> Result<(), ContractError> {
+    let recomputed = commit_amount(env, amount, blinding)?;
+    if recomputed.commitment != commitment.commitment {
+        return Err(ContractError::CommitmentMismatch);
+    }
+    Ok(())
+}
+
+/// `reveal_commitment` taking the blinding factor as a contract-call `Bytes` argument
+/// (used by the `reveal_vouch_commitment` / `reveal_loan_commitment` entry points).
+pub fn reveal_commitment_bytes(
+    env: &Env,
+    commitment: &ConfidentialCommitment,
+    amount: i128,
+    blinding: &Bytes,
+) -> Result<(), ContractError> {
+    let len = blinding.len() as usize;
+    if len > MAX_BLINDING_LEN {
+        return Err(ContractError::InvalidProof);
+    }
+    let mut buf = [0u8; MAX_BLINDING_LEN];
+    blinding.copy_into_slice(&mut buf[..len]);
+    reveal_commitment(env, commitment, amount, &buf[..len])
 }
 
 pub fn verify_vouch_proof(
