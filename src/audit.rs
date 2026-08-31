@@ -16,6 +16,9 @@ extern crate alloc;
 
 use soroban_sdk::{Address, Env, String as SorobanString, Vec};
 
+use soroban_sdk::{Address, Env, String as SorobanString, Vec};
+use crate::errors::ContractError;
+use crate::types::VouchAuditEvent;
 use crate::errors::ContractError;
 use crate::helpers::paginate_vec;
 use crate::types::{
@@ -72,6 +75,15 @@ pub fn log_vouch_audit_event(
     Ok(())
 }
 
+/// Get the audit trail for a vouch (all historical events).
+pub fn get_vouch_audit_trail(
+    _env: Env,
+    _borrower: Address,
+    _voucher: Address,
+) -> Vec<VouchAuditEvent> {
+    // TODO: Implement when audit trail types are defined
+    // For now, return empty vector
+    Vec::new(&_env)
 /// Read the bounded "hot" audit-trail window for (borrower, voucher, token).
 pub fn get_vouch_audit_trail_events(
     env: &Env,
@@ -248,3 +260,4 @@ mod tests {
         });
     }
 }
+

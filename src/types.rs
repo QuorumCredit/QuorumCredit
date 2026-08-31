@@ -519,6 +519,78 @@ pub struct SybilAttackCostEstimate {
     pub computed_at: u64,
 }
 
+// ── Issue #1074-1077: Multi-Token and Bridge Support ────────────────────────
+
+/// Metadata for a bridged (non-Stellar) token.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenBridgeMetadata {
+    /// Address of the bridge contract managing this token.
+    pub bridge_address: Address,
+    /// Source chain ID where this token originated.
+    pub source_chain_id: u32,
+    /// Source token address on the origin chain (may be a different format).
+    pub source_token_address: String,
+    /// Human-readable name of the bridged token.
+    pub name: String,
+    /// Number of decimal places for this token.
+    pub decimals: u32,
+    /// Whether this bridge is currently active.
+    pub active: bool,
+}
+
+/// Configuration for token swaps during repayment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenSwapConfig {
+    /// DEX contract address to use for swaps.
+    pub dex_address: Address,
+    /// Slippage tolerance in basis points (e.g. 300 = 3%).
+    pub slippage_tolerance_bps: u32,
+    /// Whether token swaps are enabled.
+    pub enabled: bool,
+    /// Minimum swap amount to avoid dust (in stroops).
+    pub min_swap_amount: i128,
+}
+
+/// Liquidity tier for dynamic yield bonuses.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiquidityTier {
+    /// Tier index (0-3): 0=most liquid, 3=illiquid.
+    pub tier: u32,
+    /// Yield bonus in basis points for this tier.
+    pub bonus_bps: i128,
+}
+
+/// Default liquidity tier bonuses (in basis points).
+pub const DEFAULT_LIQUIDITY_TIER_BONUSES: [i128; 4] = [0, 50, 150, 300];
+
+/// Audit event type for vouch history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VouchAuditEventType {
+    Created,
+    Modified,
+    Withdrawn,
+    Slashed,
+    Restored,
+}
+
+/// A single audit event in the vouch history.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VouchAuditEvent {
+    /// Type of audit event.
+    pub event_type: VouchAuditEventType,
+    /// Timestamp when the event occurred.
+    pub timestamp: u64,
+    /// Amount involved (stake change, slash amount, etc.).
+    pub amount: i128,
+    /// Additional details as free text.
+    pub details: String,
+}
+
 // ── Storage Keys ──────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -592,6 +664,11 @@ pub enum DataKey {
     AdminActionCounter,      // u64: monotonically increasing admin action ID
     SlashAppeal(Address, Address), // (borrower, voucher) → SlashAppealRecord (Issue #552)
     SlashEscrowAppeal(Address), // borrower → SlashAppealRecord (Issue #841: escrow-based appeal)
+    /// Mutual-exclusion flag: a #552-style evidence appeal is in progress for this borrower.
+    /// Set true by `appeal_slash_with_evidence`, cleared by `execute_slash_appeal` or
+    /// `vote_on_slash_appeal` (when approve=false). Prevents the #841 escrow path from
+    /// running concurrently and potentially double-refunding the same voucher. (Issue #1450)
+    EvidenceAppealPending(Address), // borrower → bool
     /// Slash-threshold governance proposal id → proposal record.
     SlashThresholdProposal(u64),
     SlashThresholdProposalCounter,
@@ -929,6 +1006,17 @@ pub enum DataKey {
     MiningClaimed(u64, Address),
     /// (campaign_id, participant) → i128 total participation (stake-seconds accumulated)
     MiningParticipation(u64, Address),
+    // ── Issue #1074-1077: Multi-Token and Bridge Support ────────────────────
+    /// token_addr → u32 liquidity tier (0-3) for dynamic yield bonuses
+    TokenLiquidityTier(Address),
+    /// token_addr → TokenBridgeMetadata for bridged tokens
+    BridgedTokenMetadata(Address),
+    /// source_token → i128 balance of bridged tokens held by the contract
+    BridgedTokenBalance(Address),
+    /// token_addr → u32 price in basis points relative to native token
+    BridgeTokenPrice(Address),
+    /// Reentrancy guard for token transfer operations
+    ReentrancyGuard,
     // ── Issue #1070: Circuit Breaker for Rapid Default Cascade ─────────────────
     /// Timestamp (u64) when the circuit breaker was last triggered (activated).
     /// Used to enforce cooldown between successive circuit-breaker activations.

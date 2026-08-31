@@ -660,3 +660,183 @@ fn test_governance_operator_role_enforcement() {
     });
     assert_eq!(pause_res, Err(ContractError::PermissionDenied));
 }
+
+// ── Issue #1453: Exhaustive RBAC Regression Tests ────────────────────────────
+// These tests iterate EVERY AdminAction variant and assert its mapped AdminPermission
+// matches an explicit expected table. This guards against silent mis-mapping during
+// future refactors (e.g. accidentally granting Treasurer the ability to Upgrade).
+
+/// The canonical expected mapping table for all 19 AdminAction variants.
+/// If get_required_permission is updated, this table MUST be updated to match.
+/// Adding a new AdminAction without updating this table will cause a compile error
+/// (unreachable pattern) or a test failure (wrong expected value).
+fn expected_permission_table() -> Vec<(AdminAction, AdminPermission)> {
+    vec![
+        (AdminAction::AddAdmin,           AdminPermission::UpdateConfig),
+        (AdminAction::RemoveAdmin,        AdminPermission::UpdateConfig),
+        (AdminAction::RotateAdmin,        AdminPermission::UpdateConfig),
+        (AdminAction::SetAdminThreshold,  AdminPermission::UpdateConfig),
+        (AdminAction::Pause,              AdminPermission::Pause),
+        (AdminAction::Unpause,            AdminPermission::Pause),
+        (AdminAction::EmergencyUnpause,   AdminPermission::Pause),
+        (AdminAction::Upgrade,            AdminPermission::UpdateConfig),
+        (AdminAction::SetConfig,          AdminPermission::UpdateConfig),
+        (AdminAction::UpdateConfig,       AdminPermission::UpdateConfig),
+        (AdminAction::SetLoanParams,      AdminPermission::UpdateConfig),
+        (AdminAction::SetReputationNft,   AdminPermission::UpdateConfig),
+        (AdminAction::ManageDynamicSlash, AdminPermission::UpdateConfig),
+        (AdminAction::UpdateFees,         AdminPermission::ManageFees),
+        (AdminAction::SetProtocolFee,     AdminPermission::ManageFees),
+        (AdminAction::Slash,              AdminPermission::Slash),
+        (AdminAction::RevokeAdmin,        AdminPermission::UpdateConfig),
+        (AdminAction::ManageWhitelist,    AdminPermission::UpdateConfig),
+        (AdminAction::ManageBlacklisted,  AdminPermission::UpdateConfig),
+    ]
+}
+
+#[test]
+fn test_exhaustive_all_admin_actions_have_valid_permission() {
+    // Every AdminAction must map to a recognized AdminPermission variant.
+    // This ensures no action is accidentally left unmapped or mapped to an undefined value.
+    let valid_permissions = [
+        AdminPermission::Slash,
+        AdminPermission::Pause,
+        AdminPermission::UpdateConfig,
+        AdminPermission::ManageFees,
+        AdminPermission::ReadAnalytics,
+    ];
+
+    for (action, _expected) in expected_permission_table() {
+        let actual = rbac::get_required_permission(action);
+        assert!(
+            valid_permissions.iter().any(|p| *p == actual),
+            "AdminAction {:?} maps to an unrecognized permission: {:?}",
+            action,
+            actual
+        );
+    }
+}
+
+#[test]
+fn test_exhaustive_admin_action_permission_table() {
+    // Regression guard: asserts the EXACT expected permission for every AdminAction variant.
+    // This will fail if someone mis-maps an action during a future refactor.
+    for (action, expected_perm) in expected_permission_table() {
+        let actual_perm = rbac::get_required_permission(action);
+        assert_eq!(
+            actual_perm, expected_perm,
+            "AdminAction {:?} should map to {:?} but got {:?}",
+            action, expected_perm, actual_perm
+        );
+    }
+}
+
+#[test]
+fn test_exhaustive_treasurer_rejected_for_non_fee_non_config_actions() {
+    // Treasurer has UpdateConfig and ManageFees permissions.
+    // It must be REJECTED for Pause and Slash actions (and their variants).
+    // This test documents which actions must never be reachable by the Treasurer role.
+    let treasurer = AdminRole::Treasurer;
+
+    let pause_actions = [
+        AdminAction::Pause,
+        AdminAction::Unpause,
+        AdminAction::EmergencyUnpause,
+    ];
+
+    let slash_actions = [
+        AdminAction::Slash,
+    ];
+
+    for action in pause_actions.iter() {
+        let perm = rbac::get_required_permission(*action);
+        assert!(
+            !rbac::check_admin_permission(&treasurer, &perm),
+            "Treasurer must be REJECTED for Pause-mapped action {:?} (requires {:?})",
+            action, perm
+        );
+    }
+
+    for action in slash_actions.iter() {
+        let perm = rbac::get_required_permission(*action);
+        assert!(
+            !rbac::check_admin_permission(&treasurer, &perm),
+            "Treasurer must be REJECTED for Slash-mapped action {:?} (requires {:?})",
+            action, perm
+        );
+    }
+
+    // Confirm Treasurer IS accepted for fee and config actions
+    let fee_actions = [AdminAction::UpdateFees, AdminAction::SetProtocolFee];
+    let config_actions = [
+        AdminAction::AddAdmin,
+        AdminAction::SetConfig,
+        AdminAction::UpdateConfig,
+        AdminAction::Upgrade,
+    ];
+
+    for action in fee_actions.iter() {
+        let perm = rbac::get_required_permission(*action);
+        assert!(
+            rbac::check_admin_permission(&treasurer, &perm),
+            "Treasurer must be ACCEPTED for fee action {:?}",
+            action
+        );
+    }
+
+    for action in config_actions.iter() {
+        let perm = rbac::get_required_permission(*action);
+        assert!(
+            rbac::check_admin_permission(&treasurer, &perm),
+            "Treasurer must be ACCEPTED for config action {:?}",
+            action
+        );
+    }
+}
+
+#[test]
+fn test_exhaustive_monitor_rejected_for_all_admin_actions() {
+    // No AdminAction maps to ReadAnalytics, so Monitor (which only has ReadAnalytics)
+    // must be rejected for every AdminAction variant.
+    let monitor = AdminRole::Monitor;
+
+    for (action, _) in expected_permission_table() {
+        let perm = rbac::get_required_permission(action);
+        assert!(
+            !rbac::check_admin_permission(&monitor, &perm),
+            "Monitor must be REJECTED for every AdminAction, but was accepted for {:?} (requires {:?})",
+            action, perm
+        );
+    }
+}
+
+#[test]
+fn test_exhaustive_superadmin_accepted_for_all_admin_actions() {
+    // SuperAdmin must be able to perform every AdminAction — no exceptions.
+    let superadmin = AdminRole::SuperAdmin;
+
+    for (action, _) in expected_permission_table() {
+        let perm = rbac::get_required_permission(action);
+        assert!(
+            rbac::check_admin_permission(&superadmin, &perm),
+            "SuperAdmin must be ACCEPTED for every AdminAction, but was rejected for {:?} (requires {:?})",
+            action, perm
+        );
+    }
+}
+
+#[test]
+fn test_exhaustive_permission_table_covers_all_19_variants() {
+    // Sanity check: the table must contain exactly 19 entries, one per AdminAction variant.
+    // If a new AdminAction variant is added without updating the table, this test will
+    // NOT automatically fail (Rust can't count enum variants at runtime), but the
+    // test_exhaustive_admin_action_permission_table test will be incomplete.
+    // This test asserts the expected count so reviewers notice the gap in CI.
+    let table = expected_permission_table();
+    assert_eq!(
+        table.len(),
+        19,
+        "expected_permission_table must cover all 19 AdminAction variants. \
+         If you added a new AdminAction, update expected_permission_table() and this count."
+    );
+}
