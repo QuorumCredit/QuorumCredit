@@ -431,12 +431,13 @@ pub fn get_auction_bid(
         .ok_or(ContractError::NoActiveLoan)
 }
 
-/// Check if auction can be extended (if no bids yet)
+/// Extend an in-progress auction to a new (later) end time. Admin/authorized
+/// signers only.
 pub fn extend_auction(
     env: Env,
     admin_signers: Vec<Address>,
     auction_id: u64,
-    additional_seconds: u64,
+    new_auction_end: u64,
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
 
@@ -451,7 +452,12 @@ pub fn extend_auction(
         return Err(ContractError::InvalidStateTransition);
     }
 
-    auction.auction_end = auction.auction_end.saturating_add(additional_seconds);
+    // An "extension" must move the end time later, never earlier or in place.
+    if new_auction_end <= auction.auction_end {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    auction.auction_end = new_auction_end;
 
     env.storage()
         .persistent()
@@ -478,6 +484,16 @@ pub fn cancel_auction(
         return Err(ContractError::InvalidStateTransition);
     }
 
+    // Unwind the current highest bid, if any, so cancelling mid-flight doesn't
+    // leave that bidder's stake looking like it's still in play.
+    if let Some(highest_bidder) = auction.highest_bidder.clone() {
+        let bid_key = DataKey::AuctionBid(auction_id, highest_bidder);
+        if let Some(mut bid) = env.storage().persistent().get::<DataKey, Bid>(&bid_key) {
+            bid.refunded = true;
+            env.storage().persistent().set(&bid_key, &bid);
+        }
+    }
+
     // Mark as settled with zero proceeds (failed auction)
     auction.settled = true;
 
@@ -485,7 +501,7 @@ pub fn cancel_auction(
         .persistent()
         .set(&DataKey::CrossChainAuction(auction_id), &auction);
 
-    // In production, would refund all bids and handle cleanup
+    // In production, would also refund any earlier outbid bidders' funds.
 
     Ok(())
 }

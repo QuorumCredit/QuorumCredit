@@ -164,6 +164,46 @@ Key rotation (`set_bridge_public_key`, callable again with a new key) is the
 mitigation for a suspected key compromise, gated by the same admin multi-sig
 as every other privileged action.
 
+## Auction settlement (`src/cross_chain_auction.rs`)
+
+### What changed
+
+`settle_auction` previously required `require_admin_approval`, on top of its
+existing `now >= auction.auction_end` check. In practice that meant an ended
+auction's slashed collateral and voucher proceeds stayed locked until an admin
+happened to notice and call it — no error, no urgency, just silent inaction.
+
+`settle_auction` now takes no `admin_signers` at all: **any address** can call
+it once the auction has ended. `extend_auction` and `cancel_auction` remain
+admin-gated, since only settlement of an already-ended auction needs to be
+permissionless.
+
+### What the contract verifies
+
+- Settlement can only happen once `now >= auction.auction_end` — this is now
+  the *only* gate, replacing the admin check.
+- `auction.settled` prevents double settlement regardless of who calls it.
+
+### What remains a trust assumption / known gap
+
+**There is no keeper reward.** Whoever calls `settle_auction` for an ended
+auction pays their own transaction cost and receives nothing extra for doing
+so — settlement doesn't pay out to `msg.sender`, only to the winning bidder,
+vouchers, and treasury per the existing 80/20 split. This means:
+
+- For auctions with meaningful proceeds, a winning bidder (who wants their
+  collateral) or a voucher (who wants their payout) has a direct incentive to
+  call it themselves, so this is expected to self-resolve in the common case.
+- For auctions with negligible or zero proceeds (no bids, or bids below
+  reserve), nobody is economically incentivized to call it, and it may sit in
+  the `Ended` (not yet `Settled`) state indefinitely. This is a liveness gap,
+  not a fund-safety one — `get_auction_status` still reports `Ended`
+  accurately, and no funds are at risk sitting in that state.
+
+If keeper incentives matter for the target deployment, that's a follow-up
+design change (e.g. a small settlement bounty carved out of the proceeds), not
+something the current permissionless-after-end-time check provides on its own.
+
 ## Oracle price feed
 
 ### What changed

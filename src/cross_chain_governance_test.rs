@@ -229,4 +229,143 @@ mod tests {
 
         assert!(true); // Placeholder
     }
+
+    // ── Issue #71: minimum-chains-reporting quorum ──────────────────────────
+
+    /// A proposal must NOT be considered passed while a registered, active
+    /// bridge chain has never reported vote data -- even though approve stake
+    /// already exceeds reject stake from the one chain that did report.
+    #[test]
+    fn test_proposal_does_not_pass_when_required_chain_never_reports() {
+        let s = setup();
+        let chain_a = 1u32;
+        let chain_b = 2u32;
+        let key_a = register_chain(&s, chain_a, 11);
+        let _key_b = register_chain(&s, chain_b, 22);
+
+        let proposal_id = s.env.as_contract(&s.contract_id, || {
+            create_cross_chain_proposal(
+                s.env.clone(),
+                s.admins.clone(),
+                String::from_str(&s.env, "test proposal"),
+                String::from_str(&s.env, "noop"),
+                Bytes::new(&s.env),
+                chain_a,
+                10_000,
+            )
+            .unwrap()
+        });
+
+        // Only chain A attests; chain B is registered and active but never reports.
+        let attestation = attest(&s, &key_a, chain_a, proposal_id, 100, 0, 5, 1);
+        s.env.as_contract(&s.contract_id, || {
+            aggregate_remote_votes(s.env.clone(), s.admins.clone(), proposal_id, attestation)
+                .unwrap();
+        });
+
+        let passed = s.env.as_contract(&s.contract_id, || {
+            has_proposal_passed(s.env.clone(), proposal_id).unwrap()
+        });
+        assert!(
+            !passed,
+            "proposal must not pass while a registered chain has not reported"
+        );
+    }
+
+    /// Positive control for the same guard: once a strict majority of active
+    /// chains have reported and approve stake wins, the proposal does pass.
+    #[test]
+    fn test_proposal_passes_once_majority_of_chains_report() {
+        let s = setup();
+        let chain_a = 1u32;
+        let chain_b = 2u32;
+        let key_a = register_chain(&s, chain_a, 11);
+        let key_b = register_chain(&s, chain_b, 22);
+
+        let proposal_id = s.env.as_contract(&s.contract_id, || {
+            create_cross_chain_proposal(
+                s.env.clone(),
+                s.admins.clone(),
+                String::from_str(&s.env, "test proposal"),
+                String::from_str(&s.env, "noop"),
+                Bytes::new(&s.env),
+                chain_a,
+                10_000,
+            )
+            .unwrap()
+        });
+
+        let attestation_a = attest(&s, &key_a, chain_a, proposal_id, 100, 0, 5, 1);
+        s.env.as_contract(&s.contract_id, || {
+            aggregate_remote_votes(s.env.clone(), s.admins.clone(), proposal_id, attestation_a)
+                .unwrap();
+        });
+
+        let attestation_b = attest(&s, &key_b, chain_b, proposal_id, 50, 0, 3, 1);
+        s.env.as_contract(&s.contract_id, || {
+            aggregate_remote_votes(s.env.clone(), s.admins.clone(), proposal_id, attestation_b)
+                .unwrap();
+        });
+
+        let passed = s.env.as_contract(&s.contract_id, || {
+            has_proposal_passed(s.env.clone(), proposal_id).unwrap()
+        });
+        assert!(passed, "proposal should pass once a majority of chains reported in favor");
+    }
+
+    // ── Issue #72: vote weight replay protection ────────────────────────────
+
+    /// Submitting the same (voter, chain, nonce) vote payload twice must be
+    /// rejected on the second call, not double-counted into the tally.
+    #[test]
+    fn test_submit_cross_chain_vote_rejects_nonce_replay() {
+        let s = setup();
+        let chain_id = 7u32;
+
+        let proposal_id = s.env.as_contract(&s.contract_id, || {
+            create_cross_chain_proposal(
+                s.env.clone(),
+                s.admins.clone(),
+                String::from_str(&s.env, "test proposal"),
+                String::from_str(&s.env, "noop"),
+                Bytes::new(&s.env),
+                chain_id,
+                10_000,
+            )
+            .unwrap()
+        });
+
+        let voter = Address::generate(&s.env);
+        let nonce = 42u64;
+
+        s.env.as_contract(&s.contract_id, || {
+            submit_cross_chain_vote(
+                s.env.clone(),
+                voter.clone(),
+                proposal_id,
+                true,
+                chain_id,
+                nonce,
+            )
+            .unwrap();
+        });
+
+        let replay_result = s.env.as_contract(&s.contract_id, || {
+            submit_cross_chain_vote(
+                s.env.clone(),
+                voter.clone(),
+                proposal_id,
+                true,
+                chain_id,
+                nonce,
+            )
+        });
+        assert_eq!(replay_result, Err(ContractError::VoteAttestationNonceReused));
+
+        let (approve_stake, _, total_stake) = s.env.as_contract(&s.contract_id, || {
+            get_proposal_results(s.env.clone(), proposal_id).unwrap()
+        });
+        assert_eq!(approve_stake, 1_000_000, "the replayed vote must not be double-counted");
+        assert_eq!(total_stake, 1_000_000);
+    }
 }
