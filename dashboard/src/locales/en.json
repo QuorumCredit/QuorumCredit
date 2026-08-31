@@ -71,6 +71,9 @@
     "kpiDefaultRate": "Default Rate",
     "kpiTotalBorrowers": "Total Borrowers",
     "kpiTotalVouchers": "Total Vouchers",
-    "kpiAvgLoanSize": "Avg Loan Size"
+    "kpiAvgLoanSize": "Avg Loan Size",
+    "loadingTitle": "Loading analytics…",
+    "errorTitle": "Failed to load analytics",
+    "retryButton": "Retry"
   }
 }
