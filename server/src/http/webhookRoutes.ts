@@ -11,6 +11,7 @@ import {
   webhookRegistry,
   validateIncomingWebhook,
   createSignedWebhookRequest,
+  validateWebhookUrl,
 } from "../webhooks/signature.js";
 import {
   webhookDeliveryService,
@@ -69,7 +70,7 @@ export function handleWebhookRequest(
       url.pathname === "/webhooks/subscribe" ||
       url.pathname === "/api/webhooks/subscribe")
   ) {
-    void handleRegisterWebhook(req, res);
+    void handleRegisterWebhook(req, res, ctx);
     return;
   }
 
@@ -102,7 +103,7 @@ export function handleWebhookRequest(
   if (req.method === "PUT" && url.pathname.startsWith("/api/webhooks/")) {
     const id = url.pathname.split("/").pop();
     if (id && id !== "register") {
-      void handleUpdateWebhook(req, res, id);
+      void handleUpdateWebhook(req, res, id, ctx);
       return;
     }
   }
@@ -110,7 +111,7 @@ export function handleWebhookRequest(
   if (req.method === "DELETE" && url.pathname.startsWith("/api/webhooks/")) {
     const id = url.pathname.split("/").pop();
     if (id && id !== "register") {
-      void handleDeleteWebhook(req, res, id);
+      void handleDeleteWebhook(req, res, id, ctx);
       return;
     }
   }
@@ -118,7 +119,7 @@ export function handleWebhookRequest(
   if (req.method === "POST" && url.pathname.startsWith("/api/webhooks/") && url.pathname.endsWith("/test")) {
     const id = url.pathname.split("/")[3]; // /api/webhooks/{id}/test
     if (id) {
-      void handleTestWebhook(req, res, id);
+      void handleTestWebhook(req, res, id, ctx);
       return;
     }
   }
@@ -136,8 +137,10 @@ export function handleWebhookRequest(
 /**
  * Register a new webhook
  */
-async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse, ctx: WebhookRoutesContext): Promise<void> {
   try {
+    if (await requireWebhookAuth(req, res, ctx)) return;
+
     const body = await readJsonBody<RegisterWebhookBody>(req);
     
     if (!body.url || !body.events || !Array.isArray(body.events)) {
@@ -146,12 +149,13 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse):
       return;
     }
 
-    // Validate URL
+    // Validate URL scheme and reject SSRF-prone hosts (issue #1486)
+    let validatedUrl: URL;
     try {
-      new URL(body.url);
-    } catch {
+      validatedUrl = await validateWebhookUrlSafe(body.url);
+    } catch (error) {
       res.writeHead(400, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "invalid URL" }));
+      res.end(JSON.stringify({ error: error instanceof Error ? error.message : "invalid URL" }));
       return;
     }
 
@@ -183,7 +187,7 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse):
     }
 
     // Register webhook
-    const registration = await webhookRegistry.registerWebhook(body.url, body.events);
+    const registration = await webhookRegistry.registerWebhook(validatedUrl.toString(), body.events);
 
     // Return registration (excluding secret for security)
     const { secret, ...safeRegistration } = registration;
@@ -248,8 +252,10 @@ async function handleGetWebhook(_req: IncomingMessage, res: ServerResponse, id: 
 /**
  * Update a webhook
  */
-async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
+    if (await requireWebhookAuth(req, res, ctx)) return;
+
     const webhook = await webhookRegistry.getWebhook(id);
     
     if (!webhook) {
@@ -262,14 +268,15 @@ async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id
 
     // Validate updates
     if (body.url !== undefined) {
+      let validatedUrl: URL;
       try {
-        new URL(body.url);
-      } catch {
+        validatedUrl = await validateWebhookUrlSafe(body.url);
+      } catch (error) {
         res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "invalid URL" }));
+        res.end(JSON.stringify({ error: error instanceof Error ? error.message : "invalid URL" }));
         return;
       }
-      webhook.url = body.url;
+      webhook.url = validatedUrl.toString();
     }
 
     if (body.events !== undefined) {
@@ -307,8 +314,10 @@ async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id
 /**
  * Delete a webhook
  */
-async function handleDeleteWebhook(_req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+async function handleDeleteWebhook(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
+    if (await requireWebhookAuth(req, res, ctx)) return;
+
     const deleted = await webhookRegistry.deleteWebhook(id);
     
     if (!deleted) {
@@ -424,8 +433,10 @@ export async function dispatchEventToSubscribers(event: string, data: unknown): 
 /**
  * Test a webhook
  */
-async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
+    if (await requireWebhookAuth(req, res, ctx)) return;
+
     const webhook = await webhookRegistry.getWebhook(id);
 
     if (!webhook) {
@@ -562,4 +573,51 @@ function readJsonBody<T>(req: IncomingMessage): Promise<T> {
     });
     req.on("error", reject);
   });
+}
+
+// ── Auth helpers (issue #1487) ─────────────────────────────────────────────────
+
+function extractBearerToken(req: IncomingMessage): string | undefined {
+  const authHeader = req.headers["authorization"];
+  if (!authHeader || typeof authHeader !== "string") return undefined;
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : undefined;
+}
+
+function extractApiKey(req: IncomingMessage): string | undefined {
+  return (req.headers["x-api-key"] as string | undefined) ?? undefined;
+}
+
+async function requireWebhookAuth(req: IncomingMessage, res: ServerResponse, ctx: WebhookRoutesContext): Promise<boolean> {
+  const token = extractBearerToken(req);
+  const apiKey = extractApiKey(req);
+
+  if (!token && !apiKey) {
+    res.writeHead(401, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: "missing credentials; provide Authorization: Bearer <token> or X-Api-Key" }));
+    return true;
+  }
+
+  if (token && ctx.authSecret) {
+    const result = verifyToken(ctx.authSecret, token);
+    if (result.valid) return false;
+  }
+
+  if (apiKey && ctx.apiKeyStore) {
+    if (ctx.apiKeyStore.isValid(apiKey)) return false;
+  }
+
+  res.writeHead(401, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "invalid credentials" }));
+  return true;
+}
+
+// ── SSRF validation helpers (issue #1486) ─────────────────────────────────────
+
+function getDevModeFlag(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
+
+async function validateWebhookUrlSafe(rawUrl: string): Promise<URL> {
+  return validateWebhookUrl(rawUrl, { allowPrivateHosts: getDevModeFlag() });
 }
