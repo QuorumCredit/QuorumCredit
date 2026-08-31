@@ -4,25 +4,17 @@ import type { IndexedEvent, LoanRecord } from "../types.js";
  * Projects the indexer's decoded loan/vouch events onto the dashboard's LoanRecord
  * shape (dashboard/src/loanSlice.ts).
  *
- * Known gap, documented rather than papered over: tools/indexer/src/indexer.rs's
- * `simplify_value` does not currently decode a real on-chain loan id, deadline, or
- * co-borrower/voucher list into event values — only borrower/amount/purpose/token for
- * `loan/request` and borrower/payment for `loan/repay|slash`. Closing that gap means
- * teaching the indexer's decoder about the full LoanRecord ABI (soroban-side), which
- * is out of scope here (a Rust change to tools/indexer's event decoder deserves its
- * own review, and this sandbox has no Rust toolchain to verify it against). Until
- * then this projector:
- *  - keys loans by a stable hash of `borrower` (assumes at most one live loan per
- *    borrower at a time, matching what's actually derivable from today's indexed
- *    fields) instead of a real loan id, so repeated events for the same borrower
- *    upsert in place rather than appearing as distinct loans;
- *  - merges fields cumulatively across a borrower's events (request establishes
- *    amount/purpose, repay/slash update status) rather than resetting them;
- *  - leaves `deadline` at 0 and `vouchers` empty when the indexer hasn't decoded
- *    that data — never fabricates values it doesn't have.
+ * As of the v2 enriched decoder (`tools/indexer/src/indexer.rs` `simplify_value`),
+ * `loan/request` events now include `loan_id` (u64), `deadline` (unix timestamp u64),
+ * and `vouchers` (array of voucher address hex strings). This projector uses `loan_id`
+ * as the primary key, enabling correct tracking of multiple concurrent loans per borrower.
+ *
+ * Backward compatibility: if a `loan/request` event lacks `loan_id` (old v1 events),
+ * the projector falls back to a synthetic id derived from the borrower address so that
+ * existing indexed history continues to render without data loss.
  */
 export class LoanProjector {
-  private readonly byBorrower = new Map<string, LoanRecord>();
+  private readonly byLoanId = new Map<string, LoanRecord>();
 
   applyEvent(event: IndexedEvent): LoanRecord | null {
     if (event.category !== "loan") return null;
@@ -31,9 +23,18 @@ export class LoanProjector {
     if (!borrower) return null;
 
     const createdAt = Math.floor(new Date(event.ledgerClosedAt).getTime() / 1000) || 0;
-    const existing = this.byBorrower.get(borrower);
+
+    // Determine the map key: prefer real loan_id from decoded event, fall back to
+    // synthetic id for old events that pre-date the v2 decoder.
+    const rawLoanId = v.loan_id;
+    const loanKey =
+      rawLoanId !== undefined && rawLoanId !== null
+        ? String(rawLoanId)
+        : String(syntheticLoanId(borrower));
+
+    const existing = this.byLoanId.get(loanKey);
     const base: LoanRecord = existing ?? {
-      id: syntheticLoanId(borrower),
+      id: rawLoanId !== undefined && rawLoanId !== null ? Number(rawLoanId) : syntheticLoanId(borrower),
       borrower,
       amount: 0,
       amount_repaid: 0,
@@ -45,20 +46,38 @@ export class LoanProjector {
       vouchers: [],
     };
 
-    const updated = applyLoanFields(base, event, num);
-    if (!updated) return null;
-
-    this.byBorrower.set(borrower, updated);
-    return updated;
-
     function num(key: string): number {
       const raw = v[key];
       return typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) || 0 : 0;
     }
+
+    const updated = applyLoanFields(base, event, num);
+    if (!updated) return null;
+
+    this.byLoanId.set(loanKey, updated);
+    return updated;
   }
 
+  /**
+   * Returns all projected LoanRecords across all loan IDs.
+   */
+  getAll(): LoanRecord[] {
+    return Array.from(this.byLoanId.values());
+  }
+
+  /**
+   * Returns the LoanRecord for a given borrower address. Searches across all
+   * tracked loans to support the case where a borrower has (or has had) multiple
+   * loans. Returns the first match found (most recently inserted order is
+   * Map insertion order).
+   */
   get(borrower: string): LoanRecord | undefined {
-    return this.byBorrower.get(borrower);
+    for (const record of this.byLoanId.values()) {
+      if (record.borrower === borrower) {
+        return record;
+      }
+    }
+    return undefined;
   }
 }
 
@@ -71,14 +90,34 @@ function applyLoanFields(
   const v = event.value;
 
   switch (event.action) {
-    case "request":
+    case "request": {
+      // Populate deadline from decoded event when available.
+      const deadline =
+        typeof v.deadline === "number" && v.deadline > 0
+          ? v.deadline
+          : typeof v.deadline === "string" && Number(v.deadline) > 0
+          ? Number(v.deadline)
+          : base.deadline;
+
+      // Populate vouchers from decoded event when available.
+      const vouchers: LoanRecord["vouchers"] = Array.isArray(v.vouchers)
+        ? (v.vouchers as string[]).map((addr) => ({
+            voucher: addr,
+            stake: 0,
+            vouch_timestamp: 0,
+          }))
+        : base.vouchers;
+
       return {
         ...base,
         amount: num("amount_stroops"),
         amount_repaid: 0,
         status: "Active",
         loan_purpose: typeof v.loan_purpose === "string" ? v.loan_purpose : base.loan_purpose,
+        deadline,
+        vouchers,
       };
+    }
     case "repay": {
       const amountRepaid = base.amount_repaid + num("payment_stroops");
       return {
@@ -94,6 +133,10 @@ function applyLoanFields(
   }
 }
 
+/**
+ * Generates a stable synthetic loan id from a borrower address string.
+ * Used only as a fallback for pre-v2 events that lack a real `loan_id`.
+ */
 function syntheticLoanId(borrower: string): number {
   let hash = 0;
   for (let i = 0; i < borrower.length; i++) {

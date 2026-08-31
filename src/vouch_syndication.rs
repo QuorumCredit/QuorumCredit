@@ -290,7 +290,11 @@ pub fn vote_syndicate_proposal(
         proposal.votes_against_bps = proposal.votes_against_bps.saturating_add(member.share_bps);
     }
 
-    if proposal.votes_for_bps > 5_000 {
+    // #1409: thresholds are now symmetric (both >=) — previously for-votes needed
+    // to strictly exceed 5_000 bps while against-votes only needed to reach it,
+    // so an exact 5,000/5,000 split never resolved to Approved even though it's
+    // a genuine (if narrow) majority once the for-check is evaluated first.
+    if proposal.votes_for_bps >= 5_000 {
         proposal.status = SyndicateProposalStatus::Approved;
     } else if proposal.votes_against_bps >= 5_000 {
         proposal.status = SyndicateProposalStatus::Rejected;
@@ -307,6 +311,64 @@ pub fn vote_syndicate_proposal(
     env.events().publish(
         (symbol_short!("syndicat"), symbol_short!("voted")),
         (pool_id, proposal_id, voter, approve),
+    );
+
+    Ok(())
+}
+
+/// Execute an `Approved` syndicate proposal (#1409). The only action a
+/// proposal currently describes is pool dissolution — `description` is
+/// free-text and not machine-parsed into distinct action kinds — so
+/// executing any approved proposal dissolves the pool, returning each
+/// member's principal `contribution` pro-rata, and marks the proposal
+/// `Executed` so a repeated call can never run it again.
+pub fn execute_syndicate_proposal(
+    env: Env,
+    pool_id: u64,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    let mut proposal: SyndicateProposal = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SyndicateProposal(pool_id, proposal_id))
+        .ok_or(ContractError::SyndicateProposalNotFound)?;
+
+    if proposal.status != SyndicateProposalStatus::Approved {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    let mut pool = get_syndicate_pool(&env, pool_id).ok_or(ContractError::SyndicatePoolNotFound)?;
+    if !pool.active {
+        return Err(ContractError::SyndicateNotActive);
+    }
+
+    let token_client = require_allowed_token(&env, &pool.token)?;
+
+    for member_addr in pool.members.iter() {
+        let member: SyndicateMember = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SyndicateMember(pool_id, member_addr.clone()))
+            .ok_or(ContractError::NotSyndicateMember)?;
+        if member.contribution > 0 {
+            token_client.transfer(&env.current_contract_address(), &member_addr, &member.contribution);
+        }
+    }
+
+    pool.active = false;
+    pool.total_stake = 0;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SyndicatePool(pool_id), &pool);
+
+    proposal.status = SyndicateProposalStatus::Executed;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SyndicateProposal(pool_id, proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("syndicat"), symbol_short!("executed")),
+        (pool_id, proposal_id),
     );
 
     Ok(())
@@ -336,6 +398,104 @@ pub fn get_syndicate_proposal(
     env.storage()
         .persistent()
         .get(&DataKey::SyndicateProposal(pool_id, proposal_id))
+}
+
+/// Allow a syndicate member to exit the pool and reclaim their proportional stake.
+///
+/// # Rules
+/// - The member must exist in the pool.
+/// - Exit is rejected if the pool is active and removing this member would leave `total_stake == 0`
+///   (i.e., the member holds 100% of the stake while active vouches may depend on it).
+/// - The member receives their `contribution` back (proportional share of current `total_stake`).
+/// - Remaining members' `share_bps` are recomputed from the reduced pool.
+/// - Emits `syndicat/exit` with `(pool_id, member, returned_stake)`.
+///
+/// # Errors
+/// - `SyndicatePoolNotFound` — pool does not exist.
+/// - `NotSyndicateMember` — caller is not a member of the pool.
+/// - `InvalidStateTransition` — exit would leave pool with zero stake while pool is active.
+pub fn leave_syndicate(
+    env: Env,
+    pool_id: u64,
+    member: Address,
+) -> Result<(), ContractError> {
+    // Step 1: Require auth from the exiting member.
+    member.require_auth();
+
+    // Step 2: Load the pool or return SyndicatePoolNotFound.
+    let mut pool = get_syndicate_pool(&env, pool_id).ok_or(ContractError::SyndicatePoolNotFound)?;
+
+    // Step 3: Check the member exists in the pool.
+    require_member(&env, pool_id, &member)?;
+
+    // Step 4: Load the SyndicateMember record.
+    let member_record: SyndicateMember = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SyndicateMember(pool_id, member.clone()))
+        .ok_or(ContractError::NotSyndicateMember)?;
+
+    // Step 5: Compute returned_stake as the member's proportional share of
+    // the current total_stake, derived from share_bps.  Cap at pool.total_stake
+    // to guard against rounding artefacts.
+    let returned_stake = {
+        let raw = (pool.total_stake * member_record.share_bps as i128) / 10_000;
+        raw.min(pool.total_stake)
+    };
+
+    // Step 6: Reject exit that would drain an active pool to zero stake.
+    if pool.active && (pool.total_stake - returned_stake) <= 0 {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    // Step 7: Transfer the member's stake back to them.
+    let token_client = require_allowed_token(&env, &pool.token)?;
+    token_client.transfer(&env.current_contract_address(), &member, &returned_stake);
+
+    // Step 8: Remove the member's SyndicateMember storage entry.
+    env.storage()
+        .persistent()
+        .remove(&DataKey::SyndicateMember(pool_id, member.clone()));
+
+    // Step 9: Update the pool — deduct stake and remove from member list.
+    pool.total_stake -= returned_stake;
+    let mut new_members: Vec<Address> = Vec::new(&env);
+    for m in pool.members.iter() {
+        if m != member {
+            new_members.push_back(m);
+        }
+    }
+    pool.members = new_members;
+
+    // Step 10: Recompute share_bps for all remaining members.
+    let new_total_stake = pool.total_stake;
+    if new_total_stake > 0 {
+        for remaining_addr in pool.members.iter() {
+            let mut remaining: SyndicateMember = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SyndicateMember(pool_id, remaining_addr.clone()))
+                .ok_or(ContractError::NotSyndicateMember)?;
+            remaining.share_bps = bps_of(remaining.contribution, new_total_stake);
+            env.storage().persistent().set(
+                &DataKey::SyndicateMember(pool_id, remaining_addr.clone()),
+                &remaining,
+            );
+        }
+    }
+
+    // Step 11: Persist the updated pool.
+    env.storage()
+        .persistent()
+        .set(&DataKey::SyndicatePool(pool_id), &pool);
+
+    // Step 12: Emit syndicat/exit event.
+    env.events().publish(
+        (symbol_short!("syndicat"), symbol_short!("exit")),
+        (pool_id, member.clone(), returned_stake),
+    );
+
+    Ok(())
 }
 
 fn require_member(env: &Env, pool_id: u64, member: &Address) -> Result<(), ContractError> {

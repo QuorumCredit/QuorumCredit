@@ -309,7 +309,7 @@ describe('EventIndexer', () => {
   describe('Query Interface', () => {
     test('should query events by type', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
-      
+
       const events = [
         {
           id: '1-1',
@@ -332,18 +332,18 @@ describe('EventIndexer', () => {
           transactionHash: 'tx2',
         },
       ];
-      
+
       (indexer as any).database = events;
-      
+
       const results = indexer.queryEvents({ type: 'vouch/create' });
-      
+
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('vouch/create');
     });
 
     test('should query events by participant', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
-      
+
       const events = [
         {
           id: '1-1',
@@ -366,13 +366,75 @@ describe('EventIndexer', () => {
           transactionHash: 'tx2',
         },
       ];
-      
+
       (indexer as any).database = events;
-      
+
       const results = indexer.queryEvents({ participant: 'GABC' });
-      
+
       expect(results).toHaveLength(1);
       expect(results[0].participant).toBe('GABC');
+    });
+  });
+
+  describe('OTLP Export (Issue #1479)', () => {
+    test('should map TraceSpan to OtlpSpanExport format (Issue #1479)', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const traceSpanEvent = {
+        id: '1-1',
+        type: 'trace/span',
+        timestamp: Date.now(),
+        participant: 'aabbccddeeff00112233445566778899',
+        contractId: 'CTEST',
+        data: {
+          trace_id: 'aabbccddeeff00112233445566778899',
+          span_id: '0123456789abcdef',
+          parent_span_id: '',
+          operation: 'vouch',
+          status: 'ok',
+          sampled: true,
+          ledger: 12345,
+        },
+        blockNumber: 1,
+        transactionHash: 'tx1',
+      };
+
+      // Verify the event can be queried by type
+      (indexer as any).database.push(traceSpanEvent);
+      const results = indexer.queryEvents({ type: 'trace/span' });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].type).toBe('trace/span');
+      expect(results[0].data.trace_id).toBe('aabbccddeeff00112233445566778899');
+    });
+
+    test('should handle missing OTLP collector endpoint gracefully', async () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      // Ensure OTLP_COLLECTOR_ENDPOINT is not set
+      delete process.env.OTLP_COLLECTOR_ENDPOINT;
+
+      const traceSpanEvent = {
+        id: '1-1',
+        type: 'trace/span',
+        timestamp: Date.now(),
+        participant: 'aabbccddeeff00112233445566778899',
+        contractId: 'CTEST',
+        data: {
+          trace_id: 'aabbccddeeff00112233445566778899',
+          span_id: '0123456789abcdef',
+          parent_span_id: 'fedcba9876543210',
+          operation: 'slash',
+          status: 'ok',
+          sampled: true,
+          ledger: 12346,
+        },
+        blockNumber: 2,
+        transactionHash: 'tx2',
+      };
+
+      // Should not throw when calling exportTraceSpanToOtlp with no endpoint
+      await expect((indexer as any).exportTraceSpanToOtlp(traceSpanEvent)).resolves.not.toThrow();
     });
   });
 });

@@ -24,11 +24,12 @@ export class ConnectionQueue<T> {
   }
 
   /** Enqueues `item`, dropping the oldest queued item if at capacity. Returns true if a drop occurred. */
-  push(item: T): boolean {
+  push(item: T, onDrop?: () => void): boolean {
     this.items.push(item);
     if (this.items.length > this.capacity) {
       this.items.shift();
       this.droppedSinceResync = true;
+      if (onDrop) onDrop();
       return true;
     }
     return false;
