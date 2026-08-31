@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 // Types
 // ---------------------------------------------------------------------------
 
-export type EmptyStateVariant = "loans" | "vouches";
+export type EmptyStateVariant = "loans" | "vouches" | "give-up";
 
 interface EmptyStateProps {
   variant: EmptyStateVariant;
@@ -68,21 +68,26 @@ const LoadingSpinner: React.FC<{ color: string }> = ({ color }) => (
 const ICONS: Record<EmptyStateVariant, string> = {
   loans: "📋",
   vouches: "🤝",
+  "give-up": "⚠️",
 };
 
 /**
  * EmptyState — shown when a borrower/voucher has no records yet,
- * or while the initial data load is still in flight.
+ * or while the initial data load is still in flight,
+ * or when the metrics server could not be reached after N retries.
  *
  * Props:
- *   variant  – "loans" | "vouches"
- *   loading  – when true shows a spinner instead of the empty message
+ *   variant      – "loans" | "vouches" | "give-up"
+ *   loading      – when true shows a spinner instead of the empty message
  *   highContrast – mirror the dashboard's accessibility setting
+ *   onRetry      – optional callback rendered as a "Try again" button in the
+ *                  give-up variant so the user can reload without a full refresh
  */
-const EmptyState: React.FC<EmptyStateProps> = ({
+const EmptyState: React.FC<EmptyStateProps & { onRetry?: () => void }> = ({
   variant,
   loading = false,
   highContrast = false,
+  onRetry,
 }) => {
   const { t } = useTranslation();
 
@@ -91,6 +96,7 @@ const EmptyState: React.FC<EmptyStateProps> = ({
   const textPrimary = highContrast ? "#ffffff" : "#94a3b8";
   const textSecondary = highContrast ? "#cbd5e1" : "#64748b";
   const accentColor = "#3b82f6";
+  const errorColor = "#ef4444";
 
   if (loading) {
     return (
@@ -103,6 +109,58 @@ const EmptyState: React.FC<EmptyStateProps> = ({
         <p style={{ color: textPrimary, fontSize: 15, margin: 0 }}>
           {t("emptyState.loading")}
         </p>
+      </div>
+    );
+  }
+
+  if (variant === "give-up") {
+    return (
+      <div
+        data-testid="empty-state-give-up"
+        style={{
+          ...containerBase,
+          background: bg,
+          borderColor: errorColor,
+        }}
+        role="alert"
+        aria-label={t("emptyState.giveUp.title")}
+      >
+        <span style={{ fontSize: 40, lineHeight: 1 }} aria-hidden="true">
+          {ICONS["give-up"]}
+        </span>
+        <p
+          style={{
+            color: errorColor,
+            fontSize: 17,
+            fontWeight: 600,
+            margin: 0,
+          }}
+        >
+          {t("emptyState.giveUp.title")}
+        </p>
+        <p
+          style={{ color: textSecondary, fontSize: 14, margin: 0, maxWidth: 340 }}
+        >
+          {t("emptyState.giveUp.subtitle")}
+        </p>
+        {onRetry && (
+          <button
+            onClick={onRetry}
+            style={{
+              marginTop: 8,
+              padding: "8px 20px",
+              borderRadius: 8,
+              border: `1px solid ${errorColor}`,
+              background: "transparent",
+              color: errorColor,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontSize: 14,
+            }}
+          >
+            {t("emptyState.giveUp.retry")}
+          </button>
+        )}
       </div>
     );
   }
