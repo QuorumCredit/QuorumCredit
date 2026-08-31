@@ -7,9 +7,15 @@
  * For local dev/test, the URL can be omitted to return a stub (no-op).
  */
 
-// TODO: SorobanRpc will be used when chain client wiring is implemented (issue #1322/#1356)
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { SorobanRpc } from "@stellar/stellar-sdk";
+import {
+  Address,
+  Keypair,
+  Network,
+  Operation,
+  Server,
+  TransactionBuilder,
+  type InvokeHostFunctionArgs,
+} from "@stellar/stellar-sdk";
 
 export interface ExecuteRecurringPaymentResult {
   ok: boolean;
@@ -40,38 +46,133 @@ export class NoOpRpcClient implements SorobanRpcClient {
 
 // ── Real Soroban RPC implementation ────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 export class SorobanRpcClientImpl implements SorobanRpcClient {
-  constructor(rpcUrl: string, contractId: string) {
-    // TODO: Use rpcUrl and contractId when chain client wiring is implemented.
-    void rpcUrl;
-    void contractId;
+  private readonly server: Server;
+  private readonly contractId: string;
+  private readonly keeperKeypair: Keypair;
+  private readonly networkPassphrase: string;
+
+  constructor(rpcUrl: string, contractId: string, keeperSecretKey: string) {
+    this.server = new Server(rpcUrl);
+    this.contractId = contractId;
+    this.keeperKeypair = Keypair.fromSecret(keeperSecretKey);
+    this.networkPassphrase = Network.parseNetworkPassphraseFromUrl(rpcUrl) ?? Network.PUBLIC;
   }
 
   /**
    * Invoke execute_recurring_payment on the QuorumCreditContract.
-   * Returns success/failure with transaction hash on success.
-   * Note: loanId is currently just a string for logging; the actual borrower
-   * address derivation and on-chain execution requires full chain client wiring.
+   *
+   * Steps:
+   * 1. Derive the borrower's Stellar address from loanId.
+   *    In the current system, loanId is the borrower's Stellar address string
+   *    extracted from the URL path. If the format does not match a valid
+   *    Stellar address, the call returns an error immediately.
+   * 2. Build a Soroban invoke transaction for execute_recurring_payment(borrower).
+   * 3. Sign the transaction with the keeper's keypair.
+   * 4. Submit to the network via submitTransaction.
+   * 5. Poll for confirmation.
+   * 6. Return the transaction hash and on-chain result.
    */
   async executeRecurringPayment(loanId: string): Promise<ExecuteRecurringPaymentResult> {
     try {
-      // TODO: Once chain client wiring is added (issue #1322 / #1356), this would:
-      // 1. Derive the borrower's Stellar address from loanId
-      // 2. Build a Soroban invoke operation for execute_recurring_payment(borrower)
-      // 3. Build a transaction with the invoke operation
-      // 4. Sign it with the keeper's keypair
-      // 5. Submit to the network via submitTransaction
-      // 6. Poll for confirmation
-      // 7. Return the transaction hash and on-chain result
+      // 1. Derive borrower address from loanId.
+      // loanId is the borrower's Stellar address string in the URL path.
+      let borrowerAddress: Address;
+      try {
+        borrowerAddress = new Address(loanId);
+      } catch {
+        return {
+          ok: false,
+          error: `invalid loanId / borrower address format: ${loanId}`,
+        };
+      }
 
-      // For now, stub behavior: the real implementation requires the full chain
-      // client stack (keypair, network selection, address derivation) that is out
-      // of scope for this immediate fix.
-      console.debug(`[quorum-credit] would execute_recurring_payment for loan=${loanId}`);
+      // 2. Load the keeper account to fetch the current sequence number.
+      const keeperAccount = await this.server.getAccount(this.keeperKeypair.publicKey());
+      const sequence = parseInt(keeperAccount.sequence, 10);
+
+      // 3. Build the Soroban invoke operation.
+      const invokeArgs: InvokeHostFunctionArgs = {
+        type: "invokeHostFunction",
+        invokeHostFunction: {
+          type: 1,
+          contractId: this.contractId,
+          functionName: "execute_recurring_payment",
+          args: [borrowerAddress.toScVal()],
+        },
+      };
+
+      const operation = Operation.invokeHostFunction(invokeArgs);
+
+      // 4. Build, sign, and simulate the transaction.
+      const transaction = new TransactionBuilder(keeperAccount, this.networkPassphrase)
+        .addOperation(operation)
+        .setBaseFee(100000)
+        .setTimeout(30)
+        .build();
+
+      transaction.sign(this.keeperKeypair);
+
+      const simulateResponse = await this.server.simulateTransaction(transaction);
+
+      if (simulateResponse.result) {
+        return {
+          ok: false,
+          error: `simulation failed: ${JSON.stringify(simulateResponse.result)}`,
+        };
+      }
+
+      if (simulateResponse.error) {
+        return {
+          ok: false,
+          error: `simulation error: ${JSON.stringify(simulateResponse.error)}`,
+        };
+      }
+
+      // 5. Submit the transaction.
+      const submitResponse = await this.server.submitTransaction(transaction);
+
+      if (submitResponse.status === "ERROR") {
+        const errorResult = submitResponse.result as any;
+        return {
+          ok: false,
+          error: `submission failed: ${errorResult?.error ?? "unknown"}`,
+        };
+      }
+
+      const txHash = submitResponse.hash ?? "";
+
+      // 6. Poll for confirmation (up to ~30 seconds).
+      const startTime = Date.now();
+      const timeoutMs = 30_000;
+      const pollIntervalMs = 1_000;
+
+      while (Date.now() - startTime < timeoutMs) {
+        try {
+          const txResult = await this.server.getTransaction(txHash);
+          if (txResult.status === "success") {
+            return {
+              ok: true,
+              txHash,
+            };
+          }
+          if (txResult.status === "failed" || txResult.status === "timeout") {
+            return {
+              ok: false,
+              error: `transaction ${txResult.status}: ${txHash}`,
+              txHash,
+            };
+          }
+        } catch {
+          // Transaction might not be indexed yet; retry.
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+
       return {
         ok: false,
-        error: "chain client wiring not yet implemented (see issue #1322/#1356)",
+        error: "transaction confirmation timeout",
+        txHash,
       };
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
@@ -81,7 +182,7 @@ export class SorobanRpcClientImpl implements SorobanRpcClient {
   }
 
   async close(): Promise<void> {
-    // No explicit close needed for SorobanRpc.Server, but included for interface compliance
+    await this.server.close();
   }
 }
 
@@ -89,10 +190,11 @@ export class SorobanRpcClientImpl implements SorobanRpcClient {
 
 export function buildSorobanRpcClient(
   rpcUrl: string | undefined,
-  contractId: string | undefined
+  contractId: string | undefined,
+  keeperSecretKey: string | undefined
 ): SorobanRpcClient {
-  if (!rpcUrl || !contractId) {
+  if (!rpcUrl || !contractId || !keeperSecretKey) {
     return new NoOpRpcClient();
   }
-  return new SorobanRpcClientImpl(rpcUrl, contractId);
+  return new SorobanRpcClientImpl(rpcUrl, contractId, keeperSecretKey);
 }

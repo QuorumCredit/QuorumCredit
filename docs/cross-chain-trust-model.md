@@ -128,6 +128,21 @@ checks, in order:
    checks above run first so ordinary failures (replay, staleness, missing key)
    return a proper `ContractError` instead of a trap.
 
+### Pagination
+
+`get_chain_vote_breakdown(env, proposal_id, offset, limit)` returns a
+proposal's per-chain vote aggregates one page at a time instead of the full
+`Vec<ChainVoteAggregate>`. This bounds the call's read/return size to a
+single page regardless of how many chains have been onboarded and voted on
+a given proposal, avoiding the risk of the read growing past Soroban's
+budget as more chains register.
+
+It returns `(page, next_cursor)`: `next_cursor` is `Some(offset)` to pass on
+the following call, or `None` once the last chain aggregate has been
+returned. `limit` is clamped to `MAX_PAGE_SIZE` (see `paginate_vec` in
+`src/helpers.rs`), the same pagination convention used elsewhere in the
+contract (e.g. the borrower list and audit trail).
+
 ### What remains a trust assumption
 
 **The contract cannot observe the origin chain or verify the claimed vote weights.**

@@ -355,6 +355,12 @@ pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Unpause) {
         panic_with_error!(&env, err);
     }
+    // Issue #1423: a circuit-breaker-induced pause must be explicitly
+    // acknowledged (via `acknowledge_circuit_breaker`) before it can be cleared,
+    // so a breaker incident is never silently unpaused with no record.
+    if !crate::circuit_breaker::is_circuit_breaker_acknowledged(&env) {
+        panic_with_error!(&env, ContractError::CircuitBreakerNotAcknowledged);
+    }
     env.storage().instance().set(&DataKey::Paused, &false);
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::None);
     env.storage().instance().remove(&DataKey::ThawState);
@@ -1032,7 +1038,7 @@ pub fn accept_admin(env: Env) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Designate a successor admin who can claim admin rights without multi-sig approval.
+/// Designate a successor admin who can claim admin rights after a timelock delay.
 /// Only the current admin set can designate a successor. Pass `None` to clear.
 pub fn set_successor_admin(
     env: Env,
@@ -1053,15 +1059,48 @@ pub fn set_successor_admin(
     cfg.successor_admin = successor.clone();
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    if successor.is_some() {
+        let claimable_at = env.ledger().timestamp() + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS;
+        env.storage().instance().set(&DataKey::SuccessorAdminClaimableAt, &claimable_at);
+    } else {
+        env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+    }
+
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("successor")),
         (admin_signers.get(0).unwrap(), successor),
     );
 }
 
-/// Claim admin rights as the designated successor admin.
+/// Issue #1443: Cancel/revoke a pending successor admin designation before it is claimed.
+/// Requires admin multi-sig approval.
+pub fn cancel_successor_admin(
+    env: Env,
+    admin_signers: Vec<Address>,
+) -> Result<(), ContractError> {
+    crate::rbac::require_admin_approval_for_action(
+        &env,
+        &admin_signers,
+        crate::rbac::AdminAction::RemoveAdmin,
+    )?;
+
+    let mut cfg = config(&env);
+    let prev_successor = cfg.successor_admin.take();
+
+    env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("cx_succ")),
+        (admin_signers.get(0).unwrap(), prev_successor),
+    );
+
+    Ok(())
+}
+
+/// Issue #1443: Claim admin rights as the designated successor admin after the timelock delay has elapsed.
 /// The caller must match the stored `successor_admin` address and authenticate.
-/// On success, the caller is added to the admin list and the successor slot is cleared.
+/// On success, the caller is added to the admin list, the successor slot is cleared, and a distinct event is emitted.
 pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
     let mut cfg = config(&env);
     let successor = cfg
@@ -1071,13 +1110,25 @@ pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
 
     successor.require_auth();
 
+    let claimable_at: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::SuccessorAdminClaimableAt)
+        .unwrap_or(0);
+
+    if env.ledger().timestamp() < claimable_at {
+        return Err(ContractError::TimelockDelayNotElapsed);
+    }
+
     cfg.admins.push_back(successor.clone());
     cfg.successor_admin = None;
+    env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    // Emit a distinct event when a successor is claimed so monitoring can alert immediately
     env.events().publish(
-        (symbol_short!("admin"), symbol_short!("cl_succ")),
-        successor,
+        (symbol_short!("admin"), symbol_short!("succ_clm")),
+        (successor, env.ledger().timestamp()),
     );
 
     Ok(())
@@ -1104,13 +1155,18 @@ pub fn get_prepayment_penalty_bps(env: Env) -> u32 {
         .unwrap_or(0)
 }
 
-/// Issue #554: Propose an admin action (e.g., pause, slash, config change).
+/// Issue #554 / #1442: Propose an admin action (e.g., pause, slash, config change).
 pub fn propose_admin_action(
     env: Env,
     proposer: Address,
-    action_type: soroban_sdk::String,
+    action_type: GovernanceAction,
 ) -> Result<u64, ContractError> {
     proposer.require_auth();
+
+    let cfg = config(&env);
+    if !cfg.admins.iter().any(|a| a == proposer) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
 
     let action_id: u64 = env
         .storage()
@@ -1144,7 +1200,7 @@ pub fn propose_admin_action(
     Ok(action_id)
 }
 
-/// Issue #554: Approve an admin action. Requires admin signature.
+/// Issue #554 / #1442: Approve an admin action. Requires admin signature.
 pub fn approve_admin_action(
     env: Env,
     admin: Address,
@@ -1186,7 +1242,7 @@ pub fn approve_admin_action(
     Ok(())
 }
 
-/// Issue #554: Execute an admin action if threshold is met.
+/// Issue #554 / #1442: Execute an admin action if threshold is met.
 pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
     let mut proposal: AdminActionProposal = env
         .storage()
@@ -1203,6 +1259,9 @@ pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractErro
         return Err(ContractError::UnauthorizedCaller);
     }
 
+    // Dispatch the concrete state change
+    execute_governance_action_internal(&env, &proposal.action_type)?;
+
     proposal.executed = true;
     env.storage()
         .instance()
@@ -1214,6 +1273,13 @@ pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractErro
     );
 
     Ok(())
+}
+
+/// Get an admin action proposal by ID.
+pub fn get_admin_action_proposal(env: Env, action_id: u64) -> Option<AdminActionProposal> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminAction(action_id))
 }
 
 // ── Issue #682: Multi-sig config update proposals ─────────────────────────────
@@ -2123,6 +2189,12 @@ fn execute_governance_action_internal(
             }
             cfg.successor_admin = successor.clone();
             env.storage().instance().set(&DataKey::Config, &cfg);
+            if successor.is_some() {
+                let claimable_at = env.ledger().timestamp() + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS;
+                env.storage().instance().set(&DataKey::SuccessorAdminClaimableAt, &claimable_at);
+            } else {
+                env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+            }
         }
         GovernanceAction::SetConfirmationRequired(enabled) => {
             let mut cfg = config(env);
@@ -2480,4 +2552,92 @@ pub fn get_config_patch(_env: Env, _idx: u32) -> Option<crate::types::ConfigPatc
 
 pub fn get_config_patch_count(_env: Env) -> u32 {
     0
+}
+
+/// Issue #1421 — Phase 2 Backfill: populate `PaymentHistory` for a pre-upgrade loan.
+///
+/// Many loans created before the credit-score upgrade have no `PaymentHistory` records,
+/// which leaves `avg_repayment_time` permanently neutral (0) even for borrowers who
+/// repaid early.  This admin-gated function lets operators inject historical payment
+/// records so that credit scores can be re-calculated with accurate timeliness data.
+///
+/// # Restrictions
+///
+/// - Caller must satisfy the admin approval threshold.
+/// - The loan identified by `loan_id` must exist.
+/// - The loan must be in a **terminal** state (`Repaid` or `Defaulted`).
+///   Active loans are rejected to prevent race conditions with the live repayment path.
+///
+/// # Arguments
+///
+/// * `env`            – Soroban environment.
+/// * `admin_signers`  – Admin addresses satisfying the threshold.
+/// * `loan_id`        – The ID of the pre-upgrade loan to backfill.
+/// * `payment_records` – Historical payments ordered by ascending timestamp.
+///                       Each record must have `amount > 0` and
+///                       `cumulative_repaid` monotonically increasing.
+///
+/// # Errors
+///
+/// * `UnauthorizedCaller`    — admin threshold not met.
+/// * `NoActiveLoan`          — no loan with `loan_id` found.
+/// * `InvalidStateTransition` — loan is not in a terminal (`Repaid`/`Defaulted`) state.
+/// * `InvalidAmount`          — a payment record has non-positive `amount` or
+///                              non-monotonically increasing `cumulative_repaid`.
+pub fn backfill_payment_history(
+    env: Env,
+    admin_signers: Vec<Address>,
+    loan_id: u64,
+    payment_records: crate::types::Vec<crate::types::PaymentRecord>,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    // Load the loan record — fail fast if it does not exist
+    let loan: crate::types::LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    // Only allow backfill for terminal-state loans (Repaid or Defaulted).
+    // Active loans interact with the live repayment path.
+    match loan.status {
+        crate::types::LoanStatus::Repaid | crate::types::LoanStatus::Defaulted => {}
+        _ => return Err(ContractError::InvalidStateTransition),
+    }
+
+    // Validate the payment records: amount > 0, cumulative_repaid monotonically increasing.
+    let mut last_cumulative: i128 = -1;
+    for record in payment_records.iter() {
+        if record.amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if record.cumulative_repaid <= last_cumulative {
+            return Err(ContractError::InvalidAmount);
+        }
+        last_cumulative = record.cumulative_repaid;
+    }
+
+    // Write the records, appending to any existing history so the function is
+    // safe to call multiple times (e.g. when backfilling in chunks).
+    let mut history: crate::types::Vec<crate::types::PaymentRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PaymentHistory(loan_id))
+        .unwrap_or_else(|| crate::types::Vec::new(&env));
+
+    for record in payment_records.iter() {
+        history.push_back(record);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PaymentHistory(loan_id), &history);
+
+    env.events().publish(
+        (soroban_sdk::symbol_short!("admin"), soroban_sdk::symbol_short!("backfill")),
+        (loan_id, loan.borrower.clone()),
+    );
+
+    Ok(())
 }

@@ -41,6 +41,8 @@ tags:
     description: Recurring repayment schedules
   - name: webhooks
     description: Webhook registration and management
+  - name: forecast
+    description: Loan repayment forecasting and accuracy tracking
 
 paths:
   # ── Health ──────────────────────────────────────────────────────────────────
@@ -371,6 +373,50 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/webhooks/{webhookId}/deliveries:
+    parameters:
+      - $ref: "#/components/parameters/WebhookId"
+    get:
+      tags: [webhooks]
+      summary: List delivery attempts for a webhook
+      operationId: listWebhookDeliveries
+      responses:
+        "200":
+          description: Array of delivery attempt records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WebhookDeliveryAttempt"
+        "404":
+          description: Webhook not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/webhooks/{webhookId}/stats:
+    parameters:
+      - $ref: "#/components/parameters/WebhookId"
+    get:
+      tags: [webhooks]
+      summary: Delivery success-rate statistics for a webhook
+      operationId: getWebhookStats
+      responses:
+        "200":
+          description: Delivery statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookDeliveryStats"
+        "404":
+          description: Webhook not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /webhook:
     post:
       tags: [webhooks]
@@ -396,6 +442,84 @@ paths:
                 $ref: "#/components/schemas/WebhookReceiveResponse"
         "401":
           description: Invalid signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Forecast ─────────────────────────────────────────────────────────────────
+  /loans/{loanId}/forecast:
+    parameters:
+      - $ref: "#/components/parameters/LoanId"
+    get:
+      tags: [forecast]
+      summary: Generate a repayment forecast for a loan
+      description: |
+        Returns a projected repayment schedule based on loan terms.
+        Query params override the default terms derived from the loan id.
+      operationId: getLoanForecast
+      parameters:
+        - in: query
+          name: principal
+          schema:
+            type: number
+            minimum: 0
+          description: Loan principal in stroops
+        - in: query
+          name: interestRateBps
+          schema:
+            type: number
+            minimum: 0
+          description: Interest rate in basis points
+        - in: query
+          name: termDays
+          schema:
+            type: number
+            minimum: 1
+          description: Loan term in days
+        - in: query
+          name: paymentFrequencyDays
+          schema:
+            type: number
+            minimum: 1
+          description: Payment frequency in days
+      responses:
+        "200":
+          description: Loan repayment forecast
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoanForecastResponse"
+        "500":
+          description: Forecast generation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /loans/{loanId}/forecast/accuracy:
+    parameters:
+      - $ref: "#/components/parameters/LoanId"
+    post:
+      tags: [forecast]
+      summary: Record an actual payment against a forecasted amount
+      description: Tracks forecast accuracy over time by recording actual vs forecasted payments.
+      operationId: recordForecastAccuracy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordForecastAccuracyRequest"
+      responses:
+        "201":
+          description: Accuracy sample recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForecastAccuracyResponse"
+        "400":
+          description: Validation error
           content:
             application/json:
               schema:
@@ -643,3 +767,102 @@ components:
       properties:
         received:
           type: boolean
+
+    WebhookDeliveryAttempt:
+      type: object
+      properties:
+        webhookId:
+          type: string
+        event:
+          type: string
+        attemptedAt:
+          type: integer
+          format: int64
+        statusCode:
+          type: integer
+        ok:
+          type: boolean
+        error:
+          type: string
+
+    WebhookDeliveryStats:
+      type: object
+      properties:
+        webhookId:
+          type: string
+        totalAttempts:
+          type: integer
+        successCount:
+          type: integer
+        failureCount:
+          type: integer
+        successRateBps:
+          type: integer
+          description: Success rate in basis points (0–10000)
+
+    ForecastPayment:
+      type: object
+      properties:
+        paymentNumber:
+          type: integer
+        dueDate:
+          type: integer
+          format: int64
+          description: Unix epoch milliseconds
+        principalComponent:
+          type: number
+        interestComponent:
+          type: number
+        totalPayment:
+          type: number
+        remainingBalance:
+          type: number
+
+    LoanForecastResponse:
+      type: object
+      properties:
+        loanId:
+          type: string
+        principal:
+          type: number
+        interestRateBps:
+          type: number
+        termDays:
+          type: number
+        totalPayments:
+          type: integer
+        schedule:
+          type: array
+          items:
+            $ref: "#/components/schemas/ForecastPayment"
+        accuracy:
+          type: object
+          properties:
+            meanErrorBps:
+              type: number
+            sampleCount:
+              type: integer
+
+    RecordForecastAccuracyRequest:
+      type: object
+      required: [paymentNumber, forecastedAmount, actualAmount]
+      properties:
+        paymentNumber:
+          type: integer
+          minimum: 1
+        forecastedAmount:
+          type: number
+          minimum: 0
+        actualAmount:
+          type: number
+          minimum: 0
+
+    ForecastAccuracyResponse:
+      type: object
+      properties:
+        loanId:
+          type: string
+        meanErrorBps:
+          type: number
+        sampleCount:
+          type: integer
