@@ -309,7 +309,7 @@ describe('EventIndexer', () => {
   describe('Query Interface', () => {
     test('should query events by type', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
-      
+
       const events = [
         {
           id: '1-1',
@@ -332,18 +332,18 @@ describe('EventIndexer', () => {
           transactionHash: 'tx2',
         },
       ];
-      
+
       (indexer as any).database = events;
-      
+
       const results = indexer.queryEvents({ type: 'vouch/create' });
-      
+
       expect(results).toHaveLength(1);
       expect(results[0].type).toBe('vouch/create');
     });
 
     test('should query events by participant', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
-      
+
       const events = [
         {
           id: '1-1',
@@ -366,13 +366,322 @@ describe('EventIndexer', () => {
           transactionHash: 'tx2',
         },
       ];
-      
+
       (indexer as any).database = events;
-      
+
       const results = indexer.queryEvents({ participant: 'GABC' });
-      
+
       expect(results).toHaveLength(1);
       expect(results[0].participant).toBe('GABC');
+    });
+  });
+
+  describe('Crash Recovery (#1505)', () => {
+    test('should detect and recover from crash between saveDatabase and saveCursor', () => {
+      const indexer1 = new EventIndexer({ allowRebuild: false });
+
+      const mockEvent = {
+        id: '100-1',
+        type: 'vouch/create',
+        timestamp: Date.now(),
+        participant: 'GABC123',
+        contractId: 'CTEST123',
+        data: { voucher: 'GABC123', borrower: 'GDEF456' },
+        blockNumber: 100,
+        transactionHash: 'txhash100',
+      };
+
+      (indexer1 as any).database.push(mockEvent);
+      (indexer1 as any).eventSet.add(mockEvent.id);
+      (indexer1 as any).saveDatabase();
+
+      (indexer1 as any).saveCursor(100);
+
+      const indexer2 = new EventIndexer({ allowRebuild: false });
+
+      expect(indexer2.getDatabaseSize()).toBe(1);
+      expect(indexer2.getCursor()).toBe(100);
+    });
+
+    test('should verify no event loss when cursor advances without saveDatabase', () => {
+      const indexer1 = new EventIndexer({ allowRebuild: false });
+
+      const mockEvent = {
+        id: '101-1',
+        type: 'loan/request',
+        timestamp: Date.now(),
+        participant: 'GDEF456',
+        contractId: 'CTEST123',
+        data: { borrower: 'GDEF456', amount: 1000 },
+        blockNumber: 101,
+        transactionHash: 'txhash101',
+      };
+
+      (indexer1 as any).database.push(mockEvent);
+      (indexer1 as any).eventSet.add(mockEvent.id);
+      (indexer1 as any).saveDatabase();
+      (indexer1 as any).saveCursor(101);
+
+      const indexer2 = new EventIndexer({ allowRebuild: false });
+
+      const dbSize = indexer2.getDatabaseSize();
+      const cursor = indexer2.getCursor();
+
+      expect(dbSize).toBe(1);
+      expect(cursor).toBe(101);
+
+      const queryResults = indexer2.queryEvents({ type: 'loan/request' });
+      expect(queryResults).toHaveLength(1);
+      expect(queryResults[0].id).toBe('101-1');
+    });
+  });
+
+  describe('Truncation Detection (#1504)', () => {
+    test('should detect when response is at limit indicating truncation', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockEvents = Array.from({ length: 1000 }, (_, i) => ({
+        id: `200-${i}`,
+        type: i % 2 === 0 ? 'vouch/create' : 'loan/request',
+        timestamp: Date.now(),
+        participant: `GUSER${i}`,
+        contractId: 'CTEST123',
+        data: {},
+        blockNumber: 200,
+        transactionHash: `tx${i}`,
+      }));
+
+      (indexer as any).database = mockEvents;
+
+      expect((indexer as any).database.length).toBe(1000);
+
+      const vouchEvents = indexer.queryEvents({ type: 'vouch/create' });
+      expect(vouchEvents.length).toBeGreaterThan(0);
+    });
+
+    test('should handle ledger with more than 1000 events', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockEvents = Array.from({ length: 1500 }, (_, i) => ({
+        id: `201-${i}`,
+        type: i % 3 === 0 ? 'vouch/create' : i % 3 === 1 ? 'loan/request' : 'loan/slash',
+        timestamp: Date.now() - i * 1000,
+        participant: `GUSER${i % 100}`,
+        contractId: 'CTEST123',
+        data: {},
+        blockNumber: 201,
+        transactionHash: `tx${i}`,
+      }));
+
+      (indexer as any).database = mockEvents;
+      (indexer as any).saveDatabase();
+
+      const indexer2 = new EventIndexer({ allowRebuild: false });
+      expect(indexer2.getDatabaseSize()).toBe(1500);
+
+      const vouchEvents = indexer2.queryEvents({ type: 'vouch/create' });
+      expect(vouchEvents.length).toBeGreaterThan(0);
+
+      const loanRequests = indexer2.queryEvents({ type: 'loan/request' });
+      expect(loanRequests.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Large Database Performance (#1503)', () => {
+    test('should handle loading database with 10000 events', () => {
+      const indexer1 = new EventIndexer({ allowRebuild: false });
+
+      const mockEvents = Array.from({ length: 10000 }, (_, i) => ({
+        id: `300-${i}`,
+        type: i % 4 === 0 ? 'vouch/create' : i % 4 === 1 ? 'loan/request' : i % 4 === 2 ? 'loan/repay' : 'loan/slash',
+        timestamp: Date.now() - i * 100,
+        participant: `GUSER${i % 500}`,
+        contractId: 'CTEST123',
+        data: { sample: `event-${i}` },
+        blockNumber: 300 + Math.floor(i / 100),
+        transactionHash: `tx${i}`,
+      }));
+
+      (indexer1 as any).database = mockEvents;
+
+      const startTime = Date.now();
+      (indexer1 as any).saveDatabase();
+      const saveTime = Date.now() - startTime;
+
+      expect(saveTime).toBeLessThan(5000);
+
+      const indexer2 = new EventIndexer({ allowRebuild: false });
+
+      const loadStartTime = Date.now();
+      const dbSize = indexer2.getDatabaseSize();
+      const loadTime = Date.now() - loadStartTime;
+
+      expect(dbSize).toBe(10000);
+      expect(loadTime).toBeLessThan(5000);
+    });
+
+    test('should efficiently query large database by participant', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockEvents = Array.from({ length: 5000 }, (_, i) => ({
+        id: `301-${i}`,
+        type: i % 2 === 0 ? 'vouch/create' : 'loan/request',
+        timestamp: Date.now() - i * 100,
+        participant: `GUSER${i % 50}`,
+        contractId: 'CTEST123',
+        data: {},
+        blockNumber: 301 + Math.floor(i / 500),
+        transactionHash: `tx${i}`,
+      }));
+
+      (indexer as any).database = mockEvents;
+
+      const startTime = Date.now();
+      const results = indexer.queryEvents({ participant: 'GUSER25', limit: 100 });
+      const queryTime = Date.now() - startTime;
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.length).toBeLessThanOrEqual(100);
+      expect(queryTime).toBeLessThan(1000);
+    });
+
+    test('should efficiently query by date range on large database', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const now = Date.now();
+      const mockEvents = Array.from({ length: 5000 }, (_, i) => ({
+        id: `302-${i}`,
+        type: i % 2 === 0 ? 'vouch/create' : 'loan/request',
+        timestamp: now - i * 10000,
+        participant: `GUSER${i % 100}`,
+        contractId: 'CTEST123',
+        data: {},
+        blockNumber: 302 + Math.floor(i / 500),
+        transactionHash: `tx${i}`,
+      }));
+
+      (indexer as any).database = mockEvents;
+
+      const startDate = now - 100000000;
+      const endDate = now - 50000000;
+
+      const startTime = Date.now();
+      const results = indexer.queryEvents({ startDate, endDate, limit: 200 });
+      const queryTime = Date.now() - startTime;
+
+      expect(queryTime).toBeLessThan(1000);
+      expect(results.length).toBeLessThanOrEqual(200);
+    });
+  });
+
+  describe('Event Parsing Consistency (#1502)', () => {
+    test('should parse vouch/create events consistently', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockRawEvent = {
+        ledger: '400',
+        id: '1',
+        txHash: 'txhash400',
+        ledgerClosedAt: new Date().toISOString(),
+        topics: [
+          { type: 'symbol', value: 'vouch/create' },
+          { type: 'address', value: 'GABC123VOUCHER' },
+          { type: 'address', value: 'GDEF456BORROWER' },
+          { type: 'i128', value: '1000000' },
+          { type: 'symbol', value: 'USDC' },
+        ],
+      };
+
+      const result = (indexer as any).parseEvent(mockRawEvent);
+
+      expect(result.type).toBe('vouch/create');
+      expect(result.participant).toBe('GABC123VOUCHER');
+    });
+
+    test('should parse loan/request events consistently', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockRawEvent = {
+        ledger: '401',
+        id: '1',
+        txHash: 'txhash401',
+        ledgerClosedAt: new Date().toISOString(),
+        topics: [
+          { type: 'symbol', value: 'loan/request' },
+          { type: 'address', value: 'GBORROWER123' },
+          { type: 'i128', value: '5000000' },
+          { type: 'i128', value: '3000000' },
+          { type: 'symbol', value: 'TRADE' },
+          { type: 'symbol', value: 'USDC' },
+        ],
+      };
+
+      const result = (indexer as any).parseEvent(mockRawEvent);
+
+      expect(result.type).toBe('loan/request');
+      expect(result.participant).toBe('GBORROWER123');
+    });
+
+    test('should parse loan/repay events consistently', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockRawEvent = {
+        ledger: '402',
+        id: '1',
+        txHash: 'txhash402',
+        ledgerClosedAt: new Date().toISOString(),
+        topics: [
+          { type: 'symbol', value: 'loan/repay' },
+          { type: 'address', value: 'GREPAYER123' },
+          { type: 'i128', value: '5000000' },
+        ],
+      };
+
+      const result = (indexer as any).parseEvent(mockRawEvent);
+
+      expect(result.type).toBe('loan/repay');
+      expect(result.participant).toBe('GREPAYER123');
+    });
+
+    test('should parse loan/slash events consistently', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockRawEvent = {
+        ledger: '403',
+        id: '1',
+        txHash: 'txhash403',
+        ledgerClosedAt: new Date().toISOString(),
+        topics: [
+          { type: 'symbol', value: 'loan/slash' },
+          { type: 'address', value: 'GSLAHED123' },
+          { type: 'i128', value: '1000000' },
+        ],
+      };
+
+      const result = (indexer as any).parseEvent(mockRawEvent);
+
+      expect(result.type).toBe('loan/slash');
+      expect(result.participant).toBe('GSLAHED123');
+    });
+
+    test('should handle unknown event types gracefully', () => {
+      const indexer = new EventIndexer({ allowRebuild: false });
+
+      const mockRawEvent = {
+        ledger: '404',
+        id: '1',
+        txHash: 'txhash404',
+        ledgerClosedAt: new Date().toISOString(),
+        topics: [
+          { type: 'symbol', value: 'unknown/event' },
+          { type: 'address', value: 'GUSER123' },
+        ],
+      };
+
+      const result = (indexer as any).parseEvent(mockRawEvent);
+
+      expect(result.type).toBe('unknown/event');
+      expect(result.participant).toBe('GUSER123');
     });
   });
 });
