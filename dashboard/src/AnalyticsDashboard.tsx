@@ -23,6 +23,7 @@ import {
   downloadFile,
   metricsToCSV,
 } from "./analytics";
+import EmptyState from "./EmptyState";
 import { useMetricsSocket } from "./useMetricsSocket";
 import { DashboardErrorBoundary } from "./ErrorBoundary";
 
@@ -103,7 +104,9 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
     }
   }, [accessibility]);
 
-  const { latest, connected } = useMetricsSocket(wsUrl);
+  const [retryKey, setRetryKey] = useState(0);
+
+  const { latest, connected, gaveUp } = useMetricsSocket(wsUrl, undefined, undefined, undefined, retryKey);
 
   // Apply incoming WS snapshot
   useEffect(() => {
@@ -220,8 +223,16 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
         </span>
       </div>
 
+      {/* Give-up state — shown when the WebSocket exhausts all reconnect attempts */}
+      {gaveUp && (
+        <EmptyState
+          variant="give-up"
+          onRetry={() => setRetryKey((k) => k + 1)}
+        />
+      )}
+
       {/* Alerts */}
-      {alerts.length > 0 && (
+      {!gaveUp && alerts.length > 0 && (
         <div aria-label="Alerts" style={{ marginBottom: 16 }}>
           {alerts.map((a) => (
             <div
@@ -244,6 +255,7 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
       )}
 
       {/* Filters */}
+      {!gaveUp && (
       <div
         aria-label="Filters"
         style={{
@@ -302,8 +314,9 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
           {loading ? t("analytics.fetchLoading") : t("analytics.fetchButton")}
         </button>
       </div>
+      )}
 
-      {error && (
+      {!gaveUp && error && (
         <p style={{ color: "#ef4444", fontSize: 14 }}>
           {t("analytics.errorPrefix")} {error}
         </p>
@@ -473,10 +486,12 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
       )}
 
       {/* Export */}
+      {!gaveUp && (
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={handleExportCSV}>{t("analytics.exportCSV")}</button>
         <button onClick={handleExportJSON}>{t("analytics.exportJSON")}</button>
       </div>
+      )}
     </div>
   );
 };

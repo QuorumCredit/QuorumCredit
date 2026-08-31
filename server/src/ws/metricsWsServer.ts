@@ -13,6 +13,7 @@ import {
   type ProtocolMetrics,
 } from "../types.js";
 import { metrics as opsMetrics } from "../http/metricsRegistry.js";
+import { buildWsAggregateRateLimiter } from "./wsAggregateRateLimiter.js";
 
 export interface MetricsWsServerOptions {
   httpServer: HttpServer;
@@ -33,12 +34,21 @@ export interface MetricsWsServerOptions {
    * Default: 60 000.
    */
   idleTimeoutMs?: number;
+  /**
+   * Redis URL for the aggregate cross-instance rate limiter. When set, inbound
+   * messages are counted against a shared per-key budget across all replicas.
+   * When undefined, an in-process limiter is used instead (NOT safe for
+   * multi-replica production).
+   */
+  redisUrl?: string;
 }
 
 interface ConnState {
   queue: ConnectionQueue<MetricsServerFrame>;
   token: string;
   authTimer: ReturnType<typeof setInterval>;
+  /** Aggregate cross-instance rate limiter keyed by IP/token. */
+  aggregateRateLimiter: ReturnType<typeof buildWsAggregateRateLimiter>;
   /** Timer that sends ping frames at heartbeatIntervalMs cadence. */
   heartbeatTimer: ReturnType<typeof setInterval>;
   /** Timer that fires idleTimeoutMs after the last pong (or connect). */
@@ -79,7 +89,12 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
     const frame: MetricsServerFrame = { type: "snapshot", id: parsed.eventId, metrics: parsed.metrics };
 
     for (const [socket, state] of states) {
-      const dropped = state.queue.push(frame);
+      const dropped = state.queue.push(
+        frame,
+        () => {
+          opsMetrics.incLabeledCounter("qc_ws_queue_drops_total", "type", "metrics");
+        }
+      );
       flush(socket, state);
       if (dropped) {
         opsMetrics.incCounter("qc_broadcast_messages_dropped_total");
@@ -127,6 +142,7 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
         queue: new ConnectionQueue(opts.connectionQueueMax),
         token,
         authTimer: setInterval(() => checkAuthExpiry(ws, states, opts.authSecret, warningMs), 5000),
+        aggregateRateLimiter: buildWsAggregateRateLimiter(opts.redisUrl),
         heartbeatTimer,
         idleTimer: scheduleIdleTimer(),
       };
@@ -154,6 +170,14 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
         } catch {
           return;
         }
+
+        const aggregateKey = req.socket.remoteAddress ?? "unknown";
+        if (await state.aggregateRateLimiter.isBlocked(aggregateKey)) {
+          send(ws, { type: "rate_limited" });
+          return;
+        }
+        await state.aggregateRateLimiter.recordHit(aggregateKey);
+
         if (frame.type === "refresh_auth" && typeof frame.token === "string") {
           const refreshed = verifyToken(opts.authSecret, frame.token);
           if (refreshed.valid) {
