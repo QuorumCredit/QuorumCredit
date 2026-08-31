@@ -171,21 +171,53 @@ pub fn require_admin_permission(
 ///
 /// Call this once after deploying the RBAC-aware contract to restore full functionality
 /// for existing deployments. Admins can then gradually refine their roles.
-pub fn migrate_legacy_admins_to_superadmin(env: &Env) {
+///
+/// # Issue #1446
+/// - Requires admin approval (access control)
+/// - Can only be called once (idempotency guard)
+/// - Emits event only when roles are actually assigned (no-op on subsequent calls)
+pub fn migrate_legacy_admins_to_superadmin(env: &Env, admin_signers: Vec<Address>) -> Result<(), ContractError> {
+    // Issue #1446: Gate behind require_admin_approval
+    require_admin_approval_for_action(env, &admin_signers, AdminAction::UpdateConfig)?;
+
+    // Issue #1446: Check if migration already completed (idempotency guard)
+    let already_migrated: bool = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LegacyAdminMigrationComplete)
+        .unwrap_or(false);
+    
+    if already_migrated {
+        // Already migrated, this is a no-op
+        return Ok(());
+    }
+
     let cfg = config(env);
+    let mut roles_assigned = 0u32;
 
     for admin in cfg.admins.iter() {
         if get_admin_role(env, &admin).is_err() {
             env.storage()
                 .persistent()
                 .set(&DataKey::AdminRole(admin.clone()), &AdminRole::SuperAdmin);
+            roles_assigned += 1;
         }
     }
 
-    env.events().publish(
-        ("rbac", "legacy_migration_complete"),
-        cfg.admins.len() ,
-    );
+    // Mark migration as complete
+    env.storage()
+        .persistent()
+        .set(&DataKey::LegacyAdminMigrationComplete, &true);
+
+    // Issue #1446: Only emit event when roles were actually assigned
+    if roles_assigned > 0 {
+        env.events().publish(
+            ("rbac", "legacy_migration_complete"),
+            (admin_signers.get(0), roles_assigned),
+        );
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -326,5 +358,69 @@ mod tests {
             get_required_permission(AdminAction::UpdateFees),
             AdminPermission::ManageFees
         );
+    }
+
+    #[test]
+    fn test_legacy_migration_idempotent_and_access_controlled() {
+        // Issue #1446: Test that migration is idempotent and access-controlled
+        use crate::helpers::config;
+        use crate::types::{Config, DataKey};
+        use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let deployer = Address::generate(&env);
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin1.clone());
+        admins.push_back(admin2.clone());
+
+        // Set up config with 2 admins
+        let config_obj = Config {
+            admins: admins.clone(),
+            admin_threshold: 2,
+            token: Address::generate(&env),
+            allowed_tokens: Vec::new(&env),
+            yield_bps: 200,
+            slash_bps: 5000,
+            max_vouchers: 50,
+            min_loan_amount: 100_000,
+            loan_duration: 7 * 24 * 60 * 60,
+            max_loan_to_stake_ratio: 5000,
+            grace_period: 3 * 24 * 60 * 60,
+        };
+        
+        env.storage().persistent().set(&DataKey::Config, &config_obj);
+
+        // First migration call with proper admin approvals should succeed
+        let admin_signers = Vec::from_array(&env, [admin1.clone(), admin2.clone()]);
+        let result = migrate_legacy_admins_to_superadmin(&env, admin_signers);
+        assert!(result.is_ok(), "Migration with proper admin approvals should succeed");
+
+        // Verify roles were assigned
+        assert_eq!(
+            get_admin_role(&env, &admin1),
+            Ok(AdminRole::SuperAdmin),
+            "Admin1 should have SuperAdmin role"
+        );
+        assert_eq!(
+            get_admin_role(&env, &admin2),
+            Ok(AdminRole::SuperAdmin),
+            "Admin2 should have SuperAdmin role"
+        );
+
+        // Second migration call should be a no-op (idempotent)
+        let admin_signers = Vec::from_array(&env, [admin1.clone(), admin2.clone()]);
+        let result = migrate_legacy_admins_to_superadmin(&env, admin_signers);
+        assert!(result.is_ok(), "Second migration call should be no-op and still return Ok");
+
+        // Call with non-admin should fail
+        let non_admin_signers = Vec::from_array(&env, [non_admin.clone()]);
+        let result = migrate_legacy_admins_to_superadmin(&env, non_admin_signers);
+        assert!(result.is_err(), "Non-admin should not be able to call migration");
     }
 }
