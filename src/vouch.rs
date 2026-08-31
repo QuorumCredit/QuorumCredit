@@ -203,6 +203,11 @@ fn validate_vouch<'a>(
         return Err(ContractError::Blacklisted);
     }
 
+    // Issue #1429: lazily settle the borrower's overdue loans before accepting a
+    // new vouch, so stake is never committed against a borrower whose default
+    // history has not yet been flagged.
+    crate::lazy_default_detection::check_all_defaults_for_borrower(env, borrower)?;
+
     if cfg.whitelist_enabled {
         let is_whitelisted: bool = env
             .storage()
