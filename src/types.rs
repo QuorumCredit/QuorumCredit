@@ -137,6 +137,15 @@ pub const EXTENSION_FEE_BPS: i128 = 100;
 /// Maximum number of extensions allowed per loan.
 pub const MAX_EXTENSIONS_PER_LOAN: u32 = 2;
 
+/// Issue #10: Default maximum number of consecutive refinances in a loan chain.
+/// A value of 3 means a borrower can refinance up to 3 times before needing to
+/// close the chain and start fresh.
+pub const DEFAULT_MAX_REFINANCES_PER_LOAN_CHAIN: u32 = 3;
+
+/// Issue #10: Default minimum cooldown between consecutive refinances, in seconds.
+/// 7 days prevents rapid chaining that could abuse prepayment-penalty timing.
+pub const DEFAULT_REFINANCE_COOLDOWN_SECS: u64 = 7 * 24 * 60 * 60;
+
 /// Default liquidity mining reward rate in basis points per epoch (50 = 0.5% per 7 days).
 pub const DEFAULT_LIQUIDITY_MINING_RATE_BPS: u32 = 50;
 
@@ -1099,6 +1108,12 @@ pub enum DataKey {
     LastAcknowledgedRelaySeq(u32),
     /// (source_chain, seq) → bool: has this inbound event been processed
     RelayEventProcessed(u32, u64),
+
+    // ── Issue #10: Refinance chain limits ────────────────────────────────────
+    /// borrower → u32: how many refinances have been chained off the original loan
+    RefinanceChainCount(Address),
+    /// borrower → u64: timestamp of the most recent refinance
+    LastRefinancedAt(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
@@ -2001,17 +2016,14 @@ pub struct Config {
     /// Issue #1071: Maximum insurance payout as a percentage of total slashed amount
     /// (in basis points, e.g. 2500 = 25%).
     pub insurance_max_payout_bps: u32,
-    /// Issue #1437: Upper bound (in stroops) accepted for a single admin
-    /// contribution to the insurance fund. Guards against fat-finger admin
-    /// errors and undocumented manual top-ups. `0` disables the check.
-    /// (Name capped at 30 chars by `#[contracttype]`.)
-    pub insurance_fund_max_contrib: i128,
-    /// Issue #1436: Low-balance alert threshold (in stroops) for the insurance
-    /// fund. When the post-claim balance drops below this value,
-    /// `claim_insurance_for_shortfall` emits an `insurance_fund / low_bal`
-    /// event for operator alerting. `0` disables the alert.
-    /// (Name capped at 30 chars by `#[contracttype]`.)
-    pub insurance_fund_low_bal_thresh: i128,
+    /// Issue #10: Maximum number of consecutive refinances allowed in a single loan
+    /// chain before the chain must be closed.  0 means no limit.
+    /// Default: `DEFAULT_MAX_REFINANCES_PER_LOAN_CHAIN` (3).
+    pub max_refinances_per_loan_chain: u32,
+    /// Issue #10: Minimum time (in seconds) a borrower must wait between consecutive
+    /// refinances.  0 means no cooldown.
+    /// Default: `DEFAULT_REFINANCE_COOLDOWN_SECS` (7 days).
+    pub refinance_cooldown_secs: u64,
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -2294,6 +2306,11 @@ pub struct GuarantorRecord {
     pub signature_verified: bool,
     /// Amount guaranteed (in stroops) — can be less than full loan amount
     pub guarantee_amount: i128,
+    /// Token this guarantee's stake is denominated and locked in (#1406).
+    /// Recorded once at `request_guarantor_for_loan` time and authoritative for
+    /// the entire lifetime of the guarantee — `claim_guarantor_coverage` pays
+    /// out in this token rather than trusting a caller-supplied token address.
+    pub token: Address,
     /// Timestamp when guarantor was requested for this loan
     pub requested_at: u64,
     /// Timestamp when guarantor was released (None if still active)
@@ -2521,7 +2538,8 @@ pub struct VouchRecord {
 #[contracttype]
 #[derive(Clone)]
 pub struct VouchReputationWeight {
-    /// Vouch ID (same as loan_id for now)
+    /// Identifies the vouch this record belongs to — see
+    /// `vouch_reputation::derive_vouch_id` (#1408) for how it's derived.
     pub vouch_id: u64,
     /// Base strength of the vouch (the raw stake)
     pub base_strength: i128,
@@ -3576,6 +3594,10 @@ pub enum SyndicateProposalStatus {
     Pending,
     Approved,
     Rejected,
+    /// #1409: the approved action has been carried out (pool dissolved,
+    /// principal returned to members). Terminal — execution can never run
+    /// twice against the same proposal.
+    Executed,
 }
 
 /// A member-raised governance proposal within a syndicate pool (e.g. dissolve

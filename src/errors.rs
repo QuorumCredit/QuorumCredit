@@ -339,4 +339,16 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
+    // ── Issue #10: Refinance chain limits ────────────────────────────────────
+    /// The borrower has reached the maximum number of refinances allowed in a
+    /// single loan chain (`max_refinances_per_loan_chain`).
+    RefinanceLimitExceeded = 221,
+    /// A refinance was attempted before the minimum cooldown period between
+    /// consecutive refinances has elapsed.
+    RefinanceCooldownActive = 222,
+    // ── Issue #11: Refinance eligibility enforcement ─────────────────────────
+    /// `refinance_loan` was called when the shared eligibility predicate
+    /// (same logic used by `refinance_quote`) determined the borrower is not
+    /// eligible for a beneficial refinance at this time.
+    RefinanceNotEligible = 223,
 }
