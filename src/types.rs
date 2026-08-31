@@ -3301,6 +3301,22 @@ pub struct FraudScoreConfig {
     pub enabled: bool,
 }
 
+/// Issue #1424: a single historical circuit-breaker activation, retained in the
+/// bounded `DataKey::CircuitBreakerHistory` log so operators can audit how often
+/// the breaker has fired and correlate incidents with default-rate spikes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CircuitBreakerTrigger {
+    /// Ledger timestamp at which the breaker activated.
+    pub timestamp: u64,
+    /// Protocol-wide defaulted-loan count at activation time.
+    pub default_count: u32,
+    /// Protocol-wide total-loan count at activation time.
+    pub total_loan_count: u32,
+    /// Default rate in basis points at activation time.
+    pub rate_bps: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CrossChainLoanMetadata {
