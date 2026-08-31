@@ -2795,6 +2795,22 @@ impl QuorumCreditContract {
         credit_score::apply_reputation_decay_batch(&env, borrowers)
     }
 
+    /// Issue #1421 Phase 2: Backfill historical payment records for a pre-upgrade loan.
+    ///
+    /// Admin-gated. Only allowed for loans in a terminal state (Repaid or Defaulted).
+    /// Appends the supplied `payment_records` to the `PaymentHistory(loan_id)` storage
+    /// key so credit-score timeliness calculations can be recalculated with real data.
+    ///
+    /// See `docs/credit-score-migration.md` Phase 2 for the full backfill strategy.
+    pub fn backfill_payment_history(
+        env: Env,
+        admin_signers: Vec<Address>,
+        loan_id: u64,
+        payment_records: Vec<PaymentRecord>,
+    ) -> Result<(), ContractError> {
+        admin::backfill_payment_history(env, admin_signers, loan_id, payment_records)
+    }
+
     // ── Views ─────────────────────────────────────────────────────────────────
 
     pub fn is_initialized(env: Env) -> bool {

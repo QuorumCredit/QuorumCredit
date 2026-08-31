@@ -2487,3 +2487,91 @@ pub fn get_config_patch(_env: Env, _idx: u32) -> Option<crate::types::ConfigPatc
 pub fn get_config_patch_count(_env: Env) -> u32 {
     0
 }
+
+/// Issue #1421 — Phase 2 Backfill: populate `PaymentHistory` for a pre-upgrade loan.
+///
+/// Many loans created before the credit-score upgrade have no `PaymentHistory` records,
+/// which leaves `avg_repayment_time` permanently neutral (0) even for borrowers who
+/// repaid early.  This admin-gated function lets operators inject historical payment
+/// records so that credit scores can be re-calculated with accurate timeliness data.
+///
+/// # Restrictions
+///
+/// - Caller must satisfy the admin approval threshold.
+/// - The loan identified by `loan_id` must exist.
+/// - The loan must be in a **terminal** state (`Repaid` or `Defaulted`).
+///   Active loans are rejected to prevent race conditions with the live repayment path.
+///
+/// # Arguments
+///
+/// * `env`            – Soroban environment.
+/// * `admin_signers`  – Admin addresses satisfying the threshold.
+/// * `loan_id`        – The ID of the pre-upgrade loan to backfill.
+/// * `payment_records` – Historical payments ordered by ascending timestamp.
+///                       Each record must have `amount > 0` and
+///                       `cumulative_repaid` monotonically increasing.
+///
+/// # Errors
+///
+/// * `UnauthorizedCaller`    — admin threshold not met.
+/// * `NoActiveLoan`          — no loan with `loan_id` found.
+/// * `InvalidStateTransition` — loan is not in a terminal (`Repaid`/`Defaulted`) state.
+/// * `InvalidAmount`          — a payment record has non-positive `amount` or
+///                              non-monotonically increasing `cumulative_repaid`.
+pub fn backfill_payment_history(
+    env: Env,
+    admin_signers: Vec<Address>,
+    loan_id: u64,
+    payment_records: crate::types::Vec<crate::types::PaymentRecord>,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    // Load the loan record — fail fast if it does not exist
+    let loan: crate::types::LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    // Only allow backfill for terminal-state loans (Repaid or Defaulted).
+    // Active loans interact with the live repayment path.
+    match loan.status {
+        crate::types::LoanStatus::Repaid | crate::types::LoanStatus::Defaulted => {}
+        _ => return Err(ContractError::InvalidStateTransition),
+    }
+
+    // Validate the payment records: amount > 0, cumulative_repaid monotonically increasing.
+    let mut last_cumulative: i128 = -1;
+    for record in payment_records.iter() {
+        if record.amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if record.cumulative_repaid <= last_cumulative {
+            return Err(ContractError::InvalidAmount);
+        }
+        last_cumulative = record.cumulative_repaid;
+    }
+
+    // Write the records, appending to any existing history so the function is
+    // safe to call multiple times (e.g. when backfilling in chunks).
+    let mut history: crate::types::Vec<crate::types::PaymentRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PaymentHistory(loan_id))
+        .unwrap_or_else(|| crate::types::Vec::new(&env));
+
+    for record in payment_records.iter() {
+        history.push_back(record);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PaymentHistory(loan_id), &history);
+
+    env.events().publish(
+        (soroban_sdk::symbol_short!("admin"), soroban_sdk::symbol_short!("backfill")),
+        (loan_id, loan.borrower.clone()),
+    );
+
+    Ok(())
+}
