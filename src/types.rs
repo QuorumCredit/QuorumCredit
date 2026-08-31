@@ -1122,6 +1122,12 @@ pub enum DataKey {
     RefinanceChainCount(Address),
     /// borrower → u64: timestamp of the most recent refinance
     LastRefinancedAt(Address),
+    // Issue #111: Per-subject webhook subscription limit override
+    WebhookLimit,
+    // Issue #112: Off-chain sub-system health sentinels
+    PubSubHealthy,              // bool: true when PubSub relay last checked in successfully
+    RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
+    WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
