@@ -975,6 +975,10 @@ pub enum DataKey {
     ExchangeRate(Address, Address),
     /// (token_a, token_b) → RateHistory
     RateHistory(Address, Address),
+    /// (token_a, token_b) → PendingRateUpdate (two-step rate change, Issue #1431)
+    PendingRateUpdate(Address, Address),
+    /// Global u64: max age of `RateHistory` before min/max decay (Issue #1433)
+    RateHistoryWindowSecs,
     
     // ── Issue #970: Cross-Chain Governance ────────────────────────────────
     /// proposal_id → CrossChainProposal
