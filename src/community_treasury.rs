@@ -37,9 +37,9 @@ pub const LARGE_ALLOCATION_THRESHOLD_BPS: u32 = 3_000;
 /// Voting period for treasury proposals in seconds (7 days).
 pub const TREASURY_VOTING_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 
-/// Admin approval timeout for large allocations in seconds (3 days).
-/// After this time, if the admin hasn't acted, the proposal is automatically rejected.
-pub const TREASURY_ADMIN_APPROVAL_TIMEOUT_SECS: u64 = 3 * 24 * 60 * 60;
+/// Issue #1448: Admin approval deadline for large allocations (30 days).
+/// If admin has not approved by this time, proposal is auto-rejected.
+pub const ADMIN_APPROVAL_DEADLINE_SECS: u64 = 30 * 24 * 60 * 60;
 
 // ── Data Structures ───────────────────────────────────────────────────────────
 
@@ -83,9 +83,9 @@ pub struct TreasuryProposal {
     pub status: TreasuryProposalStatus,
     /// Whether this proposal is a large allocation requiring admin approval.
     pub requires_admin: bool,
-    /// Timestamp when admin approval deadline expires (for large allocations).
-    /// If admins do not approve before this time, the proposal is auto-rejected.
-    pub admin_approval_deadline: u64,
+    /// Issue #1448: Timestamp deadline for admin approval (only set for large allocations).
+    /// If admin does not approve by this time, proposal is auto-rejected.
+    pub admin_approval_deadline: Option<u64>,
 }
 
 /// Monthly treasury spending report.
@@ -208,7 +208,8 @@ pub fn create_proposal(
         no_votes: 0,
         status: TreasuryProposalStatus::Active,
         requires_admin,
-        admin_approval_deadline,
+        /// Issue #1448: Initialize admin_approval_deadline as None; will be set when moving to PendingAdminApproval
+        admin_approval_deadline: None,
     };
 
     env.storage()
@@ -341,7 +342,9 @@ pub fn finalize_proposal(
 
     if proposal.requires_admin {
         // Move to pending admin approval.
+        // Issue #1448: Set admin approval deadline
         proposal.status = TreasuryProposalStatus::PendingAdminApproval;
+        proposal.admin_approval_deadline = Some(now + ADMIN_APPROVAL_DEADLINE_SECS);
         env.storage()
             .persistent()
             .set(&DataKey::TreasuryProposal(proposal_id), &proposal);
@@ -424,13 +427,15 @@ pub fn admin_approve_proposal(
     Ok(())
 }
 
-/// Automatically reject a large allocation proposal if the admin approval deadline has passed.
-/// Callable by anyone — this prevents indefinite blocking of community-approved funds.
+/// Issue #1448: Auto-reject a stale large allocation proposal.
+///
+/// Can be called by anyone after the admin approval deadline has passed.
+/// This prevents indefinite blocking of community-approved funds.
 ///
 /// # Errors
 /// - `ProposalNotFound`        — unknown proposal.
 /// - `InvalidStateTransition`  — proposal is not in `PendingAdminApproval`.
-/// - `DelayNotElapsed`         — deadline has not yet passed.
+/// - `InvalidAmount`           — deadline has not yet expired.
 pub fn auto_reject_stale_proposal(
     env: &Env,
     proposal_id: u64,
@@ -447,24 +452,31 @@ pub fn auto_reject_stale_proposal(
         return Err(ContractError::InvalidStateTransition);
     }
 
+    let deadline = proposal
+        .admin_approval_deadline
+        .ok_or(ContractError::InvalidAmount)?;
+
     let now = env.ledger().timestamp();
-    if now < proposal.admin_approval_deadline {
-        return Err(ContractError::DelayNotElapsed);
+    if now <= deadline {
+        return Err(ContractError::InvalidAmount);
     }
 
-    // Reject the proposal due to admin inaction
+    // Auto-reject: mark as Rejected due to admin inaction
     proposal.status = TreasuryProposalStatus::Rejected;
     env.storage()
         .persistent()
         .set(&DataKey::TreasuryProposal(proposal_id), &proposal);
 
+    // Issue #1448: Emit distinct event for auto-rejection
     env.events().publish(
         (symbol_short!("treasury"), symbol_short!("auto_rej")),
-        (proposal_id, now),
+        proposal_id,
     );
 
     Ok(())
 }
+
+// ── Queries ───────────────────────────────────────────────────────────────────
 
 /// Return a treasury proposal by ID.
 pub fn get_treasury_proposal(env: &Env, proposal_id: u64) -> Option<TreasuryProposal> {
@@ -681,23 +693,25 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_reject_stale_large_allocation_proposal() {
+    fn test_auto_reject_stale_large_allocation() {
+        // Issue #1448: Test auto-rejection of stale proposals
         let (env, contract_id, proposer) = setup();
-        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 10_000_000));
         let recipient = Address::generate(&env);
+
+        // Create a large allocation (exceeds threshold)
         let id = env
             .as_contract(&contract_id, || {
                 create_proposal(
                     &env,
-                    proposer,
+                    proposer.clone(),
                     recipient,
-                    500_000, // 50% of balance - triggers admin approval requirement
-                    String::from_str(&env, "Large Grant"),
+                    4_000_000, // > 30% of 10M = large allocation
+                    String::from_str(&env, "Large grant"),
                 )
             })
             .unwrap();
 
-        // Reach community quorum for the proposal
         let voter1 = Address::generate(&env);
         let voter2 = Address::generate(&env);
         env.as_contract(&contract_id, || {
@@ -707,51 +721,49 @@ mod tests {
             vote_on_proposal(&env, voter2, id, true).unwrap()
         });
 
-        // Advance time past voting period so it can be finalized
+        // Finalize voting to move to PendingAdminApproval
         env.ledger()
             .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
-
-        // Finalize — should move to PendingAdminApproval
         env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
         let p = env
             .as_contract(&contract_id, || get_treasury_proposal(&env, id))
             .unwrap();
         assert_eq!(p.status, TreasuryProposalStatus::PendingAdminApproval);
+        assert!(p.admin_approval_deadline.is_some());
 
-        // Advance time past admin approval deadline (3 days)
-        env.ledger()
-            .with_mut(|l| l.timestamp += TREASURY_ADMIN_APPROVAL_TIMEOUT_SECS + 1);
+        // Advance past the admin approval deadline
+        env.ledger().with_mut(|l| l.timestamp += ADMIN_APPROVAL_DEADLINE_SECS + 1);
 
-        // Auto-reject due to admin inaction — callable by anyone
-        env.as_contract(&contract_id, || {
-            auto_reject_stale_proposal(&env, id).unwrap()
-        });
+        // Auto-reject should succeed now
+        let result = env.as_contract(&contract_id, || auto_reject_stale_proposal(&env, id));
+        assert!(result.is_ok());
 
-        // Verify proposal is now rejected
-        let p_final = env
+        let p = env
             .as_contract(&contract_id, || get_treasury_proposal(&env, id))
             .unwrap();
-        assert_eq!(p_final.status, TreasuryProposalStatus::Rejected);
+        assert_eq!(p.status, TreasuryProposalStatus::Rejected);
     }
 
     #[test]
-    fn test_admin_approval_before_deadline_succeeds() {
+    fn test_cannot_auto_reject_before_deadline() {
+        // Issue #1448: Auto-rejection should fail before deadline
         let (env, contract_id, proposer) = setup();
-        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 10_000_000));
         let recipient = Address::generate(&env);
+
         let id = env
             .as_contract(&contract_id, || {
                 create_proposal(
                     &env,
-                    proposer,
+                    proposer.clone(),
                     recipient,
-                    500_000, // Large allocation
-                    String::from_str(&env, "Large Grant"),
+                    4_000_000,
+                    String::from_str(&env, "Large grant"),
                 )
             })
             .unwrap();
 
-        // Reach quorum
         let voter1 = Address::generate(&env);
         let voter2 = Address::generate(&env);
         env.as_contract(&contract_id, || {
@@ -761,18 +773,58 @@ mod tests {
             vote_on_proposal(&env, voter2, id, true).unwrap()
         });
 
-        // Finalize
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        // Try to auto-reject before deadline (should fail)
+        let result = env.as_contract(&contract_id, || auto_reject_stale_proposal(&env, id));
+        assert_eq!(result, Err(ContractError::InvalidAmount));
+    }
+
+    #[test]
+    fn test_admin_can_approve_before_deadline() {
+        // Issue #1448: Admin approval before deadline should succeed
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 10_000_000));
+        let recipient = Address::generate(&env);
+
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer.clone(),
+                    recipient.clone(),
+                    4_000_000,
+                    String::from_str(&env, "Large grant"),
+                )
+            })
+            .unwrap();
+
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+
         env.ledger()
             .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
         env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
 
         // Admin approves before deadline
+        let admin = Address::generate(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let result = env.as_contract(&contract_id, || {
+            admin_approve_proposal(&env, admin_signers, id)
+        });
+        assert!(result.is_ok());
+
         let p = env
             .as_contract(&contract_id, || get_treasury_proposal(&env, id))
             .unwrap();
-        assert_eq!(p.status, TreasuryProposalStatus::PendingAdminApproval);
-
-        // Approve should succeed (admin signers passed via test setup)
-        // Note: In actual test, you'd need to mock admin signers properly
+        assert_eq!(p.status, TreasuryProposalStatus::Executed);
     }
 }

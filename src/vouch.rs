@@ -203,6 +203,11 @@ fn validate_vouch<'a>(
         return Err(ContractError::Blacklisted);
     }
 
+    // Issue #1429: lazily settle the borrower's overdue loans before accepting a
+    // new vouch, so stake is never committed against a borrower whose default
+    // history has not yet been flagged.
+    crate::lazy_default_detection::check_all_defaults_for_borrower(env, borrower)?;
+
     if cfg.whitelist_enabled {
         let is_whitelisted: bool = env
             .storage()
@@ -378,6 +383,10 @@ fn commit_vouch(
         &timestamp,
     );
 
+    // Issue #1422: (re)evaluate this voucher's fraud score on every new vouch so
+    // rapid vouch cycling / circular vouching is scored as it accrues.
+    let _ = crate::detection::update_fraud_score(env.clone(), voucher.clone());
+
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("create")),
         (voucher, borrower, stake, token),
@@ -548,6 +557,7 @@ pub fn increase_stake(
 
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("increase")),
@@ -614,10 +624,11 @@ pub fn decrease_stake(
         
         // Invalidate the weighted stake cache
         invalidate_weighted_stake_cache(&env, &borrower, &token);
+        crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
         // Issue #1285: extend TTL on the queued-withdrawal write path.
         bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
-        
+
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_rec.token, false, 0);
     }
 
@@ -641,6 +652,7 @@ pub fn decrease_stake(
 
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     // Issue #1285: extend TTL on decrease_stake write path.
     bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
@@ -703,10 +715,11 @@ pub fn withdraw_vouch(
         
         // Invalidate the weighted stake cache
         crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &vouch_token);
+        crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
         // Issue #1285: extend TTL on withdraw_vouch queued path.
         bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
-        
+
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_token, false, 0);
     }
 
@@ -721,6 +734,7 @@ pub fn withdraw_vouch(
 
     // Invalidate the weighted stake cache
     crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &vouch_token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     token_client.transfer(&env.current_contract_address(), &voucher, &vouch_stake);
 
@@ -1893,6 +1907,10 @@ pub fn compute_and_store_merkle_root(env: Env, borrower: Address) -> Result<soro
 
     if vouches.is_empty() {
         return Err(ContractError::NoVouchesForBorrower);
+    }
+
+    if vouches.len() > crate::merkle_tree::MAX_VOUCH_SET_SIZE as usize {
+        return Err(ContractError::InvalidAmount);
     }
 
     // Each leaf commits to a vouch's (voucher, stake, token, vouch_timestamp)

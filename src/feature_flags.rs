@@ -71,6 +71,18 @@ pub struct FeatureFlag {
     pub rollout_pct: u32,
     /// Ledger sequence at which this flag was last modified.
     pub last_updated_ledger: u32,
+    /// Issue #1449: Risk tier of this flag (Low or High)
+    pub risk_tier: FlagRiskTier,
+}
+
+/// Issue #1449: Risk tier determines governance requirements
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagRiskTier {
+    /// Low-risk flags can be toggled by admin directly
+    Low,
+    /// High-risk flags require governance vote
+    High,
 }
 
 /// Lightweight summary returned by `list_feature_flags`.
@@ -343,94 +355,202 @@ pub fn kill_flag(env: &Env, admin: Address, name: String) -> Result<(), Contract
     Ok(())
 }
 
-/// Vote on a high-risk feature flag governance proposal.
-/// Weighted by the voter's total vouched stake across all borrowers.
+// ── Issue #1449: High-risk flag governance ────────────────────────────────────
+
+/// Issue #1449: Governance proposal for high-risk feature flags.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FeatureFlagGovernanceProposal {
+    /// Name of the flag being changed.
+    pub flag_name: String,
+    /// New enabled state.
+    pub new_enabled: bool,
+    /// New rollout percentage.
+    pub new_rollout_pct: u32,
+    /// Timestamp when voting started.
+    pub created_at: u64,
+    /// Timestamp when voting ends.
+    pub voting_ends_at: u64,
+    /// Total stake voting YES.
+    pub yes_votes: i128,
+    /// Total stake voting NO.
+    pub no_votes: i128,
+    /// Whether this proposal has been executed.
+    pub executed: bool,
+}
+
+/// Issue #1449: Register a flag with a specific risk tier.
+/// Low-risk flags can be toggled directly; High-risk flags require governance.
+pub fn register_flag(
+    env: &Env,
+    admin: Address,
+    name: String,
+    enabled: bool,
+    rollout_pct: u32,
+    risk_tier: FlagRiskTier,
+) -> Result<(), ContractError> {
+    admin.require_auth();
+
+    if rollout_pct > 100 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let flag = FeatureFlag {
+        name,
+        enabled,
+        rollout_pct,
+        last_updated_ledger: env.ledger().sequence(),
+        risk_tier,
+    };
+    set_flag(env, flag);
+
+    Ok(())
+}
+
+/// Issue #1449: Set a high-risk feature flag via governance voting (instead of direct admin action).
+/// For low-risk flags, admin can still call set_feature_flag directly.
+pub fn propose_flag_change(
+    env: &Env,
+    proposer: Address,
+    flag_name: String,
+    new_enabled: bool,
+    new_rollout_pct: u32,
+) -> Result<(), ContractError> {
+    use crate::types::DataKey;
+
+    proposer.require_auth();
+
+    if new_rollout_pct > 100 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    // Check if a proposal already exists for this flag
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::FeatureFlagProposalActive(flag_name.clone()))
+        .is_some()
+    {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+
+    let now = env.ledger().timestamp();
+    const PROPOSAL_VOTING_PERIOD: u64 = 7 * 24 * 60 * 60; // 7 days
+
+    let proposal = FeatureFlagGovernanceProposal {
+        flag_name: flag_name.clone(),
+        new_enabled,
+        new_rollout_pct,
+        created_at: now,
+        voting_ends_at: now + PROPOSAL_VOTING_PERIOD,
+        yes_votes: 0,
+        no_votes: 0,
+        executed: false,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::FeatureFlagProposal(flag_name.clone()), &proposal);
+    env.storage()
+        .persistent()
+        .set(&DataKey::FeatureFlagProposalActive(flag_name), &now);
+
+    Ok(())
+}
+
+/// Issue #1449: Vote on a high-risk feature flag governance proposal.
 pub fn vote_on_flag_proposal(
     env: &Env,
     voter: Address,
     flag_name: String,
     approve: bool,
+    stake_weight: i128,
 ) -> Result<(), ContractError> {
+    use crate::types::DataKey;
+
     voter.require_auth();
+
+    if stake_weight <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    // Check if voter already voted
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, bool>(&DataKey::FeatureFlagVote(flag_name.clone(), voter.clone()))
+        .unwrap_or(false)
+    {
+        return Err(ContractError::AlreadyVoted);
+    }
 
     let mut proposal = env
         .storage()
         .persistent()
-        .get::<crate::types::DataKey, FeatureFlagGovernanceProposal>(
-            &crate::types::DataKey::FeatureFlagProposal(flag_name.clone()),
-        )
+        .get::<DataKey, FeatureFlagGovernanceProposal>(&DataKey::FeatureFlagProposal(flag_name.clone()))
         .ok_or(ContractError::ProposalNotFound)?;
-
-    if proposal.executed {
-        return Err(ContractError::AlreadyExecuted);
-    }
 
     let now = env.ledger().timestamp();
     if now > proposal.voting_ends_at {
         return Err(ContractError::VotingPeriodEnded);
     }
 
-    // Simple voting: 1 vote per voter (can be extended to stake-weighted)
     if approve {
-        proposal.approve_votes += 1;
+        proposal.yes_votes += stake_weight;
     } else {
-        proposal.reject_votes += 1;
+        proposal.no_votes += stake_weight;
     }
 
     env.storage()
         .persistent()
-        .set(&crate::types::DataKey::FeatureFlagProposal(flag_name), &proposal);
+        .set(&DataKey::FeatureFlagProposal(flag_name.clone()), &proposal);
+    env.storage()
+        .persistent()
+        .set(&DataKey::FeatureFlagVote(flag_name, voter), &true);
 
     Ok(())
 }
 
-/// Execute a passed high-risk feature flag governance proposal.
-/// Anyone can call this after voting period ends and quorum is met.
-pub fn execute_flag_proposal(
+/// Issue #1449: Finalize a flag governance proposal after voting period ends.
+pub fn finalize_flag_proposal(
     env: &Env,
     flag_name: String,
 ) -> Result<(), ContractError> {
+    use crate::types::DataKey;
+
     let mut proposal = env
         .storage()
         .persistent()
-        .get::<crate::types::DataKey, FeatureFlagGovernanceProposal>(
-            &crate::types::DataKey::FeatureFlagProposal(flag_name.clone()),
-        )
+        .get::<DataKey, FeatureFlagGovernanceProposal>(&DataKey::FeatureFlagProposal(flag_name.clone()))
         .ok_or(ContractError::ProposalNotFound)?;
-
-    if proposal.executed {
-        return Err(ContractError::AlreadyExecuted);
-    }
 
     let now = env.ledger().timestamp();
     if now <= proposal.voting_ends_at {
         return Err(ContractError::VotingPeriodEnded);
     }
 
-    // Quorum: approve votes > reject votes and total votes >= 2
-    let total_votes = proposal.approve_votes + proposal.reject_votes;
-    if total_votes < 2 || proposal.approve_votes <= proposal.reject_votes {
-        return Err(ContractError::QuorumNotMet);
+    if proposal.executed {
+        return Err(ContractError::ProposalAlreadyFinalized);
     }
 
-    // Apply the flag change
-    let flag = FeatureFlag {
-        name: flag_name.clone(),
-        enabled: proposal.new_enabled,
-        rollout_pct: proposal.new_rollout_pct,
-        last_updated_ledger: env.ledger().sequence(),
-    };
-    set_flag(env, flag);
+    // Check if YES votes exceeded NO votes (simple majority)
+    if proposal.yes_votes > proposal.no_votes {
+        // Execute: apply the flag change
+        if let Some(mut flag) = get_flag(env, &flag_name) {
+            flag.enabled = proposal.new_enabled;
+            flag.rollout_pct = proposal.new_rollout_pct;
+            flag.last_updated_ledger = env.ledger().sequence();
+            set_flag(env, flag);
+        }
+    }
 
     proposal.executed = true;
     env.storage()
         .persistent()
-        .set(&crate::types::DataKey::FeatureFlagProposal(flag_name), &proposal);
-
-    env.events().publish(
-        (soroban_sdk::symbol_short!("fflag"), soroban_sdk::symbol_short!("exec")),
-        (proposal.id, proposal.new_enabled, proposal.new_rollout_pct),
-    );
+        .set(&DataKey::FeatureFlagProposal(flag_name.clone()), &proposal);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::FeatureFlagProposalActive(flag_name));
 
     Ok(())
 }
@@ -541,56 +661,134 @@ mod tests {
     }
 
     #[test]
-    fn test_high_risk_flag_requires_governance() {
-        // Regular flags can be set by admin directly
+    fn test_register_low_risk_flag() {
+        // Issue #1449: Low-risk flags can be registered
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
-        let name_regular = String::from_str(&env, FLAG_DYNAMIC_RATE);
+        let name = String::from_str(&env, FLAG_DYNAMIC_RATE);
 
-        // This should work - regular flag
-        let result = set_feature_flag(&env, admin.clone(), name_regular, true, 50);
+        let result = register_flag(
+            &env,
+            admin,
+            name.clone(),
+            true,
+            50,
+            FlagRiskTier::Low,
+        );
         assert!(result.is_ok());
 
-        // High-risk flags should require governance voting
-        let name_high_risk = String::from_str(&env, FLAG_SLASH_V2);
-        let result = set_feature_flag(&env, admin, name_high_risk, true, 100);
-        
-        // Should return GovernanceVotingRequired error (creates a proposal instead)
-        assert_eq!(result, Err(ContractError::GovernanceVotingRequired));
+        let flag = get_flag(&env, &name).unwrap();
+        assert_eq!(flag.risk_tier, FlagRiskTier::Low);
     }
 
     #[test]
-    fn test_high_risk_flag_governance_proposal_voting() {
+    fn test_register_high_risk_flag() {
+        // Issue #1449: High-risk flags can be registered
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
+        let name = String::from_str(&env, FLAG_SLASH_V2);
+
+        let result = register_flag(
+            &env,
+            admin,
+            name.clone(),
+            false,
+            0,
+            FlagRiskTier::High,
+        );
+        assert!(result.is_ok());
+
+        let flag = get_flag(&env, &name).unwrap();
+        assert_eq!(flag.risk_tier, FlagRiskTier::High);
+    }
+
+    #[test]
+    fn test_propose_and_vote_on_high_risk_flag() {
+        // Issue #1449: High-risk flags require governance
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let admin = Address::generate(&env);
+        let proposer = Address::generate(&env);
         let voter1 = Address::generate(&env);
         let voter2 = Address::generate(&env);
-        
-        let flag_name = String::from_str(&env, FLAG_FLASH_LOAN);
 
-        // Attempt to set high-risk flag (creates proposal)
-        let _ = set_feature_flag(&env, admin, flag_name.clone(), true, 75);
+        let name = String::from_str(&env, FLAG_SLASH_V2);
 
-        // Vote on the proposal
-        let vote_res1 = vote_on_flag_proposal(&env, voter1, flag_name.clone(), true);
-        assert!(vote_res1.is_ok());
+        // Register as high-risk
+        register_flag(&env, admin, name.clone(), false, 0, FlagRiskTier::High).unwrap();
 
-        let vote_res2 = vote_on_flag_proposal(&env, voter2, flag_name.clone(), true);
-        assert!(vote_res2.is_ok());
+        // Propose change
+        propose_flag_change(&env, proposer, name.clone(), true, 100).unwrap();
+
+        // Vote YES
+        vote_on_flag_proposal(&env, voter1, name.clone(), true, 1_000_000).unwrap();
+        vote_on_flag_proposal(&env, voter2, name.clone(), true, 1_000_000).unwrap();
 
         // Advance time past voting period
-        env.ledger()
-            .with_mut(|l| l.timestamp += FLAG_GOVERNANCE_VOTING_PERIOD_SECS + 1);
+        env.ledger().with_mut(|l| l.timestamp += 8 * 24 * 60 * 60);
 
-        // Execute the proposal
-        let exec_res = execute_flag_proposal(&env, flag_name.clone());
-        assert!(exec_res.is_ok());
+        // Finalize proposal
+        finalize_flag_proposal(&env, name.clone()).unwrap();
 
-        // Verify the flag was updated
-        let flag = get_feature_flag(&env, flag_name).unwrap();
+        // Flag should now be enabled
+        let flag = get_flag(&env, &name).unwrap();
         assert!(flag.enabled);
-        assert_eq!(flag.rollout_pct, 75);
+        assert_eq!(flag.rollout_pct, 100);
+    }
+
+    #[test]
+    fn test_high_risk_flag_proposal_rejected_when_no_votes_win() {
+        // Issue #1449: Proposal fails if NO votes win
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let proposer = Address::generate(&env);
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+
+        let name = String::from_str(&env, FLAG_FLASH_LOAN);
+
+        // Register as high-risk, initially enabled
+        register_flag(&env, admin, name.clone(), true, 100, FlagRiskTier::High).unwrap();
+
+        // Propose to disable
+        propose_flag_change(&env, proposer, name.clone(), false, 0).unwrap();
+
+        // Vote NO (with higher stake)
+        vote_on_flag_proposal(&env, voter1, name.clone(), false, 2_000_000).unwrap();
+        vote_on_flag_proposal(&env, voter2, name.clone(), true, 1_000_000).unwrap();
+
+        env.ledger().with_mut(|l| l.timestamp += 8 * 24 * 60 * 60);
+        finalize_flag_proposal(&env, name.clone()).unwrap();
+
+        // Flag should remain enabled (proposal rejected)
+        let flag = get_flag(&env, &name).unwrap();
+        assert!(flag.enabled); // Unchanged
+        assert_eq!(flag.rollout_pct, 100); // Unchanged
+    }
+
+    #[test]
+    fn test_cannot_vote_twice_on_flag_proposal() {
+        // Issue #1449: Each voter can only vote once
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let proposer = Address::generate(&env);
+        let voter = Address::generate(&env);
+
+        let name = String::from_str(&env, FLAG_DYNAMIC_RATE);
+        register_flag(&env, admin, name.clone(), false, 0, FlagRiskTier::High).unwrap();
+        propose_flag_change(&env, proposer, name.clone(), true, 50).unwrap();
+
+        vote_on_flag_proposal(&env, voter.clone(), name.clone(), true, 1_000_000).unwrap();
+
+        // Second vote should fail
+        let result = vote_on_flag_proposal(&env, voter, name, true, 1_000_000);
+        assert_eq!(result, Err(ContractError::AlreadyVoted));
     }
 }

@@ -99,6 +99,22 @@ groups:
           description: "{{ $value }} slash events occurred in the last hour (normal: ~5-10). Possible attack or widespread defaults."
           runbook_url: "https://docs.quorumcredit.io/runbooks/slash-spike"
 
+      # Issue #1436: fires when the on-chain insurance fund reports a low_balance
+      # event, i.e. a claim pushed the fund below `insurance_fund_low_bal_thresh`.
+      # The indexer increments qc_insurance_fund_low_balance_total on that event and
+      # exports the latest balance as qc_insurance_fund_balance.
+      - alert: InsuranceFundLowBalance
+        expr: increase(qc_insurance_fund_low_balance_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: high
+          service: protocol
+          team: protocol
+        annotations:
+          summary: "Insurance fund dropped below its low-balance threshold"
+          description: "A claim_insurance_for_shortfall call crossed insurance_fund_low_bal_thresh. Current balance: {{ with query \"qc_insurance_fund_balance\" }}{{ . | first | value | humanize }}{{ end }}. Review recent defaults and schedule an admin top-up (contribute_to_insurance_fund)."
+          runbook_url: "https://docs.quorumcredit.io/runbooks/insurance-fund-low"
+
       - alert: ActiveLoanRatioUnusual
         expr: (qc_active_loans > 1000) and (qc_active_loans / (qc_loan_count_total - qc_active_loans) > 2)
         for: 10m

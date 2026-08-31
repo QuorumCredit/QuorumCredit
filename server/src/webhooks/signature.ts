@@ -448,3 +448,62 @@ export function buildWebhookRegistry(redisUrl: string | undefined): WebhookRegis
  * with a Redis URL to achieve multi-instance safety.
  */
 export const webhookRegistry = new LocalWebhookRegistry();
+
+// ── SSRF validation (issue #1486) ──────────────────────────────────────────────
+
+const ALLOWED_SCHEMES = new Set(["http", "https"]);
+const BLOCKED_HOSTNAMES = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "0.0.0.0",
+  "169.254.169.254",
+  "metadata.google.internal",
+  "metadata.internal",
+]);
+
+const PRIVATE_IPV4_RE = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/;
+const LINK_LOCAL_IPV4_RE = /^169\.254\./;
+
+export interface WebhookUrlValidationOptions {
+  /** When true, skip scheme/host validation. Intended for local/dev environments only. */
+  allowPrivateHosts?: boolean;
+}
+
+/**
+ * Validate a webhook registration URL to prevent SSRF attacks.
+ *
+ * Rejects:
+ * - non-http(s) schemes
+ * - loopback/link-local/private IPv4 ranges
+ * - cloud metadata endpoints
+ *
+ * Returns the normalized URL when valid, or throws with a descriptive message.
+ */
+export function validateWebhookUrl(rawUrl: string, options: WebhookUrlValidationOptions = {}): URL {
+  const { allowPrivateHosts = false } = options;
+
+  const url = new URL(rawUrl);
+
+  if (!ALLOWED_SCHEMES.has(url.protocol.replace(":", ""))) {
+    throw new Error(`unsupported scheme: ${url.protocol}`);
+  }
+
+  if (allowPrivateHosts) return url;
+
+  const hostname = url.hostname.toLowerCase();
+
+  if (BLOCKED_HOSTNAMES.has(hostname)) {
+    throw new Error(`blocked host: ${hostname}`);
+  }
+
+  if (PRIVATE_IPV4_RE.test(hostname) || LINK_LOCAL_IPV4_RE.test(hostname)) {
+    throw new Error(`private IP range not allowed: ${hostname}`);
+  }
+
+  if (hostname === "::1" || hostname.startsWith("0.") || hostname === "0") {
+    throw new Error(`loopback address not allowed: ${hostname}`);
+  }
+
+  return url;
+}

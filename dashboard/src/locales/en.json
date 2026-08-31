@@ -18,6 +18,11 @@
     "vouches": {
       "title": "No vouches yet",
       "subtitle": "You haven't backed any borrowers yet. Vouch for a borrower to start earning yield."
+    },
+    "giveUp": {
+      "title": "Unable to connect",
+      "subtitle": "The metrics server could not be reached after several attempts. Please check your connection or try again.",
+      "retry": "Try again"
     }
   },
   "reputation": {
@@ -66,6 +71,9 @@
     "kpiDefaultRate": "Default Rate",
     "kpiTotalBorrowers": "Total Borrowers",
     "kpiTotalVouchers": "Total Vouchers",
-    "kpiAvgLoanSize": "Avg Loan Size"
+    "kpiAvgLoanSize": "Avg Loan Size",
+    "loadingTitle": "Loading analytics…",
+    "errorTitle": "Failed to load analytics",
+    "retryButton": "Retry"
   }
 }

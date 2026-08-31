@@ -301,6 +301,76 @@ mod fuzz {
 
             prop_assert!(!verify_inclusion(&env, &root, &leaf, &tampered));
         }
+
+        /// A proof generated for leaf A against its original leaf set must
+        /// not verify against the root of a *different* leaf set that also
+        /// contains A plus extra, unrelated leaves — a proof commits to a
+        /// specific set, not merely to A's membership in some superset.
+        #[test]
+        fn prop_proof_for_subset_never_verifies_against_superset_root(
+            base_fields in prop::collection::vec(vouch_fields_strategy(), 1..=15),
+            extra_fields in prop::collection::vec(vouch_fields_strategy(), 1..=15),
+        ) {
+            let env = Env::default();
+            let token = Address::generate(&env);
+
+            let mut base_leaves = Vec::new(&env);
+            for (stake, ts) in base_fields.iter() {
+                let voucher = Address::generate(&env);
+                base_leaves.push_back(hash_leaf(&env, &voucher, *stake, &token, *ts));
+            }
+
+            let leaf_a = base_leaves.get(0).unwrap();
+            let base_root = build_merkle_root(&env, base_leaves.clone());
+            let proof_for_base = generate_proof(&env, base_leaves.clone(), &leaf_a).unwrap();
+            prop_assert!(verify_inclusion(&env, &base_root, &leaf_a, &proof_for_base));
+
+            // Superset: the same leaves, plus extra unrelated ones.
+            let mut superset_leaves = base_leaves.clone();
+            for (stake, ts) in extra_fields.iter() {
+                let voucher = Address::generate(&env);
+                superset_leaves.push_back(hash_leaf(&env, &voucher, *stake, &token, *ts));
+            }
+            let superset_root = build_merkle_root(&env, superset_leaves);
+
+            prop_assume!(superset_root != base_root);
+            prop_assert!(!verify_inclusion(&env, &superset_root, &leaf_a, &proof_for_base));
+        }
+    }
+
+    /// Same inclusion property as `prop_inclusion_holds_for_members_and_fails_for_non_members`,
+    /// but at large tree sizes so the odd-node-promotion path is exercised
+    /// across many tree levels, not only near the root.
+    #[cfg(test)]
+    mod large_trees {
+        use super::*;
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config {
+                cases: 5,
+                max_shrink_iters: 8,
+                ..Default::default()
+            })]
+
+            #[test]
+            fn prop_inclusion_holds_for_large_leaf_sets(size in 1000usize..=1200usize) {
+                let env = Env::default();
+                let token = Address::generate(&env);
+
+                let mut leaves = Vec::new(&env);
+                for i in 0..size {
+                    let voucher = Address::generate(&env);
+                    leaves.push_back(hash_leaf(&env, &voucher, 1_000_000 + i as i128, &token, 1_700_000_000 + i as u64));
+                }
+
+                let root = build_merkle_root(&env, leaves.clone());
+
+                for leaf in leaves.iter() {
+                    let proof = generate_proof(&env, leaves.clone(), &leaf).expect("member must have a proof");
+                    prop_assert!(verify_inclusion(&env, &root, &leaf, &proof));
+                }
+            }
+        }
     }
 }
 
@@ -373,5 +443,25 @@ mod gas_benchmarks {
                 "verify_inclusion at n={size} used {cpu} instructions — expected a small, roughly-constant cost"
             );
         }
+    }
+
+    #[test]
+    fn bench_build_merkle_root_at_max_vouch_set_size() {
+        let env = Env::default();
+        let max_size = crate::merkle_tree::MAX_VOUCH_SET_SIZE;
+
+        let vouches = make_vouches(&env, max_size);
+        let leaves = leaves_of(&env, &vouches);
+
+        let (cpu, mem) = measure(&env, || {
+            let _ = build_merkle_root(&env, leaves.clone());
+        });
+
+        report("build_root_at_max", max_size, cpu, mem);
+        assert!(
+            cpu < MAX_INSTRUCTIONS_PER_INVOCATION / 10,
+            "root computation at n={max_size} used {cpu} CPU instructions, over the {}-instruction ceiling",
+            MAX_INSTRUCTIONS_PER_INVOCATION / 10
+        );
     }
 }
