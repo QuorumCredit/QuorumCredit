@@ -80,6 +80,8 @@ pub mod zk_snarks;
 pub mod collateral_pool;
 pub mod syndication;
 pub mod vouch_syndication;
+pub mod loan_tokenization;
+pub mod pool_composability;
 pub mod vouch_milestones;
 pub mod recurring_payment;
 pub mod loan_priority;
@@ -137,6 +139,12 @@ mod rbac_enforcement_test;
 mod contingent_loan_test;
 #[cfg(test)]
 mod loan_tranching_test;
+#[cfg(test)]
+mod syndication_test;
+#[cfg(test)]
+mod loan_tokenization_test;
+#[cfg(test)]
+mod pool_composability_test;
 #[cfg(test)]
 mod storage_redesign_test;
 #[cfg(test)]

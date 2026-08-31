@@ -15,7 +15,7 @@
 //! to XLM. When accepting user input in XLM, multiply by `10_000_000`
 //! before passing to contract functions.
 
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, String, Symbol, Vec};
 
 use crate::interest_rate_options::OptionType;
 use crate::reputation_nft::BadgeType;

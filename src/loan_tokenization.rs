@@ -1,10 +1,21 @@
 /// Loan Tokenization Module (Issue #1185)
 /// Enables creation of transferable tokens representing rights to interest payment streams from loans.
 /// This allows for secondary market trading of loan interests and yield farming opportunities.
+///
+/// ## Order matching rule (Issue #1468)
+/// The secondary market book returned by [`get_active_market_orders`] is ordered by
+/// **price-time priority**: orders with a better (lower) `price_per_token` sort first,
+/// and among orders at the same price, the one submitted earliest (`created_at`, with
+/// `order_id` as a final deterministic tie-breaker for orders created in the same
+/// ledger) sorts first. This is the standard fairness rule for order books — it
+/// guarantees that a later order can never be filled ahead of an earlier, equally or
+/// better priced one.
+
+extern crate alloc;
 
 use crate::errors::ContractError;
-use crate::types::{DataKey, LoanRecord};
-use soroban_sdk::{contracttype, symbol_short, token, Address, Env, String, Symbol, Vec};
+use crate::types::DataKey;
+use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec};
 
 /// Represents a loan token that can be traded in secondary markets
 #[derive(Clone, Debug)]
@@ -90,11 +101,12 @@ const NEXT_ORDER_ID_KEY: Symbol = symbol_short!("nxt_ord");
 pub fn tokenize_loan_interest(
     env: &Env,
     loan_id: u64,
+    borrower: Address,
     initial_supply: i128,
     token_contract: Address,
 ) -> Result<LoanToken, ContractError> {
     if initial_supply <= 0 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let now = env.ledger().timestamp();
@@ -109,7 +121,7 @@ pub fn tokenize_loan_interest(
     let loan_token = LoanToken {
         token_id: next_id,
         loan_id,
-        borrower: Address::from_contract_id(&env, &env.current_contract_address()),
+        borrower: borrower.clone(),
         total_supply: initial_supply,
         token_contract: token_contract.clone(),
         created_at: now,
@@ -142,7 +154,7 @@ pub fn distribute_interest_to_holders(
     interest_amount: i128,
 ) -> Result<InterestDistribution, ContractError> {
     if interest_amount <= 0 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let now = env.ledger().timestamp();
@@ -151,12 +163,12 @@ pub fn distribute_interest_to_holders(
     let holders: Vec<Address> = env
         .storage()
         .persistent()
-        .get(&DataKey::Custom(Symbol::new(env, &format!("tok_hldr_{}", token_id))))
+        .get(&DataKey::Custom(Symbol::new(env, &alloc::format!("tok_hldr_{}", token_id))))
         .unwrap_or(Vec::new(env));
 
     let holder_count = holders.len() as u32;
     if holder_count == 0 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let interest_per_token = interest_amount / (holder_count as i128);
@@ -204,7 +216,7 @@ pub fn record_token_price(
     volume: i128,
 ) -> Result<TokenPriceRecord, ContractError> {
     if price < 0 || volume < 0 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     let now = env.ledger().timestamp();
@@ -239,7 +251,7 @@ pub fn create_market_order(
     amount: i128,
 ) -> Result<MarketOrder, ContractError> {
     if price_per_token <= 0 || amount <= 0 {
-        return Err(ContractError::InvalidInput);
+        return Err(ContractError::InvalidAmount);
     }
 
     seller.require_auth();
@@ -285,8 +297,10 @@ pub fn create_market_order(
     Ok(order)
 }
 
-/// Cancel a market order
-pub fn cancel_market_order(env: &Env, order_id: u64) -> Result<(), ContractError> {
+/// Cancel a market order. Only the order's original seller may cancel it.
+pub fn cancel_market_order(env: &Env, caller: &Address, order_id: u64) -> Result<(), ContractError> {
+    caller.require_auth();
+
     let mut orders: Vec<MarketOrder> = env
         .storage()
         .persistent()
@@ -295,8 +309,12 @@ pub fn cancel_market_order(env: &Env, order_id: u64) -> Result<(), ContractError
 
     let mut found = false;
     for i in 0..orders.len() {
-        if orders.get(i).unwrap().order_id == order_id {
-            let mut order = orders.get(i).unwrap();
+        let order = orders.get(i).unwrap();
+        if order.order_id == order_id {
+            if &order.seller != caller {
+                return Err(ContractError::UnauthorizedCaller);
+            }
+            let mut order = order;
             order.is_active = false;
             orders.set(i, order);
             found = true;
@@ -315,7 +333,9 @@ pub fn cancel_market_order(env: &Env, order_id: u64) -> Result<(), ContractError
     Ok(())
 }
 
-/// Get all active market orders for a token
+/// Get all active market orders for a token, sorted by price-time priority
+/// (best price first; ties broken by earliest submission). See the module
+/// documentation above for the matching rule this enforces.
 pub fn get_active_market_orders(env: &Env, token_id: u64) -> Vec<MarketOrder> {
     let orders: Vec<MarketOrder> = env
         .storage()
@@ -330,7 +350,28 @@ pub fn get_active_market_orders(env: &Env, token_id: u64) -> Vec<MarketOrder> {
         }
     }
 
-    active_orders
+    price_time_sorted(env, active_orders)
+}
+
+/// Sort orders by price-time priority: ascending price, then ascending
+/// creation time, then ascending order_id as a final tie-breaker.
+fn price_time_sorted(env: &Env, orders: Vec<MarketOrder>) -> Vec<MarketOrder> {
+    let mut buf: alloc::vec::Vec<MarketOrder> = alloc::vec::Vec::new();
+    for order in orders.iter() {
+        buf.push(order);
+    }
+    buf.sort_by(|a, b| {
+        a.price_per_token
+            .cmp(&b.price_per_token)
+            .then(a.created_at.cmp(&b.created_at))
+            .then(a.order_id.cmp(&b.order_id))
+    });
+
+    let mut sorted = Vec::new(env);
+    for order in buf {
+        sorted.push_back(order);
+    }
+    sorted
 }
 
 /// Get price history for a token
@@ -342,8 +383,8 @@ pub fn get_token_price_history(env: &Env, token_id: u64, limit: u32) -> Vec<Toke
         .unwrap_or(Vec::new(env));
 
     let mut token_history = Vec::new(env);
-    let start_idx = if history.len() > limit as usize {
-        history.len() - (limit as usize)
+    let start_idx = if history.len() > limit {
+        history.len() - limit
     } else {
         0
     };
@@ -374,7 +415,7 @@ pub fn calculate_average_price(env: &Env, token_id: u64, periods: u32) -> Result
 
 /// Register a token holder for interest distribution
 pub fn register_token_holder(env: &Env, token_id: u64, holder: Address) -> Result<(), ContractError> {
-    let holder_key = Symbol::new(env, &format!("tok_hldr_{}", token_id));
+    let holder_key = Symbol::new(env, &alloc::format!("tok_hldr_{}", token_id));
 
     let mut holders: Vec<Address> = env
         .storage()
@@ -383,7 +424,7 @@ pub fn register_token_holder(env: &Env, token_id: u64, holder: Address) -> Resul
         .unwrap_or(Vec::new(env));
 
     // Check if already registered
-    if holders.iter().any(|h| h == &holder) {
+    if holders.iter().any(|h| h == holder) {
         return Ok(());
     }
 
@@ -412,16 +453,20 @@ pub fn get_loan_token(env: &Env, token_id: u64) -> Result<LoanToken, ContractErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Address as _;
 
     #[test]
     fn test_loan_token_creation() {
         // Basic structure verification
+        let env = Env::default();
+        let borrower = Address::generate(&env);
+        let token_contract = Address::generate(&env);
         let token = LoanToken {
             token_id: 1,
             loan_id: 100,
-            borrower: Address::from_contract_id(&env, &env.current_contract_address()),
+            borrower,
             total_supply: 1_000_000,
-            token_contract: Address::from_contract_id(&env, &env.current_contract_address()),
+            token_contract,
             created_at: 0,
             interest_distributed: 0,
         };
