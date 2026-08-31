@@ -54,6 +54,30 @@ Covers: exploit in progress, panicking contract calls, invariant violations, stu
 - Route through governance/timelock unless the severity justifies an emergency multisig action (requires 2 of the documented signers, logged in `#incidents`).
 - Re-run the full invariant test suite (`src/invariants.rs`, `src/property_based_invariants_test.rs`) against the patched contract before redeploying.
 
+#### Compromised Admin Key
+
+1. **Assess exposure**: determine which admin-gated actions the compromised key could take
+   unilaterally (i.e. does it bring any single-signer set over `admin_threshold` on its own?).
+   Check `Config.admin_threshold` via `get_config()` and count remaining uncompromised keys.
+2. **If there is immediate risk of unilateral action**: gather the remaining uncompromised admin
+   keyholders and initiate the **governance-vote removal path** as quickly as possible:
+   `propose_admin_removal` → `vote_admin_removal` → `finalize_admin_removal`. This path does
+   not require the compromised key's cooperation or signature.
+   See [governance-manual.md — Admin Set Changes Decision Tree](./governance-manual.md#admin-set-changes--decision-tree).
+3. **If the key is rotated (lost or migrated, not stolen)**: use direct `rotate_admin` if you
+   can still assemble `admin_threshold` from uncompromised keys without the lost one. Use the
+   governance-vote removal path only when you cannot assemble the threshold without the
+   suspect key.
+4. **Cancel in-flight proposals**: before removing the compromised key, check for any pending
+   governance proposals or admin-action queue entries that the compromised key has already
+   signed. Cancel those proposals immediately to prevent them executing in a future window.
+5. **Freeze off-chain surfaces** if needed: disable mutating API endpoints (`/vouch`, loan
+   issuance) while the removal is in progress to limit blast radius.
+6. **Post-removal**: after the key is removed from `Config.admins`, document the incident in
+   the Historical Governance Decisions Log in `governance-manual.md`, audit all admin actions
+   taken in the 48 hours prior to detection, and rotate any other secrets co-located with the
+   compromised key (API keys, deployment credentials, etc.).
+
 ---
 
 ## 2. API / Server Outages

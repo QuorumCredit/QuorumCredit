@@ -23,6 +23,7 @@ import {
   downloadFile,
   metricsToCSV,
 } from "./analytics";
+import EmptyState from "./EmptyState";
 import { useMetricsSocket } from "./useMetricsSocket";
 import { DashboardErrorBoundary } from "./ErrorBoundary";
 import EmptyState from "./EmptyState";
@@ -108,7 +109,9 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
     }
   }, [accessibility]);
 
-  const { latest, connected } = useMetricsSocket(wsUrl);
+  const [retryKey, setRetryKey] = useState(0);
+
+  const { latest, connected, gaveUp } = useMetricsSocket(wsUrl, undefined, undefined, undefined, retryKey);
 
   // Apply incoming WS snapshot
   useEffect(() => {
@@ -236,21 +239,103 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
         </span>
       </div>
 
-      {/* ------------------------------------------------------------------ */}
-      {/* Initial loading state — shown only before the first snapshot arrives */}
-      {/* ------------------------------------------------------------------ */}
-      {initialLoading && !initialError && (
-        <div
-          data-testid="analytics-initial-loading"
-          aria-live="polite"
-          aria-busy="true"
-        >
-          <EmptyState
-            variant="loans"
-            loading={true}
-            highContrast={accessibility.highContrast}
-          />
+      {/* Give-up state — shown when the WebSocket exhausts all reconnect attempts */}
+      {gaveUp && (
+        <EmptyState
+          variant="give-up"
+          onRetry={() => setRetryKey((k) => k + 1)}
+        />
+      )}
+
+      {/* Alerts */}
+      {!gaveUp && alerts.length > 0 && (
+        <div aria-label="Alerts" style={{ marginBottom: 16 }}>
+          {alerts.map((a) => (
+            <div
+              key={a.message}
+              role="alert"
+              style={{
+                background: "#fef3c7",
+                border: "1px solid #f59e0b",
+                borderRadius: 8,
+                padding: "10px 14px",
+                marginBottom: 8,
+                color: "#92400e",
+                fontSize: 14,
+              }}
+            >
+              ⚠ {a.message}
+            </div>
+          ))}
         </div>
+      )}
+
+      {/* Filters */}
+      {!gaveUp && (
+      <div
+        aria-label="Filters"
+        style={{
+          display: "flex",
+          gap: 12,
+          marginBottom: 16,
+          flexWrap: "wrap",
+          alignItems: "center",
+        }}
+      >
+        <label style={{ fontSize: 13 }}>
+          {t("analytics.filtersFrom")}{" "}
+          <input
+            type="date"
+            onChange={(e) =>
+              setFilter((f) => ({
+                ...f,
+                from: e.target.value
+                  ? Math.floor(new Date(e.target.value).getTime() / 1000)
+                  : undefined,
+              }))
+            }
+          />
+        </label>
+        <label style={{ fontSize: 13 }}>
+          {t("analytics.filtersTo")}{" "}
+          <input
+            type="date"
+            onChange={(e) =>
+              setFilter((f) => ({
+                ...f,
+                to: e.target.value
+                  ? Math.floor(new Date(e.target.value).getTime() / 1000)
+                  : undefined,
+              }))
+            }
+          />
+        </label>
+        <label style={{ fontSize: 13 }}>
+          {t("analytics.filterLoanSize")}{" "}
+          <select
+            onChange={(e) =>
+              setFilter((f) => ({
+                ...f,
+                loan_size: (e.target.value as MetricsFilter["loan_size"]) || undefined,
+              }))
+            }
+          >
+            <option value="">{t("analytics.filterAll")}</option>
+            <option value="small">{t("analytics.filterSmall")}</option>
+            <option value="medium">{t("analytics.filterMedium")}</option>
+            <option value="large">{t("analytics.filterLarge")}</option>
+          </select>
+        </label>
+        <button onClick={fetchMetrics} style={{ fontSize: 13, padding: "4px 12px" }}>
+          {loading ? t("analytics.fetchLoading") : t("analytics.fetchButton")}
+        </button>
+      </div>
+      )}
+
+      {!gaveUp && error && (
+        <p style={{ color: "#ef4444", fontSize: 14 }}>
+          {t("analytics.errorPrefix")} {error}
+        </p>
       )}
 
       {/* ------------------------------------------------------------------ */}
@@ -579,6 +664,14 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({
             <button onClick={handleExportJSON}>{t("analytics.exportJSON")}</button>
           </div>
         </>
+      )}
+
+      {/* Export */}
+      {!gaveUp && (
+      <div style={{ display: "flex", gap: 8 }}>
+        <button onClick={handleExportCSV}>{t("analytics.exportCSV")}</button>
+        <button onClick={handleExportJSON}>{t("analytics.exportJSON")}</button>
+      </div>
       )}
     </div>
   );

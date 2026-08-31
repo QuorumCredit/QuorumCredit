@@ -26,6 +26,13 @@ pub enum AttrKey {
     FactorAggregate(String),
     /// monotonically increasing counter of loans that have recorded factors
     FactorLoanCount,
+    /// Registry of every distinct sector/region string observed so far
+    /// (#1393) — `update_factor_aggregates` keys sector/region aggregates by
+    /// the loan's actual sector/region value (e.g. "agriculture"), never by
+    /// the literal strings "sector"/"region", so
+    /// `generate_factor_performance_report` needs this registry to know
+    /// which keys actually exist rather than guessing at fixed literals.
+    SectorRegionKeys,
 }
 
 /// Snapshot of the drivers believed to influence a loan's outcome, captured
@@ -107,8 +114,10 @@ pub struct FactorPerformanceReport {
 
 const FACTOR_CREDIT_SCORE: &str = "credit_score";
 const FACTOR_VOUCH_QUALITY: &str = "vouch_quality";
-const FACTOR_SECTOR: &str = "sector";
-const FACTOR_REGION: &str = "region";
+// #1393: FACTOR_SECTOR ("sector") / FACTOR_REGION ("region") used to exist here
+// as fixed lookup keys, but no loan's sector/region is ever literally named
+// "sector"/"region" — aggregates are keyed by the real value (e.g.
+// "agriculture") and discovered via AttrKey::SectorRegionKeys instead.
 
 /// Record the performance drivers for a loan. Should be called once, near
 /// disbursement time, so the recorded factors reflect origination
@@ -221,6 +230,12 @@ pub fn analyze_loan_performance_attribution(env: Env, loan_id: u64) -> Attributi
             weight_bps: 1000,
         });
 
+        // #1393: register the real sector/region keys so
+        // generate_factor_performance_report can find their aggregates later —
+        // see the AttrKey::SectorRegionKeys doc comment.
+        register_sector_region_key(&env, &f.sector);
+        register_sector_region_key(&env, &f.region);
+
         update_factor_aggregates(&env, &contributions, &outcome);
     }
 
@@ -237,6 +252,23 @@ pub fn analyze_loan_performance_attribution(env: Env, loan_id: u64) -> Attributi
         .set(&AttrKey::Attribution(loan_id), &attribution);
 
     attribution
+}
+
+/// Adds `key` to the sector/region key registry if not already present
+/// (#1393). Small linear scan is fine here — the number of distinct
+/// sectors/regions a lending product actually sees is tiny (tens, not
+/// thousands), nowhere near where an O(n) contains-check would matter.
+fn register_sector_region_key(env: &Env, key: &String) {
+    let mut keys: Vec<String> = env
+        .storage()
+        .persistent()
+        .get(&AttrKey::SectorRegionKeys)
+        .unwrap_or(Vec::new(env));
+
+    if !keys.iter().any(|k| &k == key) {
+        keys.push_back(key.clone());
+        env.storage().persistent().set(&AttrKey::SectorRegionKeys, &keys);
+    }
 }
 
 fn update_factor_aggregates(env: &Env, contributions: &Vec<FactorContribution>, outcome: &LoanOutcome) {
@@ -271,18 +303,31 @@ fn update_factor_aggregates(env: &Env, contributions: &Vec<FactorContribution>, 
 /// across every loan that has been analyzed via
 /// `analyze_loan_performance_attribution`.
 pub fn generate_factor_performance_report(env: Env) -> FactorPerformanceReport {
-    let names = [
-        FACTOR_CREDIT_SCORE,
-        FACTOR_VOUCH_QUALITY,
-        FACTOR_SECTOR,
-        FACTOR_REGION,
-    ];
-
     let mut factors: Vec<FactorAggregate> = Vec::new(&env);
     let mut total_loans_analyzed: u32 = 0;
 
-    for name in names.iter() {
+    // The two quantitative factors are always recorded under these fixed
+    // literal keys (see analyze_loan_performance_attribution).
+    for name in [FACTOR_CREDIT_SCORE, FACTOR_VOUCH_QUALITY].iter() {
         let key = AttrKey::FactorAggregate(String::from_str(&env, name));
+        if let Some(agg) = env.storage().persistent().get::<AttrKey, FactorAggregate>(&key) {
+            total_loans_analyzed = total_loans_analyzed.max(agg.loans_observed);
+            factors.push_back(agg);
+        }
+    }
+
+    // #1393: sector/region aggregates are keyed by the loan's *actual*
+    // sector/region string (e.g. "agriculture"), never by the literals
+    // "sector"/"region" — iterate the real observed keys from the registry
+    // instead of guessing at fixed names no loan will ever actually have.
+    let sector_region_keys: Vec<String> = env
+        .storage()
+        .persistent()
+        .get(&AttrKey::SectorRegionKeys)
+        .unwrap_or(Vec::new(&env));
+
+    for name in sector_region_keys.iter() {
+        let key = AttrKey::FactorAggregate(name.clone());
         if let Some(agg) = env.storage().persistent().get::<AttrKey, FactorAggregate>(&key) {
             total_loans_analyzed = total_loans_analyzed.max(agg.loans_observed);
             factors.push_back(agg);

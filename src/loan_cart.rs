@@ -402,7 +402,13 @@ pub fn submit_batch_loan_request(
         });
     }
 
-    stats.carts_submitted += 1;
+    // Only count as a submission if the cart actually had items to process.
+    // A zero-item cart (no staged loans) skips this increment so it does not
+    // skew funnel analytics — an empty submit is effectively a no-op, not a
+    // real submission event.
+    if cart_size > 0 {
+        stats.carts_submitted += 1;
+    }
     save_stats(&env, &stats);
 
     if success_count < cart_size {

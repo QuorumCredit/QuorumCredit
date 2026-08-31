@@ -228,6 +228,20 @@ pub fn route_default_proceeds(
         remaining -= paid;
         distributed += paid;
 
+        if paid > 0 {
+            let loan = helpers::get_loan_by_id(&env, &e.loan_id)?;
+            let token_client = token::Client::new(&env, &loan.token_address);
+            token_client.transfer(&env.current_contract_address(), &e.borrower, &paid);
+
+            // Per-entry payout event, distinct from the aggregate "waterfl" event
+            // below — lets a caller watch exactly which loans/addresses were paid
+            // and in which token, rather than only the run-wide totals.
+            env.events().publish(
+                (symbol_short!("prio"), symbol_short!("payout")),
+                (e.loan_id, e.borrower.clone(), paid, loan.token_address.clone()),
+            );
+        }
+
         entries.push_back(WaterfallDistributionEntry {
             loan_id: e.loan_id,
             borrower: e.borrower.clone(),
@@ -260,6 +274,10 @@ pub fn route_default_proceeds(
     env.storage()
         .persistent()
         .set(&PriorityDataKey::WaterfallRun(run_id), &run);
+
+    // #1392: clear the queue now that this batch has actually been paid out —
+    // see the double-payout guard note in the doc comment above.
+    env.storage().persistent().remove(&PriorityDataKey::Queue);
 
     env.events().publish(
         (symbol_short!("prio"), symbol_short!("waterfl")),

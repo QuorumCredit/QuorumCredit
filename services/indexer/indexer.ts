@@ -65,15 +65,77 @@ class EventIndexer extends EventEmitter {
 
   constructor(options: { allowRebuild?: boolean } = {}) {
     super();
-    
+
     this.rpcUrl = process.env.RPC_URL || 'https://soroban-testnet.stellar.org:443';
     this.contractId = process.env.CONTRACT_ID || '';
     this.networkPassphrase = process.env.NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015';
     this.dbPath = path.join(__dirname, 'events.db.json');
     this.cursorPath = path.join(__dirname, 'cursor.json');
     this.allowRebuild = options.allowRebuild || false;
-    
+
     this.loadDatabase();
+  }
+
+  /**
+   * Export a trace/span event to OpenTelemetry via OTLP endpoint.
+   * Handles the mapping from TraceSpan to OtlpSpanExport format.
+   */
+  private async exportTraceSpanToOtlp(event: any): Promise<void> {
+    const otlpEndpoint = process.env.OTLP_COLLECTOR_ENDPOINT;
+    if (!otlpEndpoint) {
+      // OTLP export is optional; if no endpoint is configured, skip
+      return;
+    }
+
+    try {
+      const traceSpan = event.data;
+      const startTimeNano = new Date(event.timestamp).getTime() * 1_000_000;
+      const endTimeNano = startTimeNano + 1_000_000; // 1ms placeholder
+
+      const otlpSpan = {
+        trace_id: traceSpan.trace_id,
+        span_id: traceSpan.span_id,
+        parent_span_id: traceSpan.parent_span_id || null,
+        name: traceSpan.operation,
+        start_time_unix_nano: startTimeNano,
+        end_time_unix_nano: endTimeNano,
+        status_code: traceSpan.status === 'ok' ? 2 : 1,
+        attributes: {
+          sampled: traceSpan.sampled,
+          ledger: traceSpan.ledger,
+        },
+      };
+
+      const response = await fetch(`${otlpEndpoint}/v1/traces`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          resourceSpans: [
+            {
+              resource: {
+                attributes: [
+                  { key: 'service.name', value: { stringValue: 'quorum-credit' } },
+                  { key: 'service.version', value: { stringValue: '1.0' } },
+                ],
+              },
+              scopeSpans: [
+                {
+                  spans: [otlpSpan],
+                },
+              ],
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        console.error(`OTLP export failed with status ${response.status}: ${await response.text()}`);
+      }
+    } catch (error) {
+      console.error('Error exporting trace span to OTLP:', error);
+    }
   }
 
   /**
@@ -256,16 +318,23 @@ class EventIndexer extends EventEmitter {
             if (deduplicatedEvents.length > 0) {
               // Add to database
               this.database.push(...deduplicatedEvents);
-              
+
               // Update deduplication set
               deduplicatedEvents.forEach(event => this.eventSet.add(event.id));
-              
+
+              // Export trace/span events to OTLP (Issue #1479)
+              for (const event of deduplicatedEvents) {
+                if (event.type === 'trace/span') {
+                  await this.exportTraceSpanToOtlp(event);
+                }
+              }
+
               // Save database and cursor atomically
               this.saveDatabase();
               this.saveCursor(startLedger);
-              
+
               console.log(`Indexed ${deduplicatedEvents.length} new events from ledger ${startLedger} (${newEvents.length - deduplicatedEvents.length} duplicates skipped)`);
-              
+
               // Emit event for real-time processing
               this.emit('newEvents', deduplicatedEvents);
             }
@@ -321,56 +390,70 @@ class EventIndexer extends EventEmitter {
    */
   private parseEvent(event: any): { type: string; participant: string; data: any } {
     const topics = event.topics.map((topic: any) => scValToNative(topic));
-    
+
     // QuorumCredit events follow pattern: [event_type, participant_address, ...data]
+    // Special case: trace/span events have different structure
     let type = 'unknown';
     let participant = '';
     let data = {};
-    
-    if (topics.length >= 2) {
+
+    if (topics.length >= 1) {
       type = topics[0] as string;
-      participant = topics[1] as string;
-      
-      // Parse additional data based on event type
-      switch (type) {
-        case 'vouch/create':
-          data = {
-            voucher: participant,
-            borrower: topics[2],
-            stake: topics[3],
-            token: topics[4],
-          };
-          break;
-          
-        case 'loan/request':
-          data = {
-            borrower: participant,
-            amount: topics[2],
-            threshold: topics[3],
-            loanPurpose: topics[4],
-            token: topics[5],
-          };
-          break;
-          
-        case 'loan/repay':
-          data = {
-            borrower: participant,
-            payment: topics[2],
-          };
-          break;
-          
-        case 'loan/slash':
-          data = {
-            borrower: participant,
-            slashedAmount: topics[2],
-          };
-          break;
-          
-        default:
-          data = topics.slice(2);
+
+      // Handle trace/span events (Issue #1479)
+      if (type === 'trace' && topics.length >= 2 && topics[1] === 'span') {
+        type = 'trace/span';
+        // The span data is in event.data
+        const eventData = scValToNative(event.eventData);
+        data = eventData;
+        participant = eventData.trace_id || '';
+        return { type, participant, data };
+      }
+
+      if (topics.length >= 2) {
+        participant = topics[1] as string;
+
+        // Parse additional data based on event type
+        switch (type) {
+          case 'vouch/create':
+            data = {
+              voucher: participant,
+              borrower: topics[2],
+              stake: topics[3],
+              token: topics[4],
+            };
+            break;
+
+          case 'loan/request':
+            data = {
+              borrower: participant,
+              amount: topics[2],
+              threshold: topics[3],
+              loanPurpose: topics[4],
+              token: topics[5],
+            };
+            break;
+
+          case 'loan/repay':
+            data = {
+              borrower: participant,
+              payment: topics[2],
+            };
+            break;
+
+          case 'loan/slash':
+            data = {
+              borrower: participant,
+              slashedAmount: topics[2],
+            };
+            break;
+
+          default:
+            data = topics.slice(2);
+        }
       }
     }
-    
+
     return { type, participant, data };
   }
 

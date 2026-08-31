@@ -1,4 +1,3 @@
-/*
 /// Issue #1178: Differential Testing Implementation
 ///
 /// This module provides infrastructure for differential testing - comparing
@@ -12,7 +11,6 @@
 /// - Using fuzzing to generate diverse test cases
 /// - Documenting any divergences discovered
 
-// Disabled: tests use incorrect Soroban API
 #[cfg(test)]
 mod reference_model {
     //! Simple reference implementation for differential testing.
@@ -235,6 +233,134 @@ mod tests {
         assert!(harness.divergences.is_empty());
     }
 
+    /// Simple deterministic LCG used only to generate the randomized inputs
+    /// below; it has no bearing on the contract's own randomness.
+    fn next_case(state: &mut u64) -> u64 {
+        *state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *state >> 32
+    }
+
+    #[test]
+    fn test_differential_randomized_vouch_creation() {
+        let env = soroban_sdk::Env::default();
+        let mut harness = DifferentialTestHarness::new();
+        let mut state: u64 = 0x2545F4914F6CDD1D;
+        const N: u32 = 200;
+
+        for i in 0..N {
+            let raw = next_case(&mut state) as i128;
+            let stake = raw - (1i128 << 31); // spans negative, zero, and positive stakes
+            let self_vouch = i % 5 == 0;
+            let voucher = soroban_sdk::Address::generate(&env);
+            let borrower = if self_vouch {
+                voucher.clone()
+            } else {
+                soroban_sdk::Address::generate(&env)
+            };
+
+            let result = ref_vouch(&voucher, &borrower, stake, i as u64);
+            let expected_ok = stake > 0 && !self_vouch;
+
+            if result.is_ok() != expected_ok {
+                harness.test_cases_failed += 1;
+                harness.record_divergence(std::format!(
+                    "vouch case {}: stake={} self_vouch={} -> is_ok={}, expected_ok={}",
+                    i, stake, self_vouch, result.is_ok(), expected_ok
+                ));
+            } else {
+                harness.test_cases_passed += 1;
+            }
+        }
+
+        harness.report();
+        assert_eq!(
+            harness.test_cases_failed, 0,
+            "{} divergence(s) found in randomized vouch-creation cases",
+            harness.test_cases_failed
+        );
+    }
+
+    #[test]
+    fn test_differential_randomized_interest_calculation() {
+        let mut harness = DifferentialTestHarness::new();
+        let mut state: u64 = 0x9E3779B97F4A7C15;
+        const N: u32 = 200;
+
+        for i in 0..N {
+            let principal = (next_case(&mut state) % 1_000_000_000) as i128;
+            let rate_bps = (next_case(&mut state) % 5_000) as i128;
+            let days = next_case(&mut state) % 3_650;
+
+            // Reference interest calculation must be deterministic and
+            // non-negative for any non-negative principal/rate/duration.
+            let first = ref_calculate_interest(principal, rate_bps, days);
+            let second = ref_calculate_interest(principal, rate_bps, days);
+
+            let diverges = match (&first, &second) {
+                (Ok(a), Ok(b)) => a != b || *a < 0,
+                _ => true,
+            };
+
+            if diverges {
+                harness.test_cases_failed += 1;
+                harness.record_divergence(std::format!(
+                    "interest case {}: principal={} rate_bps={} days={} -> {:?} vs {:?}",
+                    i, principal, rate_bps, days, first, second
+                ));
+            } else {
+                harness.test_cases_passed += 1;
+            }
+        }
+
+        harness.report();
+        assert_eq!(
+            harness.test_cases_failed, 0,
+            "{} divergence(s) found in randomized interest-calculation cases",
+            harness.test_cases_failed
+        );
+    }
+
+    #[test]
+    fn test_differential_randomized_maturity_bonus() {
+        let mut harness = DifferentialTestHarness::new();
+        let mut state: u64 = 0xC2B2AE3D27D4EB4F;
+        const N: u32 = 200;
+        const MAX_BPS: i128 = 100;
+
+        let mut tenures: std::vec::Vec<u64> = (0..N)
+            .map(|_| next_case(&mut state) % (20 * 365 * 24 * 60 * 60))
+            .collect();
+        tenures.sort_unstable();
+
+        let mut prev_bonus = 0i128;
+        for (i, tenure) in tenures.iter().enumerate() {
+            let bonus = ref_calculate_maturity_bonus(*tenure)
+                .expect("reference maturity bonus should never error");
+
+            // Bonuses must never decrease as tenure grows, and must stay
+            // capped at MAX_BPS regardless of how long the tenure is.
+            let diverges = bonus < prev_bonus || bonus > MAX_BPS;
+
+            if diverges {
+                harness.test_cases_failed += 1;
+                harness.record_divergence(std::format!(
+                    "maturity case {}: tenure={} bonus={} (prev_bonus={})",
+                    i, tenure, bonus, prev_bonus
+                ));
+            } else {
+                harness.test_cases_passed += 1;
+            }
+            prev_bonus = bonus;
+        }
+
+        harness.report();
+        assert_eq!(
+            harness.test_cases_failed, 0,
+            "{} divergence(s) found in randomized maturity-bonus cases",
+            harness.test_cases_failed
+        );
+    }
+
     #[test]
     fn test_state_transition_vouch_creation() {
         // State transition test: verify vouch creation transitions state correctly
@@ -266,7 +392,6 @@ mod tests {
         assert!(true, "Repayment state transition verified");
     }
 }
-*/
 
 // # Differential Testing Documentation
 //

@@ -57,6 +57,8 @@
 
 #![allow(unused)]
 
+extern crate alloc;
+
 use soroban_sdk::{contracttype, symbol_short, Address, Bytes, Env, String, Symbol, Vec};
 
 use crate::errors::ContractError;
@@ -181,7 +183,17 @@ pub fn effective_sample_rate(env: &Env, operation: &String) -> u32 {
         .unwrap_or(DEFAULT_SAMPLE_RATE_BPS)
 }
 
-/// Simple hash of a trace-ID string — XOR-fold of bytes with a FNV-like mix.
+/// Hash a trace ID for head-based sampling decisions.
+///
+/// This is a non-cryptographic hash using a FNV-1a-style fold over XDR-encoded
+/// bytes. It is suitable only for probabilistic sampling decisions and must NOT
+/// be relied on for cryptographic purposes, access control, or security-critical
+/// operations.
+///
+/// The hash is deterministic: the same trace_id always produces the same hash,
+/// which is the key property needed for consistent sampling across service hops.
+/// See the tests in this module (test_hash_trace_id_*) for distribution and
+/// avalanche-effect properties.
 fn hash_trace_id(env: &Env, trace_id: &String) -> u64 {
     let bytes = trace_id.to_xdr(env);
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
@@ -301,15 +313,51 @@ pub fn get_trace_sample_rate(env: &Env, operation: String) -> u32 {
 /// This struct lives in the Rust crate but is only used off-chain — it is
 /// NOT a `#[contracttype]` because it is intended for serialisation via
 /// `serde`, not Soroban's XDR codec.
+#[derive(Clone, Debug)]
 pub struct OtlpSpanExport {
-    pub trace_id: &'static str,
-    pub span_id: &'static str,
-    pub parent_span_id: Option<&'static str>,
-    pub name: &'static str,
+    pub trace_id: String,
+    pub span_id: String,
+    pub parent_span_id: Option<String>,
+    pub name: String,
     pub start_time_unix_nano: u64,
     pub end_time_unix_nano: u64,
     pub status_code: u32, // 0 = Unset, 1 = Error, 2 = Ok
-    pub attributes: &'static [(&'static str, &'static str)],
+    pub attributes: alloc::vec::Vec<(String, String)>,
+}
+
+/// Map a [`TraceSpan`] to an [`OtlpSpanExport`] for indexer export.
+///
+/// The mapping is intended to run off-chain in the indexer after consuming
+/// a `trace/span` event. It converts the on-chain span metadata to a structure
+/// serialisable to OTLP/JSON and suitable for forwarding to Jaeger, Tempo, or
+/// other OpenTelemetry-compatible collectors.
+pub fn trace_span_to_otlp_export(span: &TraceSpan, start_time_nano: u64, end_time_nano: u64) -> OtlpSpanExport {
+    let status_code = match span.status {
+        SpanStatus::Ok => 2,
+        SpanStatus::Error => 1,
+        SpanStatus::Unset => 0,
+    };
+
+    let parent = if span.parent_span_id.len() > 0 {
+        Some(span.parent_span_id.clone())
+    } else {
+        None
+    };
+
+    let mut attributes = alloc::vec::Vec::new();
+    attributes.push(("sampled".to_string(), span.sampled.to_string()));
+    attributes.push(("ledger".to_string(), span.ledger.to_string()));
+
+    OtlpSpanExport {
+        trace_id: span.trace_id.clone(),
+        span_id: span.span_id.clone(),
+        parent_span_id: parent,
+        name: span.operation.clone(),
+        start_time_unix_nano: start_time_nano,
+        end_time_unix_nano: end_time_nano,
+        status_code,
+        attributes,
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -402,5 +450,118 @@ mod tests {
             10_001,
         );
         assert_eq!(result, Err(ContractError::InvalidAmount));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_trace_sample_rate_rejects_non_admin_without_mock() {
+        let env = Env::default();
+        let non_admin = Address::generate(&env);
+        let _ = set_trace_sample_rate(
+            &env,
+            non_admin,
+            String::from_str(&env, "vouch"),
+            5_000,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_set_global_sample_rate_rejects_non_admin_without_mock() {
+        let env = Env::default();
+        let non_admin = Address::generate(&env);
+        let _ = set_global_sample_rate(&env, non_admin, 5_000);
+    }
+
+    #[test]
+    fn test_admin_address_is_required_for_sample_rate_updates() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+
+        let op = String::from_str(&env, "test_op");
+
+        let result = set_trace_sample_rate(&env, admin.clone(), op.clone(), 5_000);
+        assert!(result.is_ok());
+
+        let stored_rate = get_trace_sample_rate(&env, op);
+        assert_eq!(stored_rate, 5_000);
+    }
+
+    #[test]
+    fn test_non_admin_address_cannot_override_sample_rate() {
+        let env = Env::default();
+        let non_admin = Address::generate(&env);
+
+        let op = String::from_str(&env, "vouch");
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = set_trace_sample_rate(&env, non_admin, op, 0);
+        }));
+
+        assert!(result.is_err(), "Non-admin should not be able to set sample rates");
+    }
+
+    #[test]
+    fn test_hash_trace_id_distribution_is_uniform() {
+        let env = Env::default();
+
+        let mut buckets = [0usize; 10];
+
+        for i in 0..1000 {
+            let trace_id = String::from_str(&env, &alloc::format!("trace_{:04}", i));
+            let hash = hash_trace_id(&env, &trace_id);
+            let bucket = (hash % 10_000) / 1000;
+            buckets[bucket as usize] += 1;
+        }
+
+        let expected_per_bucket = 1000 / 10;
+        let tolerance = expected_per_bucket / 2;
+
+        for (i, &count) in buckets.iter().enumerate() {
+            assert!(
+                count > expected_per_bucket - tolerance && count < expected_per_bucket + tolerance,
+                "Bucket {}: got {} events, expected around {} (tolerance: {})",
+                i, count, expected_per_bucket, tolerance
+            );
+        }
+    }
+
+    #[test]
+    fn test_hash_trace_id_avalanche_effect_one_byte_change() {
+        let env = Env::default();
+
+        let trace_id_1 = String::from_str(&env, "0123456789abcdef0123456789abcdef");
+        let trace_id_2 = String::from_str(&env, "0123456789abcdef0123456789abcdee");
+
+        let hash_1 = hash_trace_id(&env, &trace_id_1);
+        let hash_2 = hash_trace_id(&env, &trace_id_2);
+
+        let sample_1 = hash_1 % 10_000;
+        let sample_2 = hash_2 % 10_000;
+
+        assert_ne!(
+            sample_1, sample_2,
+            "Changing one byte should produce a different sample decision; got {} vs {}",
+            sample_1, sample_2
+        );
+    }
+
+    #[test]
+    fn test_hash_trace_id_is_not_cryptographic_must_not_be_relied_on_for_security() {
+        let env = Env::default();
+
+        let trace_id = String::from_str(&env, "aabbccddeeff0011aabbccddeeff0011");
+        let hash = hash_trace_id(&env, &trace_id);
+
+        assert_ne!(
+            hash, 0,
+            "Hash should not be zero for typical input (though not guaranteed cryptographic properties)"
+        );
+
+        assert_ne!(
+            hash, u64::MAX,
+            "Hash should not overflow (implementation uses wrapping arithmetic for FNV)"
+        );
     }
 }

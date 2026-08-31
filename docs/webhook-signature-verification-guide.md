@@ -513,3 +513,178 @@ For issues with webhook signature verification:
 - Webhook registration API
 - Comprehensive verification guide
 - Security best practices documentation
+
+## Subscription Limits (Issue #111)
+
+### Default Limit
+
+> **`MAX_WEBHOOKS_PER_SUBJECT = 10`**
+
+Each `(subject, caller)` pair is capped at **10 active webhook subscriptions** by default. Attempting to register beyond this limit returns a `LimitExceeded` error.
+
+| Dimension      | Limit              | Notes |
+|----------------|--------------------|-------|
+| Subscriptions per (subject, caller) | `MAX_WEBHOOKS_PER_SUBJECT` = **10** | Default; admin-configurable |
+| Minimum limit  | 1                  | Cannot be set to 0 |
+| Maximum limit  | No hard cap        | Governed by admin via `set_limit()` |
+
+### Why This Limit Exists
+
+1. **Storage protection**: Soroban persistent storage has metered costs. Unbounded subscriptions would allow a single caller to inflate contract storage costs.
+2. **Dispatch cost**: Event dispatch iterates over all active subscriptions. A bounded count prevents runaway compute costs at event emission time.
+3. **Spam prevention**: Limits the ability of a malicious actor to register thousands of endpoints to overwhelm delivery infrastructure.
+
+### Changing the Limit (Admin Only)
+
+Admins can override the global per-subject limit:
+
+```rust
+// In contract admin handler
+WebhookRegistry::set_limit(&env, 20); // raise to 20
+```
+
+The updated limit takes effect immediately for all new registration attempts. Existing subscriptions are not retroactively invalidated.
+
+---
+
+## Registering a Webhook Subscription
+
+### Function Signature
+
+```rust
+pub fn register(
+    env: &Env,
+    owner: Address,     // must sign the transaction
+    subject: String,    // event topic / borrower address
+    url: String,        // HTTPS delivery endpoint
+) -> Result<(), WebhookRegistryError>
+```
+
+### Constraints
+
+- `owner` must authenticate (`require_auth()` is called internally).
+- `url` must be unique within the same `(subject, owner)` pair — duplicate URLs return `DuplicateUrl`.
+- Registration is rejected with `LimitExceeded` when the caller already has `get_limit()` active subscriptions for `subject`.
+- Soft-deleted (inactive) subscriptions do **not** count toward the limit.
+
+### Example
+
+```typescript
+// JavaScript / TypeScript — using stellar-sdk
+await contract.invoke('register_webhook', {
+  owner: callerKeypair.publicKey(),
+  subject: borrowerAddress,   // receive events for this borrower
+  url: 'https://myapp.com/webhooks/quorum',
+});
+```
+
+---
+
+## Unregistering a Subscription
+
+```rust
+pub fn unregister(
+    env: &Env,
+    owner: Address,
+    subject: String,
+    url: String,
+) -> Result<(), WebhookRegistryError>
+```
+
+Marks the subscription inactive (soft-delete). The audit trail is preserved; the slot is freed for future registrations.
+
+---
+
+## Querying Active Subscriptions
+
+```rust
+pub fn get_subscriptions(
+    env: &Env,
+    owner: Address,
+    subject: String,
+) -> Vec<WebhookSubscription>
+```
+
+Returns only **active** subscriptions. Inactive (unregistered) entries are filtered out.
+
+---
+
+## Webhook Payload Format
+
+Each delivery is a JSON POST with the following envelope:
+
+```json
+{
+  "event_topic": "loan/repaid",
+  "contract_id": "CABC...XYZ",
+  "timestamp": 1700000000,
+  "ledger_sequence": 12345678,
+  "payload": {
+    "borrower": "GXXX...YYY",
+    "amount": 5000000000
+  },
+  "signature": "base64-encoded-HMAC-SHA256"
+}
+```
+
+| Field             | Type     | Description |
+|-------------------|----------|-------------|
+| `event_topic`     | `string` | Matches the contract event topic (e.g. `"loan/repaid"`) |
+| `contract_id`     | `string` | Soroban contract address that emitted the event |
+| `timestamp`       | `u64`    | Unix timestamp of the Stellar ledger close |
+| `ledger_sequence` | `u32`    | Ledger sequence number |
+| `payload`         | `object` | Event-specific data (see Event Reference below) |
+| `signature`       | `string` | HMAC-SHA256 of the raw request body, Base64-encoded |
+
+---
+
+## Signature Verification
+
+QuorumCredit signs outbound webhooks using **HMAC-SHA256** with a shared secret. The shared secret is stored securely off-chain — never in contract storage.
+
+### Verification Steps
+
+1. Extract the `signature` field from the JSON body **before** parsing (or use the raw body bytes).
+2. Compute `HMAC-SHA256(secret_key, raw_request_body)`.
+3. Base64-encode the digest.
+4. Compare with the received `signature` using a **constant-time comparison** to prevent timing attacks.
+
+### Node.js Example
+
+```typescript
+import crypto from 'crypto';
+
+function verifyWebhookSignature(
+  rawBody: Buffer,
+  receivedSig: string,
+  secret: string
+): boolean {
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(rawBody)
+    .digest('base64');
+  
+  // Use timingSafeEqual to prevent timing attacks
+  const a = Buffer.from(expected, 'base64');
+  const b = Buffer.from(receivedSig, 'base64');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// Express.js handler
+app.post('/webhooks/quorum', express.raw({ type: 'application/json' }), (req, res) => {
+  const body = JSON.parse(req.body.toString());
+  const isValid = verifyWebhookSignature(
+    req.body,            // raw Buffer from express.raw()
+    body.signature,
+    process.env.WEBHOOK_SECRET!
+  );
+  
+  if (!isValid) {
+
+## See Also
+
+- [Circuit Breaker implementation](../src/webhook_retry.rs)
+- [Webhook Registry implementation](../src/webhook_registry.rs)
+- [Event Indexing Guide](./event-indexing-guide.md)
+- [Monitoring Guide](./monitoring-guide.md)

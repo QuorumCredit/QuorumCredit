@@ -45,11 +45,13 @@ pub mod admin;
 pub mod arbitrage_prevention;
 pub mod audit;
 pub mod batch_transfer;
+pub mod bond_protection;
 pub mod bridge;
 pub mod cache;
 pub mod circuit_breaker;
 pub mod cooldown_bypass;
 pub mod credit_score;
+pub mod detection;
 pub mod cross_chain;
 pub mod cross_chain_auction;
 pub mod cross_chain_governance;
@@ -78,10 +80,20 @@ pub mod zk_snarks;
 pub mod collateral_pool;
 pub mod syndication;
 pub mod vouch_syndication;
+pub mod loan_tokenization;
+pub mod pool_composability;
 pub mod vouch_milestones;
 pub mod recurring_payment;
 pub mod loan_priority;
 pub mod large_loan_approval;
+pub mod liquidity_mining;
+pub mod loan_attribution;
+pub mod loan_cart;
+pub mod governance_token;
+pub mod community_treasury;
+pub mod interest_rate_options;
+pub mod prediction_market;
+pub mod reputation_nft;
 pub mod staking_pool;
 pub mod referral;
 pub mod loan_cart;
@@ -94,6 +106,10 @@ pub mod interest_rate_options;
 pub mod loan_attribution;
 pub mod loyalty;
 pub mod liquidity_mining;
+// Issue #110 — circuit breaker for webhook delivery
+pub mod webhook_retry;
+// Issue #111 — max webhook subscriptions per caller
+pub mod webhook_registry;
 
 #[cfg(test)]
 mod governance_test;
@@ -117,12 +133,18 @@ mod tests;
 mod fuzz_stake_testing;
 #[cfg(test)]
 mod circuit_breaker_insurance_integration_test;
-// #[cfg(test)]
-// mod rbac_enforcement_test; // private API drift — blocks unrelated tests
+#[cfg(test)]
+mod rbac_enforcement_test;
 #[cfg(test)]
 mod contingent_loan_test;
 #[cfg(test)]
 mod loan_tranching_test;
+#[cfg(test)]
+mod syndication_test;
+#[cfg(test)]
+mod loan_tokenization_test;
+#[cfg(test)]
+mod pool_composability_test;
 #[cfg(test)]
 mod storage_redesign_test;
 #[cfg(test)]
@@ -526,10 +548,13 @@ impl QuorumCreditContract {
         vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
     }
 
-    /// Confidential vouch with zk-SNARK proof verification
+    /// Confidential (self-attestation) vouch with commitment + proof verification.
     ///
-    /// Allows vouchers to stake without revealing the exact amount on-chain.
-    /// The zk-SNARK proof demonstrates that:
+    /// **Not a privacy guarantee**: `stake_amount` is a plain on-chain argument and is
+    /// recorded via the regular `vouch()` call below, so it is visible to any observer.
+    /// `proof` and `commitment` provide binding/self-attestation (see `zk_snarks.rs`), not
+    /// confidentiality. See `docs/threat-model.md` ("Confidentiality Model") for details.
+    /// The `proof` demonstrates that, at call time:
     /// - The voucher has sufficient balance
     /// - The stake amount is within allowed bounds
     /// - The voucher is not blacklisted
@@ -581,6 +606,37 @@ impl QuorumCreditContract {
 
         vouch::vouch(env, voucher, borrower, stake_amount, token, chain_id)
     }
+
+    /// Settlement-time reveal for a confidential vouch commitment recorded by
+    /// `vouch_confidential()`. Verifies that `amount`/`blinding` hash to the commitment
+    /// stored for `(voucher, borrower)`, then marks it revealed so it cannot be replayed.
+    pub fn reveal_vouch_commitment(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        amount: i128,
+        blinding: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        voucher.require_auth();
+
+        let key = DataKey::VouchCommitment(voucher.clone(), borrower.clone());
+        let commitment: ConfidentialCommitment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::CommitmentNotFound)?;
+
+        let revealed_key = DataKey::VouchCommitmentRevealed(voucher.clone(), borrower.clone());
+        if env.storage().persistent().get(&revealed_key).unwrap_or(false) {
+            return Err(ContractError::CommitmentAlreadyRevealed);
+        }
+
+        zk_snarks::reveal_commitment_bytes(&env, &commitment, amount, &blinding)?;
+
+        env.storage().persistent().set(&revealed_key, &true);
+        Ok(())
+    }
+
     pub fn batch_vouch(
         env: Env,
         voucher: Address,
@@ -794,13 +850,16 @@ impl QuorumCreditContract {
         result
     }
 
-    /// Confidential loan request with zk-SNARK proof verification
+    /// Confidential (self-attestation) loan request with commitment + proof verification.
     ///
-    /// Allows borrowers to request loans without revealing exact amounts on-chain.
-    /// The zk-SNARK proof demonstrates that:
+    /// **Not a privacy guarantee**: `amount` is a plain on-chain argument and is recorded
+    /// via the regular `request_loan()` call below, so it is visible to any observer.
+    /// `proof` and `commitment` provide binding/self-attestation (see `zk_snarks.rs`), not
+    /// confidentiality. See `docs/threat-model.md` ("Confidentiality Model") for details.
+    /// The `proof` demonstrates that, at call time:
     /// - The borrower meets eligibility requirements
     /// - The requested amount is within bounds
-    /// - Sufficient vouches exist (without revealing individual vouch amounts)
+    /// - Sufficient vouches exist
     pub fn request_loan_confidential(
         env: Env,
         borrower: Address,
@@ -859,6 +918,34 @@ impl QuorumCreditContract {
         loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
     }
 
+    /// Settlement-time reveal for a confidential loan commitment recorded by
+    /// `request_loan_confidential()`. Verifies that `amount`/`blinding` hash to the
+    /// commitment stored for `borrower`, then marks it revealed so it cannot be replayed.
+    pub fn reveal_loan_commitment(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        blinding: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        borrower.require_auth();
+
+        let key = DataKey::LoanCommitment(borrower.clone());
+        let commitment: ConfidentialCommitment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::CommitmentNotFound)?;
+
+        let revealed_key = DataKey::LoanCommitmentRevealed(borrower.clone());
+        if env.storage().persistent().get(&revealed_key).unwrap_or(false) {
+            return Err(ContractError::CommitmentAlreadyRevealed);
+        }
+
+        zk_snarks::reveal_commitment_bytes(&env, &commitment, amount, &blinding)?;
+
+        env.storage().persistent().set(&revealed_key, &true);
+        Ok(())
+    }
 
     pub fn dispute_vouch(
         env: Env,
@@ -986,6 +1073,9 @@ impl QuorumCreditContract {
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
         helpers::increment_total_default_count(&env);
 
+        // Issue #1413: Demote loyalty tier on default
+        loyalty::record_default_for_loyalty(&env, &borrower);
+
         // Burn excellent credit tier badge on default
         reputation::burn_excellent_badge(&env, &borrower);
 
@@ -1017,6 +1107,60 @@ impl QuorumCreditContract {
             helpers::get_total_default_count(&env),
             helpers::get_total_loan_count(&env),
         );
+    }
+
+    // ── Issue #1422: Fraud score detection ──────────────────────────────────
+    /// Recompute and persist a voucher's fraud score from their vouch/slash history.
+    pub fn update_fraud_score(env: Env, voucher: Address) -> Result<(), ContractError> {
+        detection::update_fraud_score(env, voucher)
+    }
+
+    /// Read a voucher's stored fraud score, if one has been computed.
+    pub fn get_fraud_score(env: Env, voucher: Address) -> Option<crate::types::VoucherFraudScore> {
+        detection::get_fraud_score(env, voucher)
+    }
+
+    /// Persist the fraud-score configuration (threshold + enabled). Admin-only.
+    pub fn set_fraud_score_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: crate::types::FraudScoreConfig,
+    ) -> Result<(), ContractError> {
+        detection::set_fraud_score_config(env, admin_signers, config)
+    }
+
+    /// Read the current fraud-score configuration.
+    pub fn get_fraud_score_config(env: Env) -> crate::types::FraudScoreConfig {
+        detection::get_fraud_score_config_view(env)
+    }
+
+    // ── Issue #1423/#1424/#1425: Circuit breaker admin controls ─────────────
+    /// Acknowledge the most recent circuit-breaker activation (admin multi-sig).
+    /// Required before `unpause` will clear a circuit-breaker-induced pause.
+    pub fn acknowledge_circuit_breaker(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::acknowledge_circuit_breaker(&env, admin_signers)
+    }
+
+    /// Return the bounded history of circuit-breaker activations, oldest first.
+    pub fn get_circuit_breaker_history(env: Env) -> Vec<crate::types::CircuitBreakerTrigger> {
+        circuit_breaker::get_circuit_breaker_history(&env)
+    }
+
+    /// Set the circuit-breaker anti-thrash cooldown window, in seconds. Admin-only.
+    pub fn set_circuit_breaker_cooldown(
+        env: Env,
+        admin_signers: Vec<Address>,
+        new_cooldown_secs: u64,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::set_circuit_breaker_cooldown(&env, admin_signers, new_cooldown_secs)
+    }
+
+    /// Read the effective circuit-breaker cooldown (configured value or default).
+    pub fn get_circuit_breaker_cooldown(env: Env) -> u64 {
+        circuit_breaker::circuit_breaker_cooldown_secs(&env)
     }
 
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
@@ -2058,27 +2202,26 @@ impl QuorumCreditContract {
 
     // ── Issue #1176: Social Features for Borrower Network ────────────────────
 
-    /// Set or update a borrower's profile (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Set or update a borrower's profile (Issue #1176).
     /// Allows borrowers to create their community profile with bio and sector info.
     pub fn set_borrower_profile(
-        _env: Env,
+        env: Env,
         borrower: Address,
-        _bio: String,
-        _sector: Option<String>,
-        _region: Option<String>,
+        bio: String,
+        sector: Option<String>,
+        region: Option<String>,
     ) -> Result<(), ContractError> {
         borrower.require_auth();
-        // TODO: Implement when social profile types are defined
-        Ok(())
+        social::set_borrower_profile(&env, borrower, bio, sector, region)
     }
 
-    /// Get a borrower's profile (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Get a borrower's profile (Issue #1176).
+    /// Returns a pipe-delimited string `"bio|sector|region"`.
     pub fn get_borrower_profile(
-        _env: Env,
-        _borrower: Address,
+        env: Env,
+        borrower: Address,
     ) -> Result<String, ContractError> {
-        // TODO: Implement when social profile types are defined
-        Ok(String::from_str(&_env, ""))
+        social::get_borrower_profile(&env, &borrower)
     }
 
     /// Set whether borrower consents to share success stories (Issue #1176).
@@ -2533,6 +2676,23 @@ impl QuorumCreditContract {
         governance::finalize_appeal(env, borrower)
     }
 
+    // ── Slashing Transparency Reports & Backfill (Issue #656 / #1444) ─────────
+
+    pub fn generate_slashing_report(env: Env, month_id: u64) -> SlashingReportRecord {
+        governance::generate_slashing_report(env, month_id)
+    }
+
+    pub fn get_slashing_report(env: Env, month_id: u64) -> Option<SlashingReportRecord> {
+        governance::get_slashing_report(env, month_id)
+    }
+
+    pub fn backfill_slashes_by_month(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<u32, ContractError> {
+        governance::backfill_slashes_by_month(env, admin_signers)
+    }
+
     // ── Admin management ─────────────────────────────────────────────────────
 
     pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Address) {
@@ -2736,6 +2896,22 @@ impl QuorumCreditContract {
         credit_score::apply_reputation_decay_batch(&env, borrowers)
     }
 
+    /// Issue #1421 Phase 2: Backfill historical payment records for a pre-upgrade loan.
+    ///
+    /// Admin-gated. Only allowed for loans in a terminal state (Repaid or Defaulted).
+    /// Appends the supplied `payment_records` to the `PaymentHistory(loan_id)` storage
+    /// key so credit-score timeliness calculations can be recalculated with real data.
+    ///
+    /// See `docs/credit-score-migration.md` Phase 2 for the full backfill strategy.
+    pub fn backfill_payment_history(
+        env: Env,
+        admin_signers: Vec<Address>,
+        loan_id: u64,
+        payment_records: Vec<PaymentRecord>,
+    ) -> Result<(), ContractError> {
+        admin::backfill_payment_history(env, admin_signers, loan_id, payment_records)
+    }
+
     // ── Views ─────────────────────────────────────────────────────────────────
 
     pub fn is_initialized(env: Env) -> bool {
@@ -2889,6 +3065,38 @@ impl QuorumCreditContract {
         admin::get_governance_proposal_count(env)
     }
 
+    // ── Admin Action Proposals (Issue #554 / #1442) ───────────────────────────
+
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        action_type: GovernanceAction,
+    ) -> Result<u64, ContractError> {
+        admin::propose_admin_action(env, proposer, action_type)
+    }
+
+    pub fn approve_admin_action(
+        env: Env,
+        admin: Address,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::approve_admin_action(env, admin, action_id)
+    }
+
+    pub fn execute_admin_action(
+        env: Env,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::execute_admin_action(env, action_id)
+    }
+
+    pub fn get_admin_action_proposal(
+        env: Env,
+        action_id: u64,
+    ) -> Option<AdminActionProposal> {
+        admin::get_admin_action_proposal(env, action_id)
+    }
+
     // ── On-Chain Credit Score with Tiered Rewards ───────────────────────────────
 
     pub fn update_credit_score(env: Env, borrower: Address) -> Result<(), ContractError> {
@@ -2982,6 +3190,13 @@ impl QuorumCreditContract {
 
     pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
         admin::claim_successor_admin(env)
+    }
+
+    pub fn cancel_successor_admin(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        admin::cancel_successor_admin(env, admin_signers)
     }
 
     // ── Issue #14: Cross-chain loan portability ───────────────────────────────
@@ -4449,6 +4664,21 @@ impl QuorumCreditContract {
     pub fn check_per_contract_cap(env: Env, contract: Address) -> Result<i128, ContractError> {
         flash_loan::check_per_contract_cap(&env, &contract)
     }
+
+    /// Admin: allow or revoke a callback contract's ability to receive flash loans.
+    pub fn set_flash_loan_callback_allowed(
+        env: Env,
+        admin_signers: Vec<Address>,
+        callback_contract: Address,
+        allowed: bool,
+    ) -> Result<(), ContractError> {
+        flash_loan::set_flash_loan_callback_allowed(&env, admin_signers, callback_contract, allowed)
+    }
+
+    /// Whether a callback contract is on the flash loan allowlist.
+    pub fn is_flash_loan_callback_allowed(env: Env, callback_contract: Address) -> bool {
+        flash_loan::is_flash_loan_callback_allowed(&env, &callback_contract)
+    }
 }
 
 // ── Issue #1171: Vouch syndication for risk pooling ────────────────────────────
@@ -4828,14 +5058,21 @@ impl QuorumCreditContract {
         reputation_nft::delist_badge(&env, owner, badge_type)
     }
 
-    /// Purchase a badge from the marketplace.
+    /// Purchase a badge from the marketplace with on-chain payment enforcement.
+    ///
+    /// Transfers `payment_amount` tokens from `buyer` to `seller` on-chain before
+    /// transferring badge ownership. Returns `InsufficientFunds` if `payment_amount`
+    /// is less than the badge's `listing_price`. See `reputation_nft::purchase_badge`
+    /// for full documentation.
     pub fn purchase_badge(
         env: Env,
         buyer: Address,
         seller: Address,
         badge_type: reputation_nft::BadgeType,
+        token: Address,
+        payment_amount: i128,
     ) -> Result<(), ContractError> {
-        reputation_nft::purchase_badge(&env, buyer, seller, badge_type)
+        reputation_nft::purchase_badge(&env, buyer, seller, badge_type, token, payment_amount)
     }
 
     /// Return a badge record.
@@ -5112,6 +5349,28 @@ impl QuorumCreditContract {
         staker: Address,
     ) -> Result<StakerPosition, ContractError> {
         staking_pool::get_staker_position(env, pool_id, staker)
+    }
+
+    /// Apply a loss to the staking pool, reducing staker balances proportionally.
+    /// Requires admin approval.
+    pub fn apply_staking_pool_loss(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+        loss_amount: i128,
+    ) -> Result<(), ContractError> {
+        staking_pool::apply_staking_pool_loss(env, admin_signers, pool_id, loss_amount)
+    }
+
+    /// Close a staking pool. Prevents new stakes and yield distributions.
+    /// Existing stakers can still unstake and claim yield after closure.
+    /// Requires admin approval.
+    pub fn close_staking_pool(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+    ) -> Result<(), ContractError> {
+        staking_pool::close_staking_pool(env, admin_signers, pool_id)
     }
 
     // ── Issue #1247: Referral Rewards Program ─────────────────────────────────
