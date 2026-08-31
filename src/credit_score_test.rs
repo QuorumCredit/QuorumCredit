@@ -882,3 +882,91 @@ fn test_attack_cost_to_reach_max_weight_requires_real_capital() {
         required_stake_at_2pct
     );
 }
+
+// ── Issue #1407: voucher_count storage-tier/key mismatch ────────────────────
+//
+// calculate_credit_score previously read DataKey::VoucherHistory(borrower) from
+// *instance* storage to derive voucher_count. vouch.rs never writes that key for a
+// borrower at all — it writes DataKey::Vouches(borrower) in *persistent* storage. The
+// lookup always missed, so voucher_count silently defaulted to 0 regardless of how
+// many active vouches a borrower actually had.
+
+#[test]
+fn test_voucher_count_reflects_real_vouches() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    let borrower = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        let now = env.ledger().timestamp();
+        env.storage()
+            .instance()
+            .set(&DataKey::CreditScoreConfig, &DEFAULT_CREDIT_SCORE_CONFIG);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BorrowerRegistered(borrower.clone()), &now);
+
+        let token = Address::generate(&env);
+        let vouches: Vec<crate::types::VouchRecord> = Vec::from_array(
+            &env,
+            [
+                crate::types::VouchRecord {
+                    voucher: Address::generate(&env),
+                    stake: 1_000_000,
+                    vouch_timestamp: now,
+                    token: token.clone(),
+                    expiry_timestamp: None,
+                    delegate: None,
+                    chain_id: None,
+                },
+                crate::types::VouchRecord {
+                    voucher: Address::generate(&env),
+                    stake: 2_000_000,
+                    vouch_timestamp: now,
+                    token: token.clone(),
+                    expiry_timestamp: None,
+                    delegate: None,
+                    chain_id: None,
+                },
+                crate::types::VouchRecord {
+                    voucher: Address::generate(&env),
+                    stake: 3_000_000,
+                    vouch_timestamp: now,
+                    token: token.clone(),
+                    expiry_timestamp: None,
+                    delegate: None,
+                    chain_id: None,
+                },
+            ],
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+        let credit_score = calculate_credit_score(&env, &borrower).unwrap();
+
+        assert_eq!(credit_score.voucher_count, 3, "voucher_count should reflect the 3 real vouches");
+    });
+}
+
+#[test]
+fn test_voucher_count_zero_when_no_vouches_recorded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(crate::QuorumCreditContract, ());
+    let borrower = Address::generate(&env);
+
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::CreditScoreConfig, &DEFAULT_CREDIT_SCORE_CONFIG);
+        env.storage()
+            .persistent()
+            .set(&DataKey::BorrowerRegistered(borrower.clone()), &env.ledger().timestamp());
+
+        let credit_score = calculate_credit_score(&env, &borrower).unwrap();
+
+        assert_eq!(credit_score.voucher_count, 0);
+    });
+}

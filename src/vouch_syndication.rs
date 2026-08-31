@@ -290,7 +290,11 @@ pub fn vote_syndicate_proposal(
         proposal.votes_against_bps = proposal.votes_against_bps.saturating_add(member.share_bps);
     }
 
-    if proposal.votes_for_bps > 5_000 {
+    // #1409: thresholds are now symmetric (both >=) — previously for-votes needed
+    // to strictly exceed 5_000 bps while against-votes only needed to reach it,
+    // so an exact 5,000/5,000 split never resolved to Approved even though it's
+    // a genuine (if narrow) majority once the for-check is evaluated first.
+    if proposal.votes_for_bps >= 5_000 {
         proposal.status = SyndicateProposalStatus::Approved;
     } else if proposal.votes_against_bps >= 5_000 {
         proposal.status = SyndicateProposalStatus::Rejected;
@@ -307,6 +311,64 @@ pub fn vote_syndicate_proposal(
     env.events().publish(
         (symbol_short!("syndicat"), symbol_short!("voted")),
         (pool_id, proposal_id, voter, approve),
+    );
+
+    Ok(())
+}
+
+/// Execute an `Approved` syndicate proposal (#1409). The only action a
+/// proposal currently describes is pool dissolution — `description` is
+/// free-text and not machine-parsed into distinct action kinds — so
+/// executing any approved proposal dissolves the pool, returning each
+/// member's principal `contribution` pro-rata, and marks the proposal
+/// `Executed` so a repeated call can never run it again.
+pub fn execute_syndicate_proposal(
+    env: Env,
+    pool_id: u64,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    let mut proposal: SyndicateProposal = env
+        .storage()
+        .persistent()
+        .get(&DataKey::SyndicateProposal(pool_id, proposal_id))
+        .ok_or(ContractError::SyndicateProposalNotFound)?;
+
+    if proposal.status != SyndicateProposalStatus::Approved {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    let mut pool = get_syndicate_pool(&env, pool_id).ok_or(ContractError::SyndicatePoolNotFound)?;
+    if !pool.active {
+        return Err(ContractError::SyndicateNotActive);
+    }
+
+    let token_client = require_allowed_token(&env, &pool.token)?;
+
+    for member_addr in pool.members.iter() {
+        let member: SyndicateMember = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SyndicateMember(pool_id, member_addr.clone()))
+            .ok_or(ContractError::NotSyndicateMember)?;
+        if member.contribution > 0 {
+            token_client.transfer(&env.current_contract_address(), &member_addr, &member.contribution);
+        }
+    }
+
+    pool.active = false;
+    pool.total_stake = 0;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SyndicatePool(pool_id), &pool);
+
+    proposal.status = SyndicateProposalStatus::Executed;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SyndicateProposal(pool_id, proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("syndicat"), symbol_short!("executed")),
+        (pool_id, proposal_id),
     );
 
     Ok(())

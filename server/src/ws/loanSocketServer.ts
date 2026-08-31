@@ -3,6 +3,7 @@ import { Server as SocketIOServer, type Socket } from "socket.io";
 import { verifyToken, isExpiringSoon } from "../auth/tokens.js";
 import { ConnectionQueue } from "./connectionQueue.js";
 import { WsRateLimiter } from "./wsRateLimiter.js";
+import { buildWsAggregateRateLimiter } from "./wsAggregateRateLimiter.js";
 import { LoanProjector } from "../bridge/loanProjector.js";
 import type { EventStore } from "../bridge/eventStore.js";
 import type { PubSubBus } from "../pubsub/PubSubBus.js";
@@ -41,6 +42,14 @@ export interface LoanSocketServerOptions {
    * Default: 60 000.
    */
   idleTimeoutMs?: number;
+  /**
+   * Redis URL for the aggregate cross-instance rate limiter. When set, inbound
+   * messages are counted against a shared per-key budget (IP or authenticated
+   * subject) across all replicas, preventing a multi-connection client from
+   * multiplying its effective rate limit. When undefined, an in-process limiter
+   * is used instead (NOT safe for multi-replica production).
+   */
+  redisUrl?: string;
 }
 
 interface SocketState {
@@ -49,6 +58,8 @@ interface SocketState {
   authTimer: ReturnType<typeof setInterval>;
   /** Per-connection sliding-window rate limiter for inbound messages. */
   rateLimiter: WsRateLimiter;
+  /** Aggregate cross-instance rate limiter keyed by IP/subject. */
+  aggregateRateLimiter: ReturnType<typeof buildWsAggregateRateLimiter>;
   /** Timer that fires pings at heartbeatIntervalMs cadence. */
   heartbeatTimer: ReturnType<typeof setInterval>;
   /** Timer that fires idleTimeoutMs after the last pong (or connect). */
@@ -109,7 +120,12 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
 
     for (const [socket, state] of states) {
       if (state.borrower !== loan.borrower) continue;
-      const dropped = state.queue.push({ eventId: parsed.eventId, loan });
+      const dropped = state.queue.push(
+        { eventId: parsed.eventId, loan },
+        () => {
+          metrics.incLabeledCounter("qc_ws_queue_drops_total", "type", "loan");
+        }
+      );
       flush(socket, state);
       if (dropped) {
         metrics.incCounter("qc_broadcast_messages_dropped_total");
@@ -150,6 +166,7 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
         maxMessages: opts.rateLimitMaxMessages,
         maxViolations: opts.rateLimitMaxViolations,
       }),
+      aggregateRateLimiter: buildWsAggregateRateLimiter(opts.redisUrl),
       heartbeatTimer,
       idleTimer: scheduleIdleTimer(),
     };
@@ -165,6 +182,14 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
     // ── rate-limited event handlers ──────────────────────────────────────────
 
     socket.on("subscribe", (payload: SubscribePayload) => {
+      const aggregateKey = (socket.handshake.address ?? "unknown") + "|" + (socket.handshake.auth?.token ?? "anon");
+      const aggregateBlocked = await state.aggregateRateLimiter.isBlocked(aggregateKey);
+      if (aggregateBlocked) {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        return;
+      }
+
       const decision = state.rateLimiter.check();
       if (decision === "throttled") {
         metrics.incCounter("qc_ws_rate_limited_total");
@@ -178,6 +203,8 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
         socket.disconnect(true);
         return;
       }
+
+      await state.aggregateRateLimiter.recordHit(aggregateKey);
 
       if (!payload || typeof payload.borrower !== "string") return;
       state.borrower = payload.borrower;
@@ -195,6 +222,13 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
     });
 
     socket.on("unsubscribe", () => {
+      const aggregateKey = (socket.handshake.address ?? "unknown") + "|" + (socket.handshake.auth?.token ?? "anon");
+      if (await state.aggregateRateLimiter.isBlocked(aggregateKey)) {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        return;
+      }
+
       const decision = state.rateLimiter.check();
       if (decision === "throttled") {
         metrics.incCounter("qc_ws_rate_limited_total");
@@ -208,10 +242,19 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
         socket.disconnect(true);
         return;
       }
+
+      await state.aggregateRateLimiter.recordHit(aggregateKey);
       state.borrower = null;
     });
 
     socket.on("auth:refresh", (payload: { token?: string }) => {
+      const aggregateKey = (socket.handshake.address ?? "unknown") + "|" + (payload.token ?? socket.handshake.auth?.token ?? "anon");
+      if (await state.aggregateRateLimiter.isBlocked(aggregateKey)) {
+        metrics.incCounter("qc_ws_rate_limited_total");
+        socket.emit("rate_limited", { retryAfterMs: opts.rateLimitWindowMs ?? 1_000 });
+        return;
+      }
+
       const decision = state.rateLimiter.check();
       if (decision === "throttled") {
         metrics.incCounter("qc_ws_rate_limited_total");
@@ -225,6 +268,8 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
         socket.disconnect(true);
         return;
       }
+
+      await state.aggregateRateLimiter.recordHit(aggregateKey);
 
       if (!payload || typeof payload.token !== "string") return;
       const result = verifyToken(opts.authSecret, payload.token);
