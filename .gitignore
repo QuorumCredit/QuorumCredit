@@ -16,8 +16,19 @@ test_snapshots/
 **/snapshots/
 **/*.snapshot
 **/snapshot_tests/
+# Insta (Rust snapshot testing)
+**/*.snap.new
+# Jest / Vitest snapshots
+**/__snapshots__/**
+**/*.test.snap
 
-# WASM build artifacts
+# Vitest cache / coverage
+.vitest/
+coverage/
+
+# Build artifacts
+/target
+**/target
 *.wasm
 *.wasm.opt
 
@@ -43,6 +54,7 @@ desktop.ini
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+lerna-debug.log*
 
 # Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
 # Cargo.lock  # intentionally tracked
@@ -66,6 +78,8 @@ dashboard/dist/
 services/*/dist/
 .npm/
 .yarn/
+.pnp.js
+.pnp.cjs
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
@@ -114,67 +128,20 @@ flamegraph.svg
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 
-# Test snapshots & coverage
-**/__snapshots__/
-**/*.snap
-**/snapshots/
-**/*.snapshot
+# proptest regression files (auto-generated, committed only when intentional)
+# Uncomment the line below to exclude them:
+# proptest-regressions/
+
+# Cargo doc output
+/doc/
+
+# Generated Soroban bindings / TypeScript SDK artifacts
+bindings/
+sdk/
+
+# Vitest / Jest coverage reports
 coverage/
-.nyc_output/
-lcov.info
-tarpaulin-report.html
-tarpaulin-report.json
-*.profraw
-*.profdata
-
-# Node modules / build output
-dashboard/node_modules/
-server/node_modules/
-services/*/node_modules/
-tools/*/node_modules/
-node_modules/
-server/dist/
-dashboard/dist/
-services/*/dist/
-.npm/
-.yarn/
-
-# Mutation testing output
-mutants.out/
-mutants.out.lock
-
-# Runtime backup archives/snapshots
-/backups/
-
-# Indexer SQLite database
-indexer.db
-indexer.db-*
-*.db-journal
-*.db-wal
-*.db-shm
-
-# Canary deployment decision history
-/deploy/
-
-# Restore-drill state files
-*.state.json
-
-# TypeScript build info
-*.tsbuildinfo
-*.d.ts.map
-
-# Temporary / OS files
-*.tmp
-*.temp
-.DS_Store
-ehthumbs.db
-
-# Kiro agent scratch files
-.kiro/agents/
-
-# Benchmark / profiling output
-perf.data
-perf.data.old
-flamegraph.svg
-*.perf
+*.lcov
+*.pyo
