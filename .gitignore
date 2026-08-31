@@ -16,8 +16,19 @@ test_snapshots/
 **/snapshots/
 **/*.snapshot
 **/snapshot_tests/
+# Insta (Rust snapshot testing)
+**/*.snap.new
+# Jest / Vitest snapshots
+**/__snapshots__/**
+**/*.test.snap
 
-# WASM build artifacts
+# Vitest cache / coverage
+.vitest/
+coverage/
+
+# Build artifacts
+/target
+**/target
 *.wasm
 *.wasm.opt
 
@@ -43,6 +54,7 @@ desktop.ini
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+lerna-debug.log*
 
 # Cargo lock (keep for binaries, optional for libs — keeping for reproducibility)
 # Cargo.lock  # intentionally tracked
@@ -66,6 +78,8 @@ dashboard/dist/
 services/*/dist/
 .npm/
 .yarn/
+.pnp.js
+.pnp.cjs
 
 # Mutation testing output (cargo-mutants)
 mutants.out/
@@ -113,4 +127,21 @@ flamegraph.svg
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# proptest regression files (auto-generated, committed only when intentional)
+# Uncomment the line below to exclude them:
+# proptest-regressions/
+
+# Cargo doc output
+/doc/
+
+# Generated Soroban bindings / TypeScript SDK artifacts
+bindings/
+sdk/
+
+# Vitest / Jest coverage reports
+coverage/
+*.lcov
 *.pyo

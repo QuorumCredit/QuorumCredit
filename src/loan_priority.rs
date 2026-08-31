@@ -4,7 +4,13 @@
 /// priority queue so loans can be tagged Senior / Mezzanine / Junior, and default
 /// proceeds are routed through a waterfall: Senior is made whole first, then
 /// Mezzanine, then Junior absorbs any shortfall.
-use soroban_sdk::{contracttype, symbol_short, token, Address, Env, Vec};
+///
+/// Issue #12 fix: PriorityQueue is now keyed by `pool_id` so multiple concurrent
+/// syndication pools / origination batches can each maintain their own independent
+/// priority tranche structure.  The single-queue callers now pass an explicit
+/// `pool_id`; `PriorityDataKey::Queue` has been replaced with
+/// `PriorityDataKey::Queue(u64)`.
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Vec};
 
 use crate::errors::ContractError;
 use crate::helpers;
@@ -45,6 +51,7 @@ pub struct PriorityLoanEntry {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PriorityQueue {
+    pub pool_id: u64,
     pub entries: Vec<PriorityLoanEntry>,
     pub created_at: u64,
     pub updated_at: u64,
@@ -67,6 +74,7 @@ pub struct WaterfallDistributionEntry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaterfallRun {
     pub run_id: u64,
+    pub pool_id: u64,
     pub total_proceeds: i128,
     pub distributed: i128,
     pub shortfall: i128,
@@ -79,6 +87,7 @@ pub struct WaterfallRun {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PriorityChangeProposal {
     pub proposal_id: u64,
+    pub pool_id: u64,
     pub loan_id: u64,
     pub new_priority: LoanPriority,
     pub proposer: Address,
@@ -87,36 +96,29 @@ pub struct PriorityChangeProposal {
     pub executed: bool,
 }
 
+/// Storage keys for the loan priority module.
+///
+/// Issue #12: `Queue` is now parameterised by `pool_id` so each syndication
+/// pool / origination batch has its own independent priority queue.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum PriorityDataKey {
-    Queue,
+    /// pool_id → PriorityQueue  (replaces the former bare `Queue` key)
+    Queue(u64),
     WaterfallRunCounter,
     WaterfallRun(u64),
     ProposalCounter,
     Proposal(u64),
 }
 
-/// Build (or replace) the loan priority queue from a caller-supplied set of
-/// (loan, tranche) tuples. The queue is stored sorted Senior → Mezzanine →
-/// Junior so waterfall routing can walk it in order.
-///
-/// Task: `create_loan_priority_queue(env, loans: Vec<PriorityLoanEntry>)`.
-pub fn create_loan_priority_queue(
-    env: Env,
-    admin_signers: Vec<Address>,
-    loans: Vec<PriorityLoanEntry>,
-) -> Result<(), ContractError> {
-    helpers::require_admin_approval(&env, &admin_signers);
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-    if loans.is_empty() {
-        return Err(ContractError::InvalidAmount);
-    }
-
-    // Simple insertion sort by tranche rank; queues are small (per-loan-pool
-    // scale) so O(n^2) is fine and keeps this dependency-free under no_std.
-    let mut sorted: Vec<PriorityLoanEntry> = Vec::new(&env);
-    for entry in loans.iter() {
+/// Insertion-sort `entries` by tranche rank (Senior first).
+/// O(n²) is intentional — queues are small (per-pool scale) and this avoids
+/// pulling in std sorting under no_std.
+fn sort_by_priority(env: &Env, entries: Vec<PriorityLoanEntry>) -> Vec<PriorityLoanEntry> {
+    let mut sorted: Vec<PriorityLoanEntry> = Vec::new(env);
+    for entry in entries.iter() {
         let mut insert_at = sorted.len();
         for i in 0..sorted.len() {
             if sorted.get(i).unwrap().priority.rank() > entry.priority.rank() {
@@ -126,54 +128,77 @@ pub fn create_loan_priority_queue(
         }
         sorted.insert(insert_at, entry.clone());
     }
+    sorted
+}
 
+// ── public API ────────────────────────────────────────────────────────────────
+
+/// Build (or replace) the loan priority queue for **`pool_id`** from a
+/// caller-supplied set of (loan, tranche) tuples.  Each pool maintains its own
+/// independent queue; calling this for pool A does not affect pool B.
+///
+/// The queue is stored sorted Senior → Mezzanine → Junior so waterfall routing
+/// can walk it in order.
+///
+/// Issue #12: Added `pool_id` parameter; storage key changed from
+/// `PriorityDataKey::Queue` to `PriorityDataKey::Queue(pool_id)`.
+pub fn create_loan_priority_queue(
+    env: Env,
+    admin_signers: Vec<Address>,
+    pool_id: u64,
+    loans: Vec<PriorityLoanEntry>,
+) -> Result<(), ContractError> {
+    helpers::require_admin_approval(&env, &admin_signers);
+
+    if loans.is_empty() {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let sorted = sort_by_priority(&env, loans.clone());
     let now = env.ledger().timestamp();
     let queue = PriorityQueue {
+        pool_id,
         entries: sorted,
         created_at: now,
         updated_at: now,
     };
     env.storage()
         .persistent()
-        .set(&PriorityDataKey::Queue, &queue);
+        .set(&PriorityDataKey::Queue(pool_id), &queue);
 
     env.events().publish(
         (symbol_short!("prio"), symbol_short!("queue_set")),
-        (loans.len() as u32, now),
+        (pool_id, loans.len() as u32, now),
     );
 
     Ok(())
 }
 
-/// Read the current priority queue.
-pub fn get_loan_priority_queue(env: Env) -> Vec<PriorityLoanEntry> {
+/// Read the current priority queue for the given `pool_id`.
+///
+/// Issue #12: Now keyed by `pool_id` instead of a single global key.
+pub fn get_loan_priority_queue(env: Env, pool_id: u64) -> Vec<PriorityLoanEntry> {
     env.storage()
         .persistent()
-        .get::<PriorityDataKey, PriorityQueue>(&PriorityDataKey::Queue)
+        .get::<PriorityDataKey, PriorityQueue>(&PriorityDataKey::Queue(pool_id))
         .map(|q| q.entries)
         .unwrap_or(Vec::new(&env))
 }
 
 /// Route recovered default proceeds through the Senior → Mezzanine → Junior
-/// waterfall. Senior loans are made whole first (up to `amount` owed), any
-/// remainder flows to Mezzanine, and Junior absorbs whatever is left — which
-/// may be zero in a severe default. Returns the full distribution record and
-/// persists it for later audit/read-back via `get_waterfall_run`.
+/// waterfall for **`pool_id`**.  Senior loans are made whole first (up to
+/// `amount` owed), any remainder flows to Mezzanine, and Junior absorbs
+/// whatever is left — which may be zero in a severe default.
 ///
-/// #1392: this now actually pays out — for each entry with `paid > 0`, the
-/// corresponding loan's own `token_address` is transferred from this
-/// contract to `entry.borrower`, the address recorded in the run. Previously
-/// a `WaterfallRun` was recorded with paid amounts that never moved any real
-/// funds, which is misleading for anyone reading `get_waterfall_run` as an
-/// audit trail of a completed payout.
+/// Returns the full distribution record and persists it for later audit/
+/// read-back via `get_waterfall_run`.
 ///
-/// The priority queue is cleared once routing succeeds, since the batch of
-/// loans it named has now been paid out — this is also the double-payout
-/// guard: calling this a second time with no queue re-created in between
-/// fails with `InvalidAmount` instead of paying the same loans again.
+/// Issue #12: Added `pool_id` parameter; looks up `PriorityDataKey::Queue(pool_id)`
+/// and records `pool_id` in the `WaterfallRun` for traceability.
 pub fn route_default_proceeds(
     env: Env,
     admin_signers: Vec<Address>,
+    pool_id: u64,
     total_proceeds: i128,
 ) -> Result<WaterfallRun, ContractError> {
     helpers::require_admin_approval(&env, &admin_signers);
@@ -185,7 +210,7 @@ pub fn route_default_proceeds(
     let queue = env
         .storage()
         .persistent()
-        .get::<PriorityDataKey, PriorityQueue>(&PriorityDataKey::Queue)
+        .get::<PriorityDataKey, PriorityQueue>(&PriorityDataKey::Queue(pool_id))
         .ok_or(ContractError::InvalidAmount)?;
 
     let mut remaining = total_proceeds;
@@ -239,6 +264,7 @@ pub fn route_default_proceeds(
 
     let run = WaterfallRun {
         run_id,
+        pool_id,
         total_proceeds,
         distributed,
         shortfall: total_proceeds - distributed,
@@ -255,7 +281,7 @@ pub fn route_default_proceeds(
 
     env.events().publish(
         (symbol_short!("prio"), symbol_short!("waterfl")),
-        (run_id, total_proceeds, distributed),
+        (run_id, pool_id, total_proceeds, distributed),
     );
 
     Ok(run)
@@ -268,12 +294,16 @@ pub fn get_waterfall_run(env: Env, run_id: u64) -> Option<WaterfallRun> {
         .get(&PriorityDataKey::WaterfallRun(run_id))
 }
 
-/// Propose a change to a loan's priority tier. Requires the same multi-admin
-/// approval threshold as other governance actions; the proposer is recorded
-/// as the first approval.
+/// Propose a change to a loan's priority tier within **`pool_id`**.
+/// Requires the same multi-admin approval threshold as other governance
+/// actions; the proposer is recorded as the first approval.
+///
+/// Issue #12: `pool_id` is now recorded on the proposal so `approve_priority_change`
+/// can look up the correct per-pool queue.
 pub fn propose_priority_change(
     env: Env,
     proposer: Address,
+    pool_id: u64,
     loan_id: u64,
     new_priority: LoanPriority,
 ) -> Result<u64, ContractError> {
@@ -298,6 +328,7 @@ pub fn propose_priority_change(
 
     let proposal = PriorityChangeProposal {
         proposal_id,
+        pool_id,
         loan_id,
         new_priority,
         proposer,
@@ -313,9 +344,11 @@ pub fn propose_priority_change(
 }
 
 /// Approve a pending priority-change proposal. Once the number of distinct
-/// admin approvals meets the contract's admin threshold, the change is
-/// applied to the priority queue (the loan is re-tagged and the queue
+/// admin approvals meets the contract's admin threshold, the change is applied
+/// to the **pool-specific** priority queue (the loan is re-tagged and the queue
 /// re-sorted).
+///
+/// Issue #12: Now reads/writes `PriorityDataKey::Queue(proposal.pool_id)`.
 pub fn approve_priority_change(
     env: Env,
     approver: Address,
@@ -346,7 +379,7 @@ pub fn approve_priority_change(
         let mut queue = env
             .storage()
             .persistent()
-            .get::<PriorityDataKey, PriorityQueue>(&PriorityDataKey::Queue)
+            .get::<PriorityDataKey, PriorityQueue>(&PriorityDataKey::Queue(proposal.pool_id))
             .ok_or(ContractError::InvalidAmount)?;
 
         let mut updated: Vec<PriorityLoanEntry> = Vec::new(&env);
@@ -363,24 +396,11 @@ pub fn approve_priority_change(
             }
         }
 
-        // Re-sort after the tranche change.
-        let mut sorted: Vec<PriorityLoanEntry> = Vec::new(&env);
-        for entry in updated.iter() {
-            let mut insert_at = sorted.len();
-            for i in 0..sorted.len() {
-                if sorted.get(i).unwrap().priority.rank() > entry.priority.rank() {
-                    insert_at = i;
-                    break;
-                }
-            }
-            sorted.insert(insert_at, entry.clone());
-        }
-
-        queue.entries = sorted;
+        queue.entries = sort_by_priority(&env, updated);
         queue.updated_at = env.ledger().timestamp();
         env.storage()
             .persistent()
-            .set(&PriorityDataKey::Queue, &queue);
+            .set(&PriorityDataKey::Queue(proposal.pool_id), &queue);
 
         proposal.executed = true;
     }

@@ -149,6 +149,10 @@ pub fn request_loan(
     crate::helpers::check_permission(&env, &borrower, |p| p.can_request_loan)?;
     register_borrower_if_needed(&env, &borrower);
 
+    // Issue #1429: lazily settle any overdue loans in the borrower's history so a
+    // fresh request cannot be granted while a past-due loan sits unflagged.
+    crate::lazy_default_detection::check_all_defaults_for_borrower(&env, &borrower)?;
+
     if has_active_loan(&env, &borrower) {
         return Err(ContractError::ActiveLoanExists);
     }
@@ -276,6 +280,9 @@ pub fn request_loan(
     };
 
     env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
+    // Issue #1429: index this loan under the borrower's history so future
+    // pre-checks can iterate every loan they have ever opened.
+    crate::lazy_default_detection::record_borrower_loan_id(&env, &borrower, loan_id);
     env.storage()
         .persistent()
         .set(&DataKey::ActiveLoan(borrower.clone()), &loan_id);
@@ -415,13 +422,6 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
 
-    let total_owed = loan.amount.checked_add(loan.total_yield).ok_or(ContractError::ArithmeticError)?;
-    let outstanding = total_owed.checked_sub(loan.amount_repaid).ok_or(ContractError::ArithmeticError)?;
-
-    if payment > outstanding {
-        panic_with_error!(&env, ContractError::InvalidAmount);
-    }
-
     // ── Step 1: Accrue compound interest ─────────────────────────────────────
     let now = env.ledger().timestamp();
     let elapsed_secs = now.saturating_sub(loan.last_interest_calc);
@@ -456,10 +456,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         .unwrap_or(0)
         .max(0);
 
-    assert!(
-        payment > 0 && payment <= outstanding,
-        "invalid payment amount"
-    );
+    if payment > outstanding {
+        return Err(ContractError::InvalidAmount);
+    }
 
     // ── Step 3: Apply payment ─────────────────────────────────────────────────
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
@@ -1036,6 +1035,37 @@ pub fn get_co_borrowers(env: Env, borrower: Address) -> Vec<Address> {
 
 // ── Issue #879: Loan Refinancing ─────────────────────────────────────────────
 
+// ── Issue #11: Shared eligibility predicate ───────────────────────────────────
+//
+// `refinance_quote` and `refinance_loan` previously duplicated (or omitted) the
+// eligibility check, which allowed a borrower to execute a refinance into a
+// *worse* rate even though their quote was marked `eligible: false`.
+//
+// Design decision: refinancing into a worse rate is **blocked** — a borrower
+// who wants to extend their tenure at a worse rate should use `request_extension`
+// instead.  This predicate is the single source of truth for both the read-only
+// quote path and the state-mutating execution path.
+//
+// Returns `true` when all of the following hold:
+//   1. `new_rate_bps < old_rate_bps`   — the new rate is strictly better
+//   2. `now < deadline`                — the existing loan has not expired
+//   3. `new_amount >= outstanding`     — new principal covers outstanding balance
+//   4. `new_amount >= min_loan_amount` — new principal meets protocol minimum
+fn is_refinance_eligible(
+    new_rate_bps: i128,
+    old_rate_bps: i128,
+    now: u64,
+    deadline: u64,
+    new_amount: i128,
+    outstanding: i128,
+    min_loan_amount: i128,
+) -> bool {
+    new_rate_bps < old_rate_bps
+        && now < deadline
+        && new_amount >= outstanding
+        && new_amount >= min_loan_amount
+}
+
 pub fn refinance_loan(
     env: Env,
     borrower: Address,
@@ -1074,6 +1104,35 @@ pub fn refinance_loan(
         return Err(ContractError::LoanBelowMinAmount);
     }
 
+    // ── Issue #10: Enforce refinance chain cap ────────────────────────────────
+    // Track how many times this borrower has refinanced in the current chain.
+    // The count is reset to 0 when a loan is fully repaid (not carried forward
+    // from a previous unrelated loan chain).
+    let chain_count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RefinanceChainCount(borrower.clone()))
+        .unwrap_or(0u32);
+
+    if cfg.max_refinances_per_loan_chain > 0 && chain_count >= cfg.max_refinances_per_loan_chain {
+        return Err(ContractError::RefinanceLimitExceeded);
+    }
+
+    // ── Issue #10: Enforce cooldown between refinances ────────────────────────
+    if cfg.refinance_cooldown_secs > 0 {
+        let last_refinanced_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastRefinancedAt(borrower.clone()))
+            .unwrap_or(0u64);
+
+        if last_refinanced_at > 0
+            && now < last_refinanced_at.saturating_add(cfg.refinance_cooldown_secs)
+        {
+            return Err(ContractError::RefinanceCooldownActive);
+        }
+    }
+
     let token = require_allowed_token(&env, &new_token)?;
 
     let vouches: Vec<VouchRecord> = env
@@ -1101,6 +1160,25 @@ pub fn refinance_loan(
         cfg.yield_bps
     };
 
+    let new_yield_bps = crate::credit_score::apply_tier_rewards_to_yield(
+        &env, &borrower, cfg.yield_bps,
+    );
+
+    // ── Issue #11: Enforce the shared eligibility predicate ───────────────────
+    // `refinance_loan` must honour the same eligibility rules as `refinance_quote`
+    // so the quote's `eligible` field is authoritative rather than advisory.
+    if !is_refinance_eligible(
+        new_yield_bps,
+        old_rate_bps,
+        now,
+        old_loan.deadline,
+        new_amount,
+        outstanding,
+        cfg.min_loan_amount,
+    ) {
+        return Err(ContractError::RefinanceNotEligible);
+    }
+
     old_loan.amount_repaid = total_owed;
     old_loan.status = LoanStatus::Repaid;
     old_loan.repayment_timestamp = Some(now);
@@ -1112,9 +1190,6 @@ pub fn refinance_loan(
         .remove(&DataKey::ActiveLoan(borrower.clone()));
 
     let new_loan_id = next_loan_id(&env);
-    let new_yield_bps = crate::credit_score::apply_tier_rewards_to_yield(
-        &env, &borrower, cfg.yield_bps,
-    );
     let new_yield = new_amount * new_yield_bps / 10_000;
 
     let new_loan = LoanRecord {
@@ -1184,6 +1259,15 @@ pub fn refinance_loan(
         .persistent()
         .set(&DataKey::RefinanceRecord(new_loan_id), &refinance_record);
 
+    // ── Issue #10: Persist updated chain counter and last-refinanced timestamp
+    let new_chain_count = chain_count.saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::RefinanceChainCount(borrower.clone()), &new_chain_count);
+    env.storage()
+        .persistent()
+        .set(&DataKey::LastRefinancedAt(borrower.clone()), &now);
+
     // Track aggregate refinance statistics and customer savings.
     let annual_interest_old = outstanding.saturating_mul(old_rate_bps) / BPS_DENOMINATOR;
     let annual_interest_new = outstanding.saturating_mul(new_yield_bps) / BPS_DENOMINATOR;
@@ -1225,8 +1309,12 @@ pub fn get_refinance_record(env: Env, loan_id: u64) -> Option<RefinanceRecord> {
 // ── Issue #1166: Refinance rate shopping ─────────────────────────────────────
 
 /// Produce a non-binding quote for refinancing `borrower`'s active loan into
-/// `new_amount` of `new_token`, without mutating any state. Lets a borrower
+/// `new_amount` of `new_token`, without mutating any state.  Lets a borrower
 /// "shop" for better rates before committing via `refinance_loan`.
+///
+/// Issue #11: `eligible` is now computed via the same `is_refinance_eligible`
+/// predicate that `refinance_loan` enforces, making the quote authoritative:
+/// a quote with `eligible: false` cannot be executed via `refinance_loan`.
 pub fn refinance_quote(
     env: Env,
     borrower: Address,
@@ -1278,10 +1366,16 @@ pub fn refinance_quote(
         None
     };
 
-    let eligible = new_rate_bps < old_rate_bps
-        && now < old_loan.deadline
-        && new_amount >= outstanding
-        && new_amount >= cfg.min_loan_amount;
+    // Issue #11: Use the shared predicate — quote and execution now agree.
+    let eligible = is_refinance_eligible(
+        new_rate_bps,
+        old_rate_bps,
+        now,
+        old_loan.deadline,
+        new_amount,
+        outstanding,
+        cfg.min_loan_amount,
+    );
 
     Ok(RefinanceQuote {
         borrower,
@@ -1309,6 +1403,24 @@ pub fn get_refinance_stats(env: Env) -> RefinanceStats {
         })
 }
 
+// ── Unimplemented stubs (issue #1394) ────────────────────────────────────
+//
+// Audited: none of the seven functions below (down to `check_acceleration`)
+// are wired up as contract entry points in lib.rs — they are dead code from
+// `lib.rs`'s perspective, reachable only by another Rust module calling them
+// directly (and nothing in this crate does). They cannot silently mislead an
+// external caller (API server, dashboard) today, since there is no entry
+// point to call. They are left in place, clearly marked, as scaffolding for
+// features that are not yet built; see docs/unimplemented-stubs.md for the
+// full audit and each function's actual current behavior.
+//
+// If any of these is ever wired into lib.rs, it must be implemented first —
+// do not expose a stub as a live entry point, or callers integrating against
+// it will get the silent non-functional behavior this audit exists to flag.
+
+/// STUB — always returns `Err(InvalidStateTransition)`. No collateral is
+/// ever recorded. Not exposed as a contract entry point (see module note
+/// above). See docs/unimplemented-stubs.md.
 pub fn deposit_collateral(
     _env: Env,
     _borrower: Address,
@@ -1318,14 +1430,25 @@ pub fn deposit_collateral(
     Err(ContractError::InvalidStateTransition)
 }
 
+/// STUB — always returns `0`, regardless of any prior `deposit_collateral`
+/// call (which always fails anyway). Not exposed as a contract entry point.
+/// See docs/unimplemented-stubs.md.
 pub fn get_borrower_collateral(_env: Env, _borrower: Address) -> i128 {
     0
 }
 
+/// STUB — no-op; sends no reminders. Not exposed as a contract entry point.
+/// See docs/unimplemented-stubs.md.
 pub fn emit_repayment_reminders(_env: Env) {}
+
+/// STUB — no-op that always reports success; mints no NFT. Not exposed as a
+/// contract entry point. See docs/unimplemented-stubs.md.
 pub fn mint_reputation_nft(_env: Env, _borrower: Address) -> Result<(), ContractError> {
     Ok(())
 }
+
+/// STUB — no-op that always reports success; sends no reminder. Not exposed
+/// as a contract entry point. See docs/unimplemented-stubs.md.
 pub fn send_repayment_reminder(_env: Env, _loan_id: u64) -> Result<(), ContractError> {
     Ok(())
 }
@@ -1438,17 +1561,29 @@ pub fn approve_extension(
     request.approvals.push_back(voucher.clone());
 
     // ── Stake-weighted quorum ────────────────────────────────────────────
-    // total_stake = sum of all vouchers' reputation-weighted stakes
-    // approval_stake = sum of approving vouchers' reputation-weighted stakes
-    // Extension executes when approval_stake > total_stake / 2 (strict majority)
+    // Cache each voucher's weighted stake once, then accumulate totals in a
+    // single pass. This avoids re-calling vouch_reputation_weight on every
+    // vote (previously O(n) per vote → O(n²) total) and avoids the nested
+    // approvals scan. Weighted stakes are locked in at request-approval time;
+    // mid-vote reputation changes are intentionally not reflected — the
+    // snapshot prevents manipulation of an in-flight vote by rapidly
+    // adjusting reputation scores.
     let mut total_stake: i128 = 0;
     let mut approval_stake: i128 = 0;
 
+    // Build a cached list of (voucher_addr, weighted_stake) in one pass.
+    let mut weighted_stakes: soroban_sdk::Vec<(Address, i128)> =
+        soroban_sdk::Vec::new(&env);
     for v in vouches.iter() {
         let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
         let weighted = v.stake * weight / crate::types::BPS_DENOMINATOR;
+        weighted_stakes.push_back((v.voucher.clone(), weighted));
         total_stake = total_stake.saturating_add(weighted);
-        if request.approvals.iter().any(|a| a == v.voucher) {
+    }
+
+    // Single O(n) pass: accumulate approval_stake from the cached values.
+    for (addr, weighted) in weighted_stakes.iter() {
+        if request.approvals.iter().any(|a| a == addr) {
             approval_stake = approval_stake.saturating_add(weighted);
         }
     }
@@ -1500,12 +1635,20 @@ pub fn get_extension_request(
         .get(&DataKey::LoanExtension(borrower))
 }
 
+/// STUB — always returns `Err(InvalidStateTransition)` (after checking auth
+/// and the thaw state, so a caller does get a real auth/thaw error first if
+/// either applies). No payment is ever deferred. Not exposed as a contract
+/// entry point (see the module note above `deposit_collateral`). See
+/// docs/unimplemented-stubs.md.
 pub fn defer_payment(env: Env, borrower: Address) -> Result<(), ContractError> {
     borrower.require_auth();
     require_not_thawing(&env)?;
     Err(ContractError::InvalidStateTransition)
 }
 
+/// STUB — always returns `Err(InvalidStateTransition)`. No acceleration
+/// check ever runs. Not exposed as a contract entry point. See
+/// docs/unimplemented-stubs.md.
 pub fn check_acceleration(_env: Env, _borrower: Address) -> Result<(), ContractError> {
     Err(ContractError::InvalidStateTransition)
 }
@@ -1514,14 +1657,30 @@ pub fn set_maturity_date(
     env: Env,
     admin_signers: Vec<Address>,
     borrower: Address,
-    _maturity_date: u64,
+    maturity_date: u64,
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     let mut loan = get_active_loan_record(&env, &borrower)?;
-    loan.maturity_date = Some(_maturity_date);
+
+    let now = env.ledger().timestamp();
+    if maturity_date <= now {
+        return Err(ContractError::InvalidAmount);
+    }
+    if maturity_date <= loan.disbursement_timestamp {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    loan.maturity_date = Some(maturity_date);
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
+
+    // Issue #9: emit event so off-chain indexers can detect maturity changes
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("mat_set")),
+        (borrower, _maturity_date),
+    );
+
     Ok(())
 }
 
@@ -1534,11 +1693,18 @@ pub fn set_loan_rate(
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     let mut loan = get_active_loan_record(&env, &borrower)?;
-    loan.rate_type = rate_type;
-    loan.index_reference = index_reference;
+    loan.rate_type = rate_type.clone();
+    loan.index_reference = index_reference.clone();
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
+
+    // Issue #9: emit event so off-chain indexers can detect rate changes
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("rate_set")),
+        (borrower,),
+    );
+
     Ok(())
 }
 
@@ -1577,11 +1743,22 @@ pub fn remove_loan_guarantor(env: Env, borrower: Address) -> Result<(), Contract
     require_not_thawing(&env)?;
 
     let mut loan = get_active_loan_record(&env, &borrower)?;
+
+    // Capture the guarantor before clearing it so we can include it in the event.
+    let removed_guarantor = loan.guarantor.clone();
+
     loan.guarantor = None;
 
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
+
+    // Issue #9: emit event so off-chain indexers can detect guarantor removal
+    // without having to diff full loan state on every block.
+    env.events().publish(
+        (symbol_short!("loan"), symbol_short!("g_remove")),
+        (borrower, removed_guarantor),
+    );
 
     Ok(())
 }
