@@ -78,6 +78,10 @@ jobs:
           /loans/{loanId}/recurring-payment/execute
           /api/webhooks/{webhookId}
           /api/webhooks/{webhookId}/test
+          /loans/{loanId}/forecast
+          /loans/{loanId}/forecast/accuracy
+          /api/webhooks/{webhookId}/deliveries
+          /api/webhooks/{webhookId}/stats
           KNOWN
           } | sort -u > /tmp/server_paths.txt
 

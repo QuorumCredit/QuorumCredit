@@ -62,6 +62,7 @@ lerna-debug.log*
 # Coverage reports
 lcov.info
 coverage/
+.nyc_output/
 tarpaulin-report.html
 tarpaulin-report.json
 *.profraw
@@ -73,6 +74,8 @@ server/node_modules/
 services/*/node_modules/
 tools/*/node_modules/
 node_modules/
+dist/
+build/
 server/dist/
 dashboard/dist/
 services/*/dist/
@@ -91,6 +94,7 @@ mutants.out.lock
 # Indexer SQLite database (tools/indexer, services/indexer) — runtime state, not source
 indexer.db
 indexer.db-*
+*.db
 *.db-journal
 *.db-wal
 *.db-shm

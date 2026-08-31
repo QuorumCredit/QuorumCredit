@@ -100,7 +100,13 @@ Emitted when a loan is disbursed to a borrower.
 |-------|------|-------------|
 | topics[0] | Symbol | `"loan"` |
 | topics[1] | Symbol | `"request"` |
-| value | `(Address, i128, i128, String, Address)` | `(borrower, amount_stroops, threshold_stroops, loan_purpose, token)` |
+| value | `(u64, Address, i128, u64, i128, String, Address, Vec<Address>)` | `(loan_id, borrower, amount_stroops, deadline, threshold_stroops, loan_purpose, token, vouchers)` |
+
+> **Decoder note (v2 schema):** As of the enriched decoder (`tools/indexer/src/indexer.rs` `simplify_value`),
+> `loan/request` events include `loan_id` (u64), `deadline` (unix timestamp u64), and `vouchers`
+> (array of voucher address hex strings) in the decoded `value_json`. The `LoanProjector`
+> (`server/src/bridge/loanProjector.ts`) uses `loan_id` as the primary key, enabling correct
+> tracking of multiple concurrent loans per borrower.
 
 ---
 
