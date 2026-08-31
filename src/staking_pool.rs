@@ -215,7 +215,9 @@ pub fn queue_unstake(
     }
 
     let pool = load_pool(&env, pool_id)?;
-    if pool.status == StakingPoolStatus::Closed {
+    // Allow both Active and Closed pools to accept unstake requests so
+    // stakers can always exit. Only reject if the pool is Draining.
+    if pool.status == StakingPoolStatus::Draining {
         return Err(ContractError::StakingPoolNotActive);
     }
 
@@ -348,6 +350,14 @@ pub fn claim_yield(
 ///
 /// Updates `yield_per_token_scaled` and recalculates `current_apy_bps` based
 /// on the elapsed time since the last distribution.
+///
+/// # Safe input range
+///
+/// `yield_amount` must satisfy `yield_amount * YIELD_PER_TOKEN_PRECISION <= i128::MAX`.
+/// Since `YIELD_PER_TOKEN_PRECISION = 10^12`, this means:
+///   `yield_amount <= i128::MAX / 10^12 ≈ 170_141_183_460_469`
+///
+/// Passing a larger value will return `ContractError::ArithmeticOverflow`.
 pub fn distribute_yield(
     env: Env,
     admin_signers: Vec<Address>,
@@ -385,7 +395,7 @@ pub fn distribute_yield(
     // Update accumulator.
     let delta = yield_amount
         .checked_mul(YIELD_PER_TOKEN_PRECISION)
-        .unwrap_or(i128::MAX)
+        .ok_or(ContractError::ArithmeticOverflow)?
         / pool.total_staked;
 
     pool.yield_per_token_scaled = pool.yield_per_token_scaled.saturating_add(delta);
@@ -411,6 +421,89 @@ pub fn distribute_yield(
     env.events().publish(
         (symbol_short!("pool"), symbol_short!("yieldDist")),
         (pool_id, yield_amount, pool.yield_per_token_scaled),
+    );
+
+    Ok(())
+}
+
+/// Apply a loss to the staking pool, reducing `total_staked` and updating the
+/// yield-per-token accumulator with a negative delta so that each staker's
+/// future `harvest` reflects their proportional share of the loss.
+///
+/// - `loss_amount` must be > 0 and <= `pool.total_staked`.
+/// - Emits a `pool/loss` event.
+/// - Requires admin approval and the pool to be Active or Draining.
+pub fn apply_staking_pool_loss(
+    env: Env,
+    admin_signers: Vec<Address>,
+    pool_id: u64,
+    loss_amount: i128,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+    require_admin_approval(&env, &admin_signers);
+
+    if loss_amount <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let mut pool = load_pool(&env, pool_id)?;
+    if pool.status == StakingPoolStatus::Closed {
+        return Err(ContractError::StakingPoolNotActive);
+    }
+    if pool.total_staked <= 0 {
+        return Err(ContractError::InsufficientFunds);
+    }
+    if loss_amount > pool.total_staked {
+        return Err(ContractError::InsufficientFunds);
+    }
+
+    // Compute a negative accumulator delta so each staker's next harvest
+    // subtracts their proportional share of the loss.
+    let loss_delta = loss_amount
+        .checked_mul(YIELD_PER_TOKEN_PRECISION)
+        .ok_or(ContractError::ArithmeticOverflow)?
+        / pool.total_staked;
+
+    pool.yield_per_token_scaled = pool.yield_per_token_scaled.saturating_sub(loss_delta);
+    pool.total_staked = pool.total_staked.saturating_sub(loss_amount);
+
+    save_pool(&env, &pool);
+
+    env.events().publish(
+        (symbol_short!("pool"), symbol_short!("loss")),
+        (pool_id, loss_amount, pool.total_staked),
+    );
+
+    Ok(())
+}
+
+/// Close a staking pool, preventing new stakes and yield distributions.
+///
+/// - Sets pool status to `Closed`.
+/// - Existing stakers can still call `queue_unstake` / `process_unstake` and
+///   `claim_yield` after closure to retrieve their funds.
+/// - New calls to `stake_capital` and `distribute_yield` will be rejected.
+/// - Requires admin approval.
+/// - Emits a `pool/closed` event.
+pub fn close_staking_pool(
+    env: Env,
+    admin_signers: Vec<Address>,
+    pool_id: u64,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+    require_admin_approval(&env, &admin_signers);
+
+    let mut pool = load_pool(&env, pool_id)?;
+    if pool.status == StakingPoolStatus::Closed {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    pool.status = StakingPoolStatus::Closed;
+    save_pool(&env, &pool);
+
+    env.events().publish(
+        (symbol_short!("pool"), symbol_short!("closed")),
+        (pool_id, env.ledger().timestamp()),
     );
 
     Ok(())
