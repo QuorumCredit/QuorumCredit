@@ -355,6 +355,12 @@ pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Unpause) {
         panic_with_error!(&env, err);
     }
+    // Issue #1423: a circuit-breaker-induced pause must be explicitly
+    // acknowledged (via `acknowledge_circuit_breaker`) before it can be cleared,
+    // so a breaker incident is never silently unpaused with no record.
+    if !crate::circuit_breaker::is_circuit_breaker_acknowledged(&env) {
+        panic_with_error!(&env, ContractError::CircuitBreakerNotAcknowledged);
+    }
     env.storage().instance().set(&DataKey::Paused, &false);
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::None);
     env.storage().instance().remove(&DataKey::ThawState);

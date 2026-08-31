@@ -45,11 +45,13 @@ pub mod admin;
 pub mod arbitrage_prevention;
 pub mod audit;
 pub mod batch_transfer;
+pub mod bond_protection;
 pub mod bridge;
 pub mod cache;
 pub mod circuit_breaker;
 pub mod cooldown_bypass;
 pub mod credit_score;
+pub mod detection;
 pub mod cross_chain;
 pub mod cross_chain_auction;
 pub mod cross_chain_governance;
@@ -137,21 +139,12 @@ mod cross_chain_governance_test;
 mod cross_chain_auction_test;
 #[cfg(test)]
 mod liquidity_farming_test;
-// Issue #1418 — Vouch cooldown enforcement tests
 #[cfg(test)]
-mod vouch_cooldown_test;
-// Issue #1419 — Minimum stake, zero stake, and voucher balance validation tests
+mod loan_cart_test;
 #[cfg(test)]
-mod vouch_zero_stake_test;
+mod repay_validation_test;
 #[cfg(test)]
-mod vouch_min_stake_test;
-#[cfg(test)]
-mod voucher_balance_check_test;
-// Issue #1420 — Max vouchers per borrower and duplicate vouch tests
-#[cfg(test)]
-mod max_vouchers_per_borrower_test;
-#[cfg(test)]
-mod duplicate_vouch_test;
+mod unimplemented_stubs_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -243,6 +236,8 @@ impl QuorumCreditContract {
                 default_rate_threshold: 0,
                 insurance_fund_premium_bps: 0,
                 insurance_max_payout_bps: 0,
+                max_refinances_per_loan_chain: crate::types::DEFAULT_MAX_REFINANCES_PER_LOAN_CHAIN,
+                refinance_cooldown_secs: crate::types::DEFAULT_REFINANCE_COOLDOWN_SECS,
             },
         );
 
@@ -993,6 +988,9 @@ impl QuorumCreditContract {
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
         helpers::increment_total_default_count(&env);
 
+        // Issue #1413: Demote loyalty tier on default
+        loyalty::record_default_for_loyalty(&env, &borrower);
+
         // Burn excellent credit tier badge on default
         reputation::burn_excellent_badge(&env, &borrower);
 
@@ -1024,6 +1022,60 @@ impl QuorumCreditContract {
             helpers::get_total_default_count(&env),
             helpers::get_total_loan_count(&env),
         );
+    }
+
+    // ── Issue #1422: Fraud score detection ──────────────────────────────────
+    /// Recompute and persist a voucher's fraud score from their vouch/slash history.
+    pub fn update_fraud_score(env: Env, voucher: Address) -> Result<(), ContractError> {
+        detection::update_fraud_score(env, voucher)
+    }
+
+    /// Read a voucher's stored fraud score, if one has been computed.
+    pub fn get_fraud_score(env: Env, voucher: Address) -> Option<crate::types::VoucherFraudScore> {
+        detection::get_fraud_score(env, voucher)
+    }
+
+    /// Persist the fraud-score configuration (threshold + enabled). Admin-only.
+    pub fn set_fraud_score_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: crate::types::FraudScoreConfig,
+    ) -> Result<(), ContractError> {
+        detection::set_fraud_score_config(env, admin_signers, config)
+    }
+
+    /// Read the current fraud-score configuration.
+    pub fn get_fraud_score_config(env: Env) -> crate::types::FraudScoreConfig {
+        detection::get_fraud_score_config_view(env)
+    }
+
+    // ── Issue #1423/#1424/#1425: Circuit breaker admin controls ─────────────
+    /// Acknowledge the most recent circuit-breaker activation (admin multi-sig).
+    /// Required before `unpause` will clear a circuit-breaker-induced pause.
+    pub fn acknowledge_circuit_breaker(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::acknowledge_circuit_breaker(&env, admin_signers)
+    }
+
+    /// Return the bounded history of circuit-breaker activations, oldest first.
+    pub fn get_circuit_breaker_history(env: Env) -> Vec<crate::types::CircuitBreakerTrigger> {
+        circuit_breaker::get_circuit_breaker_history(&env)
+    }
+
+    /// Set the circuit-breaker anti-thrash cooldown window, in seconds. Admin-only.
+    pub fn set_circuit_breaker_cooldown(
+        env: Env,
+        admin_signers: Vec<Address>,
+        new_cooldown_secs: u64,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::set_circuit_breaker_cooldown(&env, admin_signers, new_cooldown_secs)
+    }
+
+    /// Read the effective circuit-breaker cooldown (configured value or default).
+    pub fn get_circuit_breaker_cooldown(env: Env) -> u64 {
+        circuit_breaker::circuit_breaker_cooldown_secs(&env)
     }
 
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
@@ -1631,7 +1683,9 @@ impl QuorumCreditContract {
 
     /// Stage a loan request in the borrower's cart instead of submitting it
     /// immediately. Multiple items can be staged and submitted together via
-    /// `submit_batch_loan_request`.
+    /// `submit_batch_loan_request` — though the protocol's single-active-loan
+    /// constraint means only one item per submission can actually disburse;
+    /// see that function's docs (issue #1397).
     pub fn add_to_loan_cart(
         env: Env,
         borrower: Address,
@@ -1646,14 +1700,43 @@ impl QuorumCreditContract {
         loan_cart::get_loan_cart(env, borrower)
     }
 
+    /// Remove a single staged item from the borrower's cart by index,
+    /// without discarding the rest of the cart (#1396). Panics with
+    /// `ContractError::NotFound` if the borrower has no cart, or if
+    /// `item_index` is out of range for it.
+    pub fn remove_cart_item(env: Env, borrower: Address, item_index: u32) -> loan_cart::LoanCart {
+        loan_cart::remove_cart_item(env, borrower, item_index)
+    }
+
+    /// Replace the amount/tenure of a single staged cart item in place,
+    /// without disturbing its position or the rest of the cart (#1396).
+    /// Panics with `ContractError::NotFound` if the borrower has no cart, or
+    /// if `item_index` is out of range for it.
+    pub fn update_cart_item(
+        env: Env,
+        borrower: Address,
+        item_index: u32,
+        amount: i128,
+        tenure_secs: u64,
+    ) -> loan_cart::LoanCart {
+        loan_cart::update_cart_item(env, borrower, item_index, amount, tenure_secs)
+    }
+
     /// Clear a borrower's cart without submitting it (recorded as abandoned).
     pub fn abandon_loan_cart(env: Env, borrower: Address) {
         loan_cart::abandon_loan_cart(env, borrower)
     }
 
     /// Submit every staged cart item as an individual loan request. Batches
-    /// of 3 or more items receive a 1% volume discount on requested
-    /// principal. Returns a per-item result.
+    /// of 3 or more items are eligible for a 1% volume discount on requested
+    /// principal — but the protocol only allows a single *active* loan per
+    /// borrower, so at most one item per submission can actually disburse;
+    /// every item after the first success fails with `ActiveLoanExists`
+    /// (see the `loan_cart` module docs). Only an item that actually
+    /// succeeds can carry a realized discount in the returned result; a
+    /// failed item's `discounted_amount` is left undiscounted rather than
+    /// advertising a price for a loan that was never funded (issue #1397).
+    /// Returns a per-item result.
     pub fn submit_batch_loan_request(
         env: Env,
         borrower: Address,
@@ -1888,41 +1971,55 @@ impl QuorumCreditContract {
 
     // ── Loan Priority / Subordination (senior-junior debt structures) ────────
 
-    /// Build (or replace) the loan priority queue, tagging each loan Senior,
-    /// Mezzanine, or Junior.
+    /// Build (or replace) the loan priority queue for a specific pool/batch,
+    /// tagging each loan Senior, Mezzanine, or Junior.
+    ///
+    /// Issue #12: `pool_id` parameter added so each syndication pool maintains
+    /// its own independent priority queue rather than sharing one global queue.
     pub fn create_loan_priority_queue(
         env: Env,
         admin_signers: Vec<Address>,
+        pool_id: u64,
         loans: Vec<loan_priority::PriorityLoanEntry>,
     ) -> Result<(), ContractError> {
-        loan_priority::create_loan_priority_queue(env, admin_signers, loans)
+        loan_priority::create_loan_priority_queue(env, admin_signers, pool_id, loans)
     }
 
-    pub fn get_loan_priority_queue(env: Env) -> Vec<loan_priority::PriorityLoanEntry> {
-        loan_priority::get_loan_priority_queue(env)
+    /// Read the priority queue for a specific pool/batch.
+    ///
+    /// Issue #12: `pool_id` parameter added.
+    pub fn get_loan_priority_queue(env: Env, pool_id: u64) -> Vec<loan_priority::PriorityLoanEntry> {
+        loan_priority::get_loan_priority_queue(env, pool_id)
     }
 
-    /// Route recovered default proceeds through the Senior/Mezzanine/Junior waterfall.
+    /// Route recovered default proceeds through the Senior/Mezzanine/Junior
+    /// waterfall for a specific pool/batch.
+    ///
+    /// Issue #12: `pool_id` parameter added.
     pub fn route_default_proceeds(
         env: Env,
         admin_signers: Vec<Address>,
+        pool_id: u64,
         total_proceeds: i128,
     ) -> Result<loan_priority::WaterfallRun, ContractError> {
-        loan_priority::route_default_proceeds(env, admin_signers, total_proceeds)
+        loan_priority::route_default_proceeds(env, admin_signers, pool_id, total_proceeds)
     }
 
     pub fn get_waterfall_run(env: Env, run_id: u64) -> Option<loan_priority::WaterfallRun> {
         loan_priority::get_waterfall_run(env, run_id)
     }
 
-    /// Propose a governance change to a loan's priority tranche.
+    /// Propose a governance change to a loan's priority tranche within a pool.
+    ///
+    /// Issue #12: `pool_id` parameter added.
     pub fn propose_priority_change(
         env: Env,
         proposer: Address,
+        pool_id: u64,
         loan_id: u64,
         new_priority: loan_priority::LoanPriority,
     ) -> Result<u64, ContractError> {
-        loan_priority::propose_priority_change(env, proposer, loan_id, new_priority)
+        loan_priority::propose_priority_change(env, proposer, pool_id, loan_id, new_priority)
     }
 
     /// Approve a pending priority-change proposal; executes once threshold is met.
@@ -3278,6 +3375,45 @@ impl QuorumCreditContract {
         crate::get_insurance_pool_balance(env)
     }
 
+    // ── Issue #1172/#1406: Guarantor coverage ─────────────────────────────────
+
+    /// Locks `guarantee_amount` of `token` from `guarantor_address` into the
+    /// contract as collateral backing the loan (#1406).
+    pub fn request_guarantor_for_loan(
+        env: Env,
+        loan_id: u64,
+        guarantor_address: Address,
+        guarantee_amount: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        guarantor::request_guarantor_for_loan(env, loan_id, guarantor_address, guarantee_amount, token)
+    }
+
+    /// Releases a guarantor once their obligation is over, returning the
+    /// locked collateral (#1406).
+    pub fn release_guarantor(env: Env, loan_id: u64) -> Result<(), ContractError> {
+        guarantor::release_guarantor(env, loan_id)
+    }
+
+    pub fn get_guarantor_record(env: Env, loan_id: u64) -> Result<GuarantorRecord, ContractError> {
+        guarantor::get_guarantor_record(env, loan_id)
+    }
+
+    pub fn get_guarantor_stats(env: Env, guarantor: Address) -> Result<GuarantorStats, ContractError> {
+        guarantor::get_guarantor_stats(env, guarantor)
+    }
+
+    /// Pays out a defaulted loan's locked guarantee to its vouchers pro-rata
+    /// (or the borrower if there are none), only once the loan is actually
+    /// Defaulted, and only once ever per guarantee (#1406).
+    pub fn claim_guarantor_coverage(env: Env, loan_id: u64) -> Result<i128, ContractError> {
+        guarantor::claim_guarantor_coverage(env, loan_id)
+    }
+
+    pub fn get_guarantor_reputation_multiplier(env: Env, guarantor: Address) -> Result<u32, ContractError> {
+        guarantor::get_guarantor_reputation_multiplier(env, guarantor)
+    }
+
 
 
 
@@ -4445,6 +4581,17 @@ impl QuorumCreditContract {
     ) -> Option<SyndicateProposal> {
         vouch_syndication::get_syndicate_proposal(env, pool_id, proposal_id)
     }
+
+    /// #1409: execute an Approved syndicate proposal — dissolves the pool and
+    /// returns each member's principal pro-rata. Without this, an Approved
+    /// proposal was inert: nothing in the module ever read it back to act on it.
+    pub fn execute_syndicate_proposal(
+        env: Env,
+        pool_id: u64,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        vouch_syndication::execute_syndicate_proposal(env, pool_id, proposal_id)
+    }
 }
 
 // ── Issue #1169: Conditional vouch release on performance milestones ───────────
@@ -4756,14 +4903,21 @@ impl QuorumCreditContract {
         reputation_nft::delist_badge(&env, owner, badge_type)
     }
 
-    /// Purchase a badge from the marketplace.
+    /// Purchase a badge from the marketplace with on-chain payment enforcement.
+    ///
+    /// Transfers `payment_amount` tokens from `buyer` to `seller` on-chain before
+    /// transferring badge ownership. Returns `InsufficientFunds` if `payment_amount`
+    /// is less than the badge's `listing_price`. See `reputation_nft::purchase_badge`
+    /// for full documentation.
     pub fn purchase_badge(
         env: Env,
         buyer: Address,
         seller: Address,
         badge_type: reputation_nft::BadgeType,
+        token: Address,
+        payment_amount: i128,
     ) -> Result<(), ContractError> {
-        reputation_nft::purchase_badge(&env, buyer, seller, badge_type)
+        reputation_nft::purchase_badge(&env, buyer, seller, badge_type, token, payment_amount)
     }
 
     /// Return a badge record.

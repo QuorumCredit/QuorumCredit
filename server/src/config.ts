@@ -43,6 +43,8 @@ export interface ServerConfig {
   sorobanRpc: {
     url: string | undefined;
     contractId: string | undefined;
+    /** Secret key of the keeper account authorized to call execute_recurring_payment. */
+    keeperSecretKey?: string;
   };
 }
 
@@ -143,6 +145,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     sorobanRpc: {
       url: env.SOROBAN_RPC_URL,
       contractId: env.QUORUM_CREDIT_CONTRACT_ID,
+      keeperSecretKey: env.SOROBAN_KEEPER_SECRET_KEY,
     },
   };
 }

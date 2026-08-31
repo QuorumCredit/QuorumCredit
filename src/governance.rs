@@ -623,6 +623,10 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         env.storage()
             .persistent()
             .set(&DataKey::VoucherStats(v.voucher.clone()), &stats);
+
+        // Issue #1422: refresh this voucher's fraud score off the updated
+        // slash history so suspicious vouching patterns get flagged.
+        let _ = crate::detection::update_fraud_score(env.clone(), v.voucher.clone());
     }
 
     env.storage()
@@ -655,6 +659,9 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         .persistent()
         .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
     crate::helpers::increment_total_default_count(&env);
+
+    // Issue #1413: Demote loyalty tier on default
+    crate::loyalty::record_default_for_loyalty(&env, borrower);
 
     if remaining_vouches.is_empty() {
         env.storage()
