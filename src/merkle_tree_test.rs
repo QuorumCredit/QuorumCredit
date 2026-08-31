@@ -374,4 +374,24 @@ mod gas_benchmarks {
             );
         }
     }
+
+    #[test]
+    fn bench_build_merkle_root_at_max_vouch_set_size() {
+        let env = Env::default();
+        let max_size = crate::merkle_tree::MAX_VOUCH_SET_SIZE;
+
+        let vouches = make_vouches(&env, max_size);
+        let leaves = leaves_of(&env, &vouches);
+
+        let (cpu, mem) = measure(&env, || {
+            let _ = build_merkle_root(&env, leaves.clone());
+        });
+
+        report("build_root_at_max", max_size, cpu, mem);
+        assert!(
+            cpu < MAX_INSTRUCTIONS_PER_INVOCATION / 10,
+            "root computation at n={max_size} used {cpu} CPU instructions, over the {}-instruction ceiling",
+            MAX_INSTRUCTIONS_PER_INVOCATION / 10
+        );
+    }
 }

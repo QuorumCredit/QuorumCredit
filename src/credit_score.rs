@@ -329,11 +329,17 @@ pub fn calculate_credit_score(
 
     let account_age = env.ledger().timestamp() - account_age;
 
+    // Issue #1407: this used to read DataKey::VoucherHistory(borrower) from *instance*
+    // storage. But vouch.rs's VoucherHistory key is keyed by *voucher*, not borrower
+    // (it tracks which borrowers a voucher has backed) — and it's written to
+    // *persistent* storage. Both the key's meaning and the storage tier were wrong, so
+    // the lookup below always missed and voucher_count silently defaulted to 0 for
+    // every borrower regardless of how many active vouches they actually had.
     let voucher_count: u32 = env
         .storage()
-        .instance()
-        .get::<DataKey, soroban_sdk::Vec<crate::types::VouchHistoryEntry>>(&DataKey::VoucherHistory(borrower.clone()))
-        .map(|history| history.len())
+        .persistent()
+        .get::<DataKey, soroban_sdk::Vec<crate::types::VouchRecord>>(&DataKey::Vouches(borrower.clone()))
+        .map(|vouches| vouches.len())
         .unwrap_or(0);
 
     // Calculate component scores

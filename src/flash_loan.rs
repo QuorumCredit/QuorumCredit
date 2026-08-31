@@ -13,13 +13,25 @@
 //! 3. Callback contract executes arbitrary logic (trading, liquidation, etc.)
 //! 4. Callback must call `repay_flash_loan()` with principal + 0.05% fee
 //! 5. If repayment fails, entire transaction reverts
+//!
+//! ## Anti-abuse guards
+//! - **Callback allowlist**: `callback_contract` must be on the admin-managed
+//!   allowlist (`set_flash_loan_callback_allowed`) or the loan is rejected
+//!   before any funds move. Without this, a caller could point `flash_loan`
+//!   at an arbitrary, unaudited contract deployed to re-enter other protocol
+//!   functions during the loan window using the borrowed liquidity.
+//! - **Per-caller cooldown**: consecutive flash loans to the same
+//!   `callback_contract` must be at least `FLASH_LOAN_MIN_INTERVAL_SECS`
+//!   apart, so a single allowlisted integration can't spam many small loans
+//!   in quick succession to grind `FlashLoanStats` or probe for exploitable
+//!   states.
 
 extern crate alloc;
 
 use crate::errors::ContractError;
-use crate::helpers::{config, require_not_paused, token_client};
+use crate::helpers::{config, require_admin_approval, require_not_paused, token_client};
 use crate::types::{DataKey, Config};
-use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
 
 /// Flash loan fee in basis points (0.05% = 5 bps)
 pub const FLASH_LOAN_FEE_BPS: i128 = 5;
@@ -32,6 +44,11 @@ pub const MAX_FLASH_LOAN_AMOUNT: i128 = 1_000_000_000_000; // 100,000 XLM
 
 /// Minimum flash loan amount
 pub const MIN_FLASH_LOAN_AMOUNT: i128 = 1_000_000; // 0.1 XLM
+
+/// Minimum interval, in ledger seconds, required between two flash loans to
+/// the same `callback_contract`. Bounds how fast a single caller can spam
+/// flash loans regardless of amount.
+pub const FLASH_LOAN_MIN_INTERVAL_SECS: u64 = 60;
 
 /// Records flash loan activity for analytics.
 #[contracttype]
@@ -142,6 +159,14 @@ pub fn flash_loan(
         return Err(ContractError::InvalidAmount);
     }
 
+    // Reject unregistered callback contracts before any funds move.
+    if !is_flash_loan_callback_allowed(env, &callback_contract) {
+        return Err(ContractError::FlashLoanCallbackNotAllowlisted);
+    }
+
+    // Enforce a minimum interval between loans to the same callback contract.
+    check_flash_loan_cooldown(env, &callback_contract)?;
+
     let cfg = config(env);
 
     // Check contract balance
@@ -178,6 +203,13 @@ pub fn flash_loan(
 
     // Update statistics
     update_flash_loan_stats(env, amount, fee)?;
+
+    // Record this timestamp so the next loan to this callback contract
+    // must wait out FLASH_LOAN_MIN_INTERVAL_SECS.
+    env.storage().persistent().set(
+        &DataKey::FlashLoanLastTimestamp(callback_contract.clone()),
+        &env.ledger().timestamp(),
+    );
 
     // Verify repayment happened (in production, this is implicit in transaction atomicity)
     // The contract balance check ensures the loan was repaid
@@ -261,7 +293,57 @@ pub fn check_per_contract_cap(
     }
 }
 
+/// Admin: allow or revoke a callback contract's ability to receive flash loans.
+/// Unregistered contracts are rejected by `flash_loan` before any funds move.
+pub fn set_flash_loan_callback_allowed(
+    env: &Env,
+    admin_signers: Vec<Address>,
+    callback_contract: Address,
+    allowed: bool,
+) -> Result<(), ContractError> {
+    require_admin_approval(env, &admin_signers);
+
+    env.storage().persistent().set(
+        &DataKey::AllowedFlashLoanCallbacks(callback_contract.clone()),
+        &allowed,
+    );
+
+    env.events().publish(
+        (symbol_short!("flashln"), symbol_short!("allowlist")),
+        (callback_contract, allowed),
+    );
+
+    Ok(())
+}
+
+/// Whether a callback contract is on the admin-managed flash loan allowlist.
+/// Defaults to `false` (deny) for any contract never explicitly allowlisted.
+pub fn is_flash_loan_callback_allowed(env: &Env, callback_contract: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AllowedFlashLoanCallbacks(callback_contract.clone()))
+        .unwrap_or(false)
+}
+
 // ── Internal functions ────────────────────────────────────────────────────────
+
+/// Rejects a flash loan to `callback_contract` if one was issued to it within
+/// the last `FLASH_LOAN_MIN_INTERVAL_SECS`.
+fn check_flash_loan_cooldown(env: &Env, callback_contract: &Address) -> Result<(), ContractError> {
+    let last: Option<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::FlashLoanLastTimestamp(callback_contract.clone()));
+
+    if let Some(last_timestamp) = last {
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(last_timestamp) < FLASH_LOAN_MIN_INTERVAL_SECS {
+            return Err(ContractError::FlashLoanCooldownActive);
+        }
+    }
+
+    Ok(())
+}
 
 fn validate_per_contract_cap(
     env: &Env,
@@ -343,5 +425,108 @@ mod tests {
         let fee = (principal * FLASH_LOAN_FEE_BPS) / 10_000;
         assert!(fee > 0);
         assert!(principal + fee > principal);
+    }
+
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
+    use soroban_sdk::testutils::{Address as _, Ledger};
+    use soroban_sdk::token::StellarAssetClient;
+
+    fn setup_contract(env: &Env) -> (Address, Address, Address) {
+        env.mock_all_auths();
+        let deployer = Address::generate(env);
+        let admin = Address::generate(env);
+        let admins = Vec::from_array(env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        StellarAssetClient::new(env, &token_id.address()).mint(&contract_id, &10_000_000_000);
+        let client = QuorumCreditContractClient::new(env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
+        (contract_id, admin, token_id.address())
+    }
+
+    #[test]
+    fn test_callback_must_be_allowlisted_before_funds_move() {
+        // A callback contract that was never admin-allowlisted is rejected
+        // up front, before any balance changes or stats updates.
+        let env = Env::default();
+        let (contract_id, _admin, token) = setup_contract(&env);
+        let callback = Address::generate(&env);
+        let callback_data = BytesN::from_array(&env, &[0u8; 32]);
+
+        env.as_contract(&contract_id, || {
+            let err = flash_loan(&env, MIN_FLASH_LOAN_AMOUNT, callback.clone(), callback_data)
+                .unwrap_err();
+            assert_eq!(err, ContractError::FlashLoanCallbackNotAllowlisted);
+
+            let stats = get_flash_loan_stats(&env).unwrap();
+            assert_eq!(stats.loan_count, 0);
+        });
+
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&contract_id), 10_000_000_000);
+    }
+
+    #[test]
+    fn test_cooldown_blocks_rapid_repeat_loans_without_touching_stats() {
+        // A second flash loan to the same callback contract within
+        // FLASH_LOAN_MIN_INTERVAL_SECS of the first is rejected without
+        // mutating FlashLoanStats or moving funds; once the interval has
+        // elapsed, the cooldown check clears.
+        let env = Env::default();
+        let (contract_id, admin, token) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let callback = Address::generate(&env);
+        let callback_data = BytesN::from_array(&env, &[0u8; 32]);
+
+        env.as_contract(&contract_id, || {
+            set_flash_loan_callback_allowed(&env, admin_signers.clone(), callback.clone(), true)
+                .unwrap();
+            assert!(is_flash_loan_callback_allowed(&env, &callback));
+
+            // Simulate a flash loan having just been taken by this callback.
+            env.storage().persistent().set(
+                &DataKey::FlashLoanLastTimestamp(callback.clone()),
+                &env.ledger().timestamp(),
+            );
+
+            let err = flash_loan(&env, MIN_FLASH_LOAN_AMOUNT, callback.clone(), callback_data)
+                .unwrap_err();
+            assert_eq!(err, ContractError::FlashLoanCooldownActive);
+
+            let stats = get_flash_loan_stats(&env).unwrap();
+            assert_eq!(stats.loan_count, 0);
+            assert_eq!(stats.period_fees, 0);
+        });
+
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&contract_id), 10_000_000_000);
+
+        // Advance past the cooldown window; the guard now clears.
+        env.ledger()
+            .set_timestamp(env.ledger().timestamp() + FLASH_LOAN_MIN_INTERVAL_SECS + 1);
+
+        env.as_contract(&contract_id, || {
+            assert!(check_flash_loan_cooldown(&env, &callback).is_ok());
+        });
+    }
+
+    #[test]
+    fn test_revoking_allowlist_blocks_future_loans() {
+        let env = Env::default();
+        let (contract_id, admin, _token) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let callback = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            set_flash_loan_callback_allowed(&env, admin_signers.clone(), callback.clone(), true)
+                .unwrap();
+            assert!(is_flash_loan_callback_allowed(&env, &callback));
+        });
+
+        env.as_contract(&contract_id, || {
+            set_flash_loan_callback_allowed(&env, admin_signers.clone(), callback.clone(), false)
+                .unwrap();
+            assert!(!is_flash_loan_callback_allowed(&env, &callback));
+        });
     }
 }

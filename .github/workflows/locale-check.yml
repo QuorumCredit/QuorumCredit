@@ -1,0 +1,35 @@
+name: Locale Key Check
+
+on:
+  pull_request:
+    paths:
+      - "dashboard/src/locales/**"
+      - "dashboard/scripts/check-locale-keys.mjs"
+      - "dashboard/package.json"
+      - ".github/workflows/locale-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "dashboard/src/locales/**"
+      - "dashboard/scripts/check-locale-keys.mjs"
+      - "dashboard/package.json"
+      - ".github/workflows/locale-check.yml"
+
+jobs:
+  locale-keys:
+    name: Check locale key completeness
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Check locale keys
+        working-directory: dashboard
+        run: npm run check:locales

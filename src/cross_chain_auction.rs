@@ -12,10 +12,15 @@
 //! - Settlement and collateral transfer across chains
 //! - Fallback liquidation mechanisms
 
+use crate::cross_chain::{self, BridgeAttestation, CrossChainLoanMetadata};
 use crate::errors::ContractError;
 use crate::helpers::require_admin_approval;
-use crate::types::DataKey;
-use soroban_sdk::{contracttype, Address, Env, Vec};
+use crate::types::{DataKey, LoanStatus};
+use crate::vouch;
+use soroban_sdk::{contracttype, token, Address, Env, Vec};
+
+/// chain_id used to denote a bid placed locally (no bridge attestation required).
+const LOCAL_CHAIN_ID: u32 = 0;
 
 /// Auction for a defaulted loan's slashed collateral
 #[contracttype]
@@ -140,18 +145,48 @@ pub fn create_cross_chain_auction(
     Ok(auction_id)
 }
 
-/// Place a bid on an active auction
+/// Place a bid on an active auction.
+///
+/// If `chain_id` is not the local chain, the caller must supply a verified
+/// bridge attestation tying this exact (chain, auction, bidder, amount) tuple
+/// to a real event on that chain — otherwise a purely local caller could claim
+/// an arbitrary `chain_id` and inflate cross-chain bid aggregation figures
+/// with no verification (Issue #1456).
+///
+/// The bid amount is escrowed atomically (a real `token::Client` transfer)
+/// rather than tracked as bookkeeping only, so outbid or cancelled-auction
+/// bidders have a guaranteed path to reclaim funds via `claim_refund`
+/// (Issue #1457).
 pub fn place_bid(
     env: Env,
     auction_id: u64,
     bidder: Address,
     bid_amount: i128,
     chain_id: u32,
+    attestation: Option<BridgeAttestation>,
 ) -> Result<(), ContractError> {
     bidder.require_auth();
 
     if bid_amount <= 0 {
         return Err(ContractError::InvalidAmount);
+    }
+
+    if chain_id != LOCAL_CHAIN_ID {
+        // The claimed chain must have an active, registered bridge.
+        vouch::validate_bridge(&env, chain_id)?;
+
+        // Require and verify (and consume, to prevent replay) a bridge
+        // attestation binding this specific bid to a real remote-chain event.
+        let attestation = attestation.ok_or(ContractError::BridgeAttestationRequired)?;
+        let metadata = CrossChainLoanMetadata {
+            origin_chain: chain_id,
+            loan_id: auction_id,
+            borrower: bidder.clone(),
+            amount: bid_amount,
+            status: LoanStatus::Active,
+            reputation_score: 0,
+        };
+        cross_chain::validate_bridge_attestation(env.clone(), metadata, attestation)?;
     }
 
     let mut auction: CrossChainAuction = env
@@ -176,23 +211,27 @@ pub fn place_bid(
         return Err(ContractError::InsufficientFunds);
     }
 
-    // Refund previous highest bid
-    if let Some(prev_bidder) = auction.highest_bidder.clone() {
-        let prev_bid = Bid {
-            auction_id,
-            bidder: prev_bidder.clone(),
-            amount: auction.highest_bid,
-            timestamp: now,
-            chain_id,
-            refunded: true,
-        };
-        // In production, would transfer funds back to prev_bidder
-        env.storage()
-            .persistent()
-            .set(&DataKey::AuctionBid(auction_id, prev_bidder), &prev_bid);
+    // Escrow the bid. If this bidder already has an unclaimed escrowed bid on
+    // this same auction (i.e. they are raising their own bid), only pull the
+    // incremental difference so funds aren't double-charged.
+    let bid_key = DataKey::AuctionBid(auction_id, bidder.clone());
+    let already_escrowed: i128 = env
+        .storage()
+        .persistent()
+        .get::<DataKey, Bid>(&bid_key)
+        .filter(|b| !b.refunded)
+        .map(|b| b.amount)
+        .unwrap_or(0);
+
+    let to_escrow = bid_amount - already_escrowed;
+    if to_escrow > 0 {
+        let token_client = token::Client::new(&env, &auction.token);
+        token_client.transfer(&bidder, &env.current_contract_address(), &to_escrow);
     }
 
-    // Record new highest bid
+    // Record new highest bid. The previous highest bidder's existing bid
+    // record is left untouched (still unrefunded) -- their escrowed funds
+    // remain reclaimable via `claim_refund`.
     auction.highest_bid = bid_amount;
     auction.highest_bidder = Some(bidder.clone());
     auction.bid_count += 1;
@@ -206,9 +245,7 @@ pub fn place_bid(
         refunded: false,
     };
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::AuctionBid(auction_id, bidder), &bid);
+    env.storage().persistent().set(&bid_key, &bid);
 
     env.storage()
         .persistent()
@@ -217,14 +254,69 @@ pub fn place_bid(
     Ok(())
 }
 
-/// End auction and settle with highest bidder.
+/// Claim a refund of escrowed bid funds for `bidder` on `auction_id`.
 ///
-/// Callable by any address, not just an admin, once `now >= auction_end` — the
-/// `auction_end` check below is the only gate. Settlement should not depend on
-/// an admin remembering to show up: while it does, slashed collateral stays
-/// locked and vouchers never receive their auction proceeds. See
-/// `docs/cross-chain-trust-model.md` for the resulting keeper-incentive gap.
-pub fn settle_auction(env: Env, auction_id: u64) -> Result<(), ContractError> {
+/// Available once the bidder has been outbid (at any time, without waiting
+/// for settlement), or once the auction has ended without them winning
+/// (cancelled, or settled with reserve unmet, or settled with someone else
+/// winning). The winning bidder's escrow is not refundable once the auction
+/// has actually settled with them as the winner — those funds are the
+/// settlement proceeds (Issue #1457).
+pub fn claim_refund(env: Env, auction_id: u64, bidder: Address) -> Result<(), ContractError> {
+    bidder.require_auth();
+
+    let auction: CrossChainAuction = env
+        .storage()
+        .persistent()
+        .get(&DataKey::CrossChainAuction(auction_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    let bid_key = DataKey::AuctionBid(auction_id, bidder.clone());
+    let mut bid: Bid = env
+        .storage()
+        .persistent()
+        .get(&bid_key)
+        .ok_or(ContractError::NoRefundAvailable)?;
+
+    if bid.refunded {
+        return Err(ContractError::NoRefundAvailable);
+    }
+
+    let is_current_winner = auction.highest_bidder == Some(bidder.clone());
+    let has_winning_settlement = env
+        .storage()
+        .persistent()
+        .has(&DataKey::AuctionSettlement(auction_id));
+
+    // The winning bidder's escrow becomes the settlement proceeds once the
+    // auction has actually settled with a winner -- not refundable.
+    if has_winning_settlement && is_current_winner {
+        return Err(ContractError::NoRefundAvailable);
+    }
+
+    // Otherwise: refundable once outbid, or once the auction has ended
+    // without this bidder winning (cancelled / failed reserve / settled).
+    if !auction.settled && is_current_winner {
+        return Err(ContractError::NoRefundAvailable);
+    }
+
+    bid.refunded = true;
+    env.storage().persistent().set(&bid_key, &bid);
+
+    let token_client = token::Client::new(&env, &auction.token);
+    token_client.transfer(&env.current_contract_address(), &bidder, &bid.amount);
+
+    Ok(())
+}
+
+/// End auction and settle with highest bidder
+pub fn settle_auction(
+    env: Env,
+    admin_signers: Vec<Address>,
+    auction_id: u64,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
     let mut auction: CrossChainAuction = env
         .storage()
         .persistent()

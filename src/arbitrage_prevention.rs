@@ -19,6 +19,15 @@ use soroban_sdk::{contracttype, Address, Env, Vec};
 /// Maximum allowed slippage in basis points (1000 = 10%)
 pub const DEFAULT_MAX_SLIPPAGE_BPS: u32 = 1000;
 
+/// Minimum delay (in ledger seconds) between proposing and finalizing an
+/// exchange-rate update. Enforces a 24h timelock on the two-step flow so a
+/// single admin-approved call can never move the reference rate instantly.
+pub const MIN_RATE_UPDATE_DELAY_SECS: u64 = 24 * 60 * 60;
+
+/// Default age (in ledger seconds) after which a token pair's `RateHistory`
+/// min/max band is considered stale and decays to the current rate. Issue #1433.
+pub const DEFAULT_HISTORY_WINDOW_SECS: u64 = 30 * 24 * 60 * 60;
+
 /// Reference exchange rate between two tokens
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -35,24 +44,26 @@ pub struct ExchangeRate {
     pub max_slippage_bps: u32,
 }
 
-/// Pending exchange rate update (before admin approval)
+/// Pending exchange rate update awaiting the timelock delay before it can be
+/// applied via [`finalize_rate_update`]. Stored under
+/// [`DataKey::PendingRateUpdate`] by [`propose_rate_update`].
 #[contracttype]
 #[derive(Clone)]
-struct PendingRateUpdate {
-    token_a: Address,
-    token_b: Address,
-    new_rate: i128,
-    proposed_at: u64,
+pub struct PendingRateUpdate {
+    pub token_a: Address,
+    pub token_b: Address,
+    pub new_rate: i128,
+    pub proposed_at: u64,
 }
 
 /// Historical rate data for detecting anomalies
 #[contracttype]
 #[derive(Clone, Copy)]
-struct RateHistory {
-    min_rate: i128,
-    max_rate: i128,
-    avg_rate: i128,
-    last_updated: u64,
+pub struct RateHistory {
+    pub min_rate: i128,
+    pub max_rate: i128,
+    pub avg_rate: i128,
+    pub last_updated: u64,
 }
 
 /// Admin: Register a new token pair for exchange rate tracking
@@ -94,7 +105,12 @@ pub fn register_token_pair(
 }
 
 /// Admin: Update an exchange rate with a new value
-/// Updates are accepted only if within configured slippage tolerance
+///
+/// Updates are accepted only if within configured slippage tolerance. This is
+/// the legacy single-step path and still moves the rate immediately; for
+/// rate-sensitive pairs prefer the two-step [`propose_rate_update`] /
+/// [`finalize_rate_update`] flow, which additionally enforces a
+/// [`MIN_RATE_UPDATE_DELAY_SECS`] timelock.
 pub fn update_exchange_rate(
     env: Env,
     admin_signers: Vec<Address>,
@@ -138,6 +154,160 @@ pub fn update_exchange_rate(
         .set(&DataKey::ExchangeRate(token_a, token_b), &updated_rate);
 
     Ok(())
+}
+
+/// Admin: Step 1 of the two-step rate change — propose a new rate.
+///
+/// Validates the proposed rate the same way [`update_exchange_rate`] would
+/// (positive, pair registered, within slippage tolerance) and records a
+/// [`PendingRateUpdate`] stamped with the current ledger time. The rate is
+/// **not** applied here; call [`finalize_rate_update`] once
+/// [`MIN_RATE_UPDATE_DELAY_SECS`] has elapsed. Re-proposing overwrites any
+/// existing pending update for the pair and restarts the timelock.
+pub fn propose_rate_update(
+    env: Env,
+    admin_signers: Vec<Address>,
+    token_a: Address,
+    token_b: Address,
+    new_rate: i128,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    propose_rate_update_inner(&env, token_a, token_b, new_rate)
+}
+
+/// Auth-free core of [`propose_rate_update`].
+pub(crate) fn propose_rate_update_inner(
+    env: &Env,
+    token_a: Address,
+    token_b: Address,
+    new_rate: i128,
+) -> Result<(), ContractError> {
+    if new_rate <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let current_rate: ExchangeRate = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ExchangeRate(token_a.clone(), token_b.clone()))
+        .ok_or(ContractError::InvalidToken)?;
+
+    let rate_change = calculate_percentage_change(current_rate.rate, new_rate)?;
+    if rate_change.abs() > current_rate.max_slippage_bps as i128 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let pending = PendingRateUpdate {
+        token_a: token_a.clone(),
+        token_b: token_b.clone(),
+        new_rate,
+        proposed_at: env.ledger().timestamp(),
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PendingRateUpdate(token_a, token_b), &pending);
+
+    Ok(())
+}
+
+/// Admin: Step 2 of the two-step rate change — finalize a pending proposal.
+///
+/// Requires that at least [`MIN_RATE_UPDATE_DELAY_SECS`] has elapsed since the
+/// proposal was recorded, re-checks the slippage bound against the *current*
+/// reference rate (guarding against the rate having moved in the meantime),
+/// then applies the new rate, updates rate history and clears the pending
+/// entry.
+pub fn finalize_rate_update(
+    env: Env,
+    admin_signers: Vec<Address>,
+    token_a: Address,
+    token_b: Address,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    finalize_rate_update_inner(&env, token_a, token_b)
+}
+
+/// Auth-free core of [`finalize_rate_update`].
+pub(crate) fn finalize_rate_update_inner(
+    env: &Env,
+    token_a: Address,
+    token_b: Address,
+) -> Result<(), ContractError> {
+    let pending_key = DataKey::PendingRateUpdate(token_a.clone(), token_b.clone());
+    let pending: PendingRateUpdate = env
+        .storage()
+        .persistent()
+        .get(&pending_key)
+        .ok_or(ContractError::NotFound)?;
+
+    let now = env.ledger().timestamp();
+    if now.saturating_sub(pending.proposed_at) < MIN_RATE_UPDATE_DELAY_SECS {
+        return Err(ContractError::DelayNotElapsed);
+    }
+
+    let current_rate: ExchangeRate = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ExchangeRate(token_a.clone(), token_b.clone()))
+        .ok_or(ContractError::InvalidToken)?;
+
+    let rate_change = calculate_percentage_change(current_rate.rate, pending.new_rate)?;
+    if rate_change.abs() > current_rate.max_slippage_bps as i128 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let updated_rate = ExchangeRate {
+        token_a: token_a.clone(),
+        token_b: token_b.clone(),
+        rate: pending.new_rate,
+        updated_at: now,
+        max_slippage_bps: current_rate.max_slippage_bps,
+    };
+
+    update_rate_history(env, &token_a, &token_b, pending.new_rate)?;
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::ExchangeRate(token_a, token_b), &updated_rate);
+    env.storage().persistent().remove(&pending_key);
+
+    Ok(())
+}
+
+/// Admin: configure how long a pair's `RateHistory` min/max band is trusted
+/// before it decays to the current rate (Issue #1433).
+pub fn set_rate_history_window(
+    env: Env,
+    admin_signers: Vec<Address>,
+    window_secs: u64,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+    set_rate_history_window_inner(&env, window_secs)
+}
+
+/// Auth-free core of [`set_rate_history_window`].
+pub(crate) fn set_rate_history_window_inner(
+    env: &Env,
+    window_secs: u64,
+) -> Result<(), ContractError> {
+    if window_secs == 0 {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    env.storage()
+        .instance()
+        .set(&DataKey::RateHistoryWindowSecs, &window_secs);
+
+    Ok(())
+}
+
+/// Current history window, falling back to [`DEFAULT_HISTORY_WINDOW_SECS`].
+fn history_window_secs(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::RateHistoryWindowSecs)
+        .unwrap_or(DEFAULT_HISTORY_WINDOW_SECS)
 }
 
 /// Check if a proposed exchange would cause arbitrage
@@ -194,25 +364,38 @@ pub fn get_exchange_rate_info(
 
 /// Calculate percentage change between two rates (in basis points)
 /// Returns the percentage change in basis points (1 = 0.01%)
-fn calculate_percentage_change(old_rate: i128, new_rate: i128) -> Result<i128, ContractError> {
+///
+/// Uses checked arithmetic: for large rates (e.g. stroop-denominated high-value
+/// pairs) `change * 10_000` can overflow `i128` silently in release builds,
+/// so overflow is surfaced as [`ContractError::ArithmeticError`] rather than
+/// wrapping to a wrong percentage that could pass/fail the slippage check.
+pub(crate) fn calculate_percentage_change(
+    old_rate: i128,
+    new_rate: i128,
+) -> Result<i128, ContractError> {
     if old_rate == 0 {
         return Err(ContractError::InvalidAmount);
     }
 
     let change = new_rate.saturating_sub(old_rate);
-    let percentage_bps = (change * 10_000) / old_rate;
+    let percentage_bps = change
+        .checked_mul(10_000)
+        .and_then(|scaled| scaled.checked_div(old_rate))
+        .ok_or(ContractError::ArithmeticError)?;
 
     Ok(percentage_bps)
 }
 
 /// Update rate history with new rate data
-fn update_rate_history(
+pub(crate) fn update_rate_history(
     env: &Env,
     token_a: &Address,
     token_b: &Address,
     new_rate: i128,
 ) -> Result<(), ContractError> {
     let history_key = DataKey::RateHistory(token_a.clone(), token_b.clone());
+
+    let now = env.ledger().timestamp();
 
     let mut history: RateHistory = env
         .storage()
@@ -222,8 +405,23 @@ fn update_rate_history(
             min_rate: new_rate,
             max_rate: new_rate,
             avg_rate: new_rate,
-            last_updated: env.ledger().timestamp(),
+            last_updated: now,
         });
+
+    // Decay/reset stale history: once a pair has gone longer than the
+    // configured window without an update, its earliest-observed min/max no
+    // longer describes today's "normal" rate (legitimate drift over months
+    // would otherwise permanently anchor the band and make
+    // `detect_arbitrage_opportunity` meaningless). Re-seed the band from the
+    // current rate instead of accumulating against ancient extremes.
+    if now.saturating_sub(history.last_updated) > history_window_secs(env) {
+        history.min_rate = new_rate;
+        history.max_rate = new_rate;
+        history.avg_rate = new_rate;
+        history.last_updated = now;
+        env.storage().persistent().set(&history_key, &history);
+        return Ok(());
+    }
 
     // Update min/max/avg
     if new_rate < history.min_rate {
@@ -235,7 +433,7 @@ fn update_rate_history(
 
     // Simple rolling average (weighted toward recent data)
     history.avg_rate = (history.avg_rate + new_rate) / 2;
-    history.last_updated = env.ledger().timestamp();
+    history.last_updated = now;
 
     env.storage()
         .persistent()

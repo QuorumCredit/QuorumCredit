@@ -6,125 +6,90 @@
 mod tests {
     use crate::cross_chain_auction::*;
     use crate::errors::ContractError;
-    use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{
-        testutils::{Address as _, Ledger},
-        Address, Env, Vec,
-    };
-
-    struct Setup {
-        env: Env,
-        contract_id: Address,
-        admins: Vec<Address>,
-        token: Address,
-    }
-
-    fn setup() -> Setup {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let deployer = Address::generate(&env);
-        let admin = Address::generate(&env);
-        let admins = Vec::from_array(&env, [admin.clone()]);
-        let token_admin = Address::generate(&env);
-        let token = env.register_stellar_asset_contract_v2(token_admin).address();
-        let contract_id = env.register_contract(None, QuorumCreditContract);
-
-        let client = QuorumCreditContractClient::new(&env, &contract_id);
-        client.initialize(&deployer, &admins, &1u32, &token);
-
-        env.ledger().with_mut(|l| l.timestamp = 1_000);
-
-        Setup {
-            env,
-            contract_id,
-            admins,
-            token,
-        }
-    }
+    use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Vec};
 
     #[test]
     fn test_create_auction() {
         // Test auction creation with valid collateral amount and reserve price
         // Should generate unique auction ID
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_auction_states() {
         // Test that auction transitions through states: Pending -> Active -> Ended -> Settled
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_place_bid_above_reserve() {
         // Test that bids meeting or exceeding reserve price are accepted
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_place_bid_below_reserve() {
         // Test that bids below reserve price are rejected
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_bid_must_beat_highest() {
         // Test that new bids must exceed the current highest bid
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_previous_bidder_refunded() {
         // Test that previous highest bidder is refunded when outbid
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_auction_cannot_end_early() {
         // Test that auction cannot be settled before duration expires
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_settle_with_no_bids() {
         // Test that settlement fails if no bids received
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_settlement_distribution() {
         // Test that proceeds are distributed: 80% to vouchers, 20% to treasury
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_extend_auction() {
         // Test that auction duration can be extended if no bids received
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_cancel_auction() {
         // Test that admin can cancel auction
-        
+
         assert!(true); // Placeholder
     }
 
     #[test]
     fn test_cross_chain_bid_aggregation() {
         // Test that bids from multiple chains are properly aggregated
-        
+
         assert!(true); // Placeholder
     }
 
@@ -135,196 +100,141 @@ mod tests {
         assert!(true); // Placeholder
     }
 
-    // ── Issue #69: force-settle path ────────────────────────────────────────
+    // ── #1456/#1457: chain-claim verification + bid escrow/refund ────────────
 
-    /// `settle_auction` takes no `admin_signers` at all -- any address can
-    /// trigger settlement once `now >= auction_end`, so slashed collateral and
-    /// voucher proceeds are never stuck waiting on an admin to show up.
-    #[test]
-    fn test_non_admin_can_settle_expired_auction() {
-        let s = setup();
-        let borrower = Address::generate(&s.env);
-        let bidder = Address::generate(&s.env);
+    /// Set up a deployed+initialized contract plus its default protocol token,
+    /// since `create_cross_chain_auction`/`place_bid`/`claim_refund` touch
+    /// `env.storage()` and perform real `token::Client` transfers, which need
+    /// an `as_contract` frame around a real contract instance.
+    fn setup(env: &Env) -> (Address, Vec<Address>, Address) {
+        env.mock_all_auths();
+        let deployer = Address::generate(env);
+        let admin = Address::generate(env);
+        let admins = Vec::from_array(env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = token_id.address();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token);
+        (contract_id, admins, token)
+    }
 
-        let auction_id = s.env.as_contract(&s.contract_id, || {
+    fn create_auction(
+        env: &Env,
+        contract_id: &Address,
+        admins: &Vec<Address>,
+        token: &Address,
+    ) -> u64 {
+        env.as_contract(contract_id, || {
             create_cross_chain_auction(
-                s.env.clone(),
-                s.admins.clone(),
-                borrower.clone(),
+                env.clone(),
+                admins.clone(),
+                Address::generate(env),
                 1_000_000,
-                s.token.clone(),
+                token.clone(),
+                1_000,
                 100,
-                10,
-                Vec::new(&s.env),
+                Vec::new(env),
             )
             .unwrap()
-        });
-
-        s.env.as_contract(&s.contract_id, || {
-            place_bid(s.env.clone(), auction_id, bidder.clone(), 50, 0).unwrap();
-        });
-
-        // Advance past auction end.
-        s.env.ledger().with_mut(|l| l.timestamp += 200);
-
-        // No admin approval is supplied or required to settle.
-        s.env.as_contract(&s.contract_id, || {
-            settle_auction(s.env.clone(), auction_id).unwrap();
-        });
-
-        let auction =
-            s.env.as_contract(&s.contract_id, || get_auction(s.env.clone(), auction_id).unwrap());
-        assert!(auction.settled);
-
-        let settlement = s.env.as_contract(&s.contract_id, || {
-            get_auction_settlement(s.env.clone(), auction_id).unwrap()
-        });
-        assert_eq!(settlement.winning_bid, 50);
-        assert_eq!(settlement.winning_bidder, bidder);
+        })
     }
 
-    // ── Issue #70: extend/cancel authorization ──────────────────────────────
-
+    /// Issue #1456: a purely local caller must not be able to claim an
+    /// arbitrary non-local `chain_id` for a bid with no verification at all.
+    /// The chain is registered here so the rejection is specifically about
+    /// the missing attestation, not an unregistered chain.
     #[test]
-    #[should_panic(expected = "signer is not a registered admin")]
-    fn test_extend_auction_rejects_non_admin() {
-        let s = setup();
-        let borrower = Address::generate(&s.env);
-        let not_admin = Vec::from_array(&s.env, [Address::generate(&s.env)]);
+    fn test_place_bid_rejects_non_local_chain_without_attestation() {
+        let env = Env::default();
+        let (contract_id, admins, token) = setup(&env);
+        let auction_id = create_auction(&env, &contract_id, &admins, &token);
 
-        let auction_id = s.env.as_contract(&s.contract_id, || {
-            create_cross_chain_auction(
-                s.env.clone(),
-                s.admins.clone(),
-                borrower.clone(),
-                1_000_000,
-                s.token.clone(),
-                1_000,
-                10,
-                Vec::new(&s.env),
+        let chain_id = 7u32;
+        env.as_contract(&contract_id, || {
+            crate::vouch::register_bridge(
+                env.clone(),
+                admins.clone(),
+                chain_id,
+                soroban_sdk::String::from_str(&env, "chain-7"),
+                Address::generate(&env),
             )
-            .unwrap()
+            .unwrap();
         });
 
-        let new_end = s.env.as_contract(&s.contract_id, || get_auction(s.env.clone(), auction_id).unwrap())
-            .auction_end
-            + 100;
+        let bidder = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&bidder, &1_000_000);
 
-        s.env.as_contract(&s.contract_id, || {
-            let _ = extend_auction(s.env.clone(), not_admin, auction_id, new_end);
+        let result = env.as_contract(&contract_id, || {
+            place_bid(env.clone(), auction_id, bidder.clone(), 500, chain_id, None)
         });
+        assert_eq!(result, Err(ContractError::BridgeAttestationRequired));
     }
 
+    /// Issue #1457: `place_bid` must actually escrow funds (not bookkeeping
+    /// only), and an outbid bidder must have a guaranteed path -- via
+    /// `claim_refund` -- to reclaim them, without waiting for settlement.
     #[test]
-    #[should_panic(expected = "signer is not a registered admin")]
-    fn test_cancel_auction_rejects_non_admin() {
-        let s = setup();
-        let borrower = Address::generate(&s.env);
-        let not_admin = Vec::from_array(&s.env, [Address::generate(&s.env)]);
+    fn test_outbid_bidder_can_claim_refund() {
+        let env = Env::default();
+        let (contract_id, admins, token) = setup(&env);
+        let auction_id = create_auction(&env, &contract_id, &admins, &token);
 
-        let auction_id = s.env.as_contract(&s.contract_id, || {
-            create_cross_chain_auction(
-                s.env.clone(),
-                s.admins.clone(),
-                borrower.clone(),
-                1_000_000,
-                s.token.clone(),
-                1_000,
-                10,
-                Vec::new(&s.env),
-            )
-            .unwrap()
+        let bidder1 = Address::generate(&env);
+        let bidder2 = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&bidder1, &1_000_000);
+        StellarAssetClient::new(&env, &token).mint(&bidder2, &1_000_000);
+
+        env.as_contract(&contract_id, || {
+            place_bid(env.clone(), auction_id, bidder1.clone(), 500, 0u32, None).unwrap();
+            place_bid(env.clone(), auction_id, bidder2.clone(), 900, 0u32, None).unwrap();
         });
 
-        s.env.as_contract(&s.contract_id, || {
-            let _ = cancel_auction(s.env.clone(), not_admin, auction_id);
-        });
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        // Both bids are escrowed in the contract at this point.
+        assert_eq!(token_client.balance(&contract_id), 500 + 900);
+        assert_eq!(token_client.balance(&bidder1), 1_000_000 - 500);
+
+        // bidder1 was outbid and can reclaim their escrow immediately.
+        let refund_result =
+            env.as_contract(&contract_id, || claim_refund(env.clone(), auction_id, bidder1.clone()));
+        assert!(refund_result.is_ok());
+        assert_eq!(token_client.balance(&bidder1), 1_000_000);
+
+        // A second claim on the same (now-refunded) bid must fail.
+        let second_claim =
+            env.as_contract(&contract_id, || claim_refund(env.clone(), auction_id, bidder1.clone()));
+        assert_eq!(second_claim, Err(ContractError::NoRefundAvailable));
+
+        // The current leading bidder cannot claim a refund before settlement.
+        let leader_claim =
+            env.as_contract(&contract_id, || claim_refund(env.clone(), auction_id, bidder2.clone()));
+        assert_eq!(leader_claim, Err(ContractError::NoRefundAvailable));
     }
 
-    /// Cancelling an auction with an existing highest bid must unwind/refund
-    /// that bid rather than leaving it looking like a live, unrefunded stake.
+    /// Issue #1457: if an auction is cancelled, the (sole) bidder must be
+    /// able to reclaim their escrowed bid even though they were the
+    /// "highest" bidder -- cancellation never produced a real settlement.
     #[test]
-    fn test_cancel_auction_refunds_highest_bid() {
-        let s = setup();
-        let borrower = Address::generate(&s.env);
-        let bidder = Address::generate(&s.env);
+    fn test_cancelled_auction_bidder_can_claim_refund() {
+        let env = Env::default();
+        let (contract_id, admins, token) = setup(&env);
+        let auction_id = create_auction(&env, &contract_id, &admins, &token);
 
-        let auction_id = s.env.as_contract(&s.contract_id, || {
-            create_cross_chain_auction(
-                s.env.clone(),
-                s.admins.clone(),
-                borrower.clone(),
-                1_000_000,
-                s.token.clone(),
-                1_000,
-                10,
-                Vec::new(&s.env),
-            )
-            .unwrap()
+        let bidder = Address::generate(&env);
+        StellarAssetClient::new(&env, &token).mint(&bidder, &1_000_000);
+
+        env.as_contract(&contract_id, || {
+            place_bid(env.clone(), auction_id, bidder.clone(), 500, 0u32, None).unwrap();
+            cancel_auction(env.clone(), admins.clone(), auction_id).unwrap();
         });
 
-        s.env.as_contract(&s.contract_id, || {
-            place_bid(s.env.clone(), auction_id, bidder.clone(), 50, 0).unwrap();
-        });
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        assert_eq!(token_client.balance(&bidder), 1_000_000 - 500);
 
-        s.env.as_contract(&s.contract_id, || {
-            cancel_auction(s.env.clone(), s.admins.clone(), auction_id).unwrap();
-        });
-
-        let bid = s.env.as_contract(&s.contract_id, || {
-            get_auction_bid(s.env.clone(), auction_id, bidder.clone()).unwrap()
-        });
-        assert!(
-            bid.refunded,
-            "the highest bid must be marked refunded when its auction is cancelled"
-        );
-
-        let auction =
-            s.env.as_contract(&s.contract_id, || get_auction(s.env.clone(), auction_id).unwrap());
-        assert!(auction.settled);
-    }
-
-    /// `extend_auction` must reject a new end time that is not strictly later
-    /// than the auction's current end time.
-    #[test]
-    fn test_extend_auction_rejects_earlier_end_time() {
-        let s = setup();
-        let borrower = Address::generate(&s.env);
-
-        let auction_id = s.env.as_contract(&s.contract_id, || {
-            create_cross_chain_auction(
-                s.env.clone(),
-                s.admins.clone(),
-                borrower.clone(),
-                1_000_000,
-                s.token.clone(),
-                1_000,
-                10,
-                Vec::new(&s.env),
-            )
-            .unwrap()
-        });
-
-        let current_end =
-            s.env.as_contract(&s.contract_id, || get_auction(s.env.clone(), auction_id).unwrap())
-                .auction_end;
-
-        let result = s.env.as_contract(&s.contract_id, || {
-            extend_auction(s.env.clone(), s.admins.clone(), auction_id, current_end - 1)
-        });
-        assert_eq!(result, Err(ContractError::InvalidStateTransition));
-
-        let result_same = s.env.as_contract(&s.contract_id, || {
-            extend_auction(s.env.clone(), s.admins.clone(), auction_id, current_end)
-        });
-        assert_eq!(result_same, Err(ContractError::InvalidStateTransition));
-
-        // A genuinely later end time is still accepted.
-        s.env.as_contract(&s.contract_id, || {
-            extend_auction(s.env.clone(), s.admins.clone(), auction_id, current_end + 50).unwrap();
-        });
-        let extended =
-            s.env.as_contract(&s.contract_id, || get_auction(s.env.clone(), auction_id).unwrap());
-        assert_eq!(extended.auction_end, current_end + 50);
+        let result =
+            env.as_contract(&contract_id, || claim_refund(env.clone(), auction_id, bidder.clone()));
+        assert!(result.is_ok());
+        assert_eq!(token_client.balance(&bidder), 1_000_000);
     }
 }

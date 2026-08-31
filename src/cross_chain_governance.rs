@@ -406,7 +406,17 @@ pub fn has_proposal_passed(env: Env, proposal_id: u64) -> Result<bool, ContractE
     Ok(proposal_meets_quorum(&env, &proposal))
 }
 
-/// Execute a cross-chain governance proposal (after voting period and timelock)
+/// Execute a cross-chain governance proposal (after voting period and timelock).
+///
+/// Idempotency: a proposal's `executed` flag is checked before any other
+/// condition, so a second (or later) call against an already-executed
+/// proposal is always rejected with `ProposalAlreadyFinalized` rather than
+/// silently no-op'ing or re-running the action — this guards against
+/// double-execution if the caller (or a retry) invokes this twice for the
+/// same proposal in the same or a later block. Only the call that actually
+/// flips `executed` from `false` to `true` emits the `(xchain, executed)`
+/// event, so an off-chain indexer never observes more than one execution
+/// event per proposal.
 pub fn execute_cross_chain_proposal(
     env: Env,
     admin_signers: Vec<Address>,
@@ -419,6 +429,11 @@ pub fn execute_cross_chain_proposal(
         .persistent()
         .get(&DataKey::CrossChainProposal(proposal_id))
         .ok_or(ContractError::ProposalNotFound)?;
+
+    // Check not already executed (idempotency guard against double-execution)
+    if proposal.executed {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
 
     let now = env.ledger().timestamp();
 
@@ -437,11 +452,6 @@ pub fn execute_cross_chain_proposal(
         return Err(ContractError::QuorumNotMet);
     }
 
-    // Check not already executed
-    if proposal.executed {
-        return Err(ContractError::ProposalAlreadyFinalized);
-    }
-
     // Mark as executed
     proposal.executed = true;
     env.storage()
@@ -450,6 +460,11 @@ pub fn execute_cross_chain_proposal(
 
     // In production, would execute the action here
     // For now, just mark as executed
+
+    env.events().publish(
+        (soroban_sdk::symbol_short!("xchain"), soroban_sdk::symbol_short!("executed")),
+        proposal_id,
+    );
 
     Ok(())
 }
@@ -483,16 +498,28 @@ pub fn get_proposal_results(
     ))
 }
 
-/// Query per-chain vote breakdown
+/// Query per-chain vote breakdown, paginated so the call stays within
+/// Soroban's read/return-size budget regardless of how many chains have
+/// voted on the proposal.
+///
+/// Returns the requested page plus `next_cursor`: `Some(offset)` to pass on
+/// the next call, or `None` once the end of the list has been reached.
 pub fn get_chain_vote_breakdown(
     env: Env,
     proposal_id: u64,
-) -> Result<Vec<ChainVoteAggregate>, ContractError> {
+    offset: u32,
+    limit: u32,
+) -> Result<(Vec<ChainVoteAggregate>, Option<u32>), ContractError> {
     let proposal: CrossChainProposal = env
         .storage()
         .persistent()
         .get(&DataKey::CrossChainProposal(proposal_id))
         .ok_or(ContractError::ProposalNotFound)?;
 
-    Ok(proposal.chain_votes)
+    Ok(crate::helpers::paginate_vec(
+        &env,
+        &proposal.chain_votes,
+        offset,
+        limit,
+    ))
 }
