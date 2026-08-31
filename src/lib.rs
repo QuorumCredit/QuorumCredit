@@ -988,6 +988,9 @@ impl QuorumCreditContract {
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
         helpers::increment_total_default_count(&env);
 
+        // Issue #1413: Demote loyalty tier on default
+        loyalty::record_default_for_loyalty(&env, &borrower);
+
         // Burn excellent credit tier badge on default
         reputation::burn_excellent_badge(&env, &borrower);
 
@@ -4884,14 +4887,21 @@ impl QuorumCreditContract {
         reputation_nft::delist_badge(&env, owner, badge_type)
     }
 
-    /// Purchase a badge from the marketplace.
+    /// Purchase a badge from the marketplace with on-chain payment enforcement.
+    ///
+    /// Transfers `payment_amount` tokens from `buyer` to `seller` on-chain before
+    /// transferring badge ownership. Returns `InsufficientFunds` if `payment_amount`
+    /// is less than the badge's `listing_price`. See `reputation_nft::purchase_badge`
+    /// for full documentation.
     pub fn purchase_badge(
         env: Env,
         buyer: Address,
         seller: Address,
         badge_type: reputation_nft::BadgeType,
+        token: Address,
+        payment_amount: i128,
     ) -> Result<(), ContractError> {
-        reputation_nft::purchase_badge(&env, buyer, seller, badge_type)
+        reputation_nft::purchase_badge(&env, buyer, seller, badge_type, token, payment_amount)
     }
 
     /// Return a badge record.
