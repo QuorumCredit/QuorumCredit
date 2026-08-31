@@ -1,7 +1,7 @@
 use crate::errors::ContractError;
 use crate::helpers::{config, require_admin_approval};
 use crate::types::{AdminPermission, AdminRole, DataKey};
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminAction {
@@ -166,7 +166,35 @@ pub fn require_admin_permission(
     }
 }
 
-/// Migration helper: Assigns SuperAdmin role to all existing admins who don't have a role yet.
+/// Initialize legacy admins with SuperAdmin roles (called during contract initialization).
+/// This is the initialization-time internal call that doesn't require admin approval.
+pub(crate) fn initialize_legacy_admin_roles(env: &Env) {
+    let cfg = config(env);
+    let mut roles_assigned = 0u32;
+
+    for admin in cfg.admins.iter() {
+        if get_admin_role(env, &admin).is_err() {
+            env.storage()
+                .persistent()
+                .set(&DataKey::AdminRole(admin.clone()), &AdminRole::SuperAdmin);
+            roles_assigned += 1;
+        }
+    }
+
+    // Mark migration as complete during initialization
+    env.storage()
+        .persistent()
+        .set(&DataKey::RbacMigrationComplete, &true);
+
+    if roles_assigned > 0 {
+        env.events().publish(
+            (symbol_short!("rbac"), symbol_short!("init")),
+            (cfg.admins.len(), roles_assigned),
+        );
+    }
+}
+
+/// Post-deployment migration helper: Assigns SuperAdmin role to all existing admins who don't have a role yet.
 /// This ensures backward compatibility when upgrading to RBAC-enforced contract.
 ///
 /// Call this once after deploying the RBAC-aware contract to restore full functionality

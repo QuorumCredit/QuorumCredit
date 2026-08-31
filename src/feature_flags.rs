@@ -49,6 +49,13 @@ pub const FLAG_FLASH_LOAN: &str = "flash_loan";
 /// Gradual-rollout canary for new slash logic.
 pub const FLAG_SLASH_V2: &str = "slash_v2";
 
+/// High-risk flags that require governance voting (not just admin approval).
+/// These flags control economically significant behavior and need community oversight.
+pub const HIGH_RISK_FLAGS: &[&str] = &[FLAG_SLASH_V2, FLAG_FLASH_LOAN];
+
+/// Governance voting period for high-risk flag changes in seconds (7 days).
+pub const FLAG_GOVERNANCE_VOTING_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
+
 // ── Data types ───────────────────────────────────────────────────────────────
 
 /// Persistent record for a single feature flag.
@@ -85,6 +92,22 @@ pub struct FeatureFlagSummary {
     pub name: String,
     pub enabled: bool,
     pub rollout_pct: u32,
+}
+
+/// Governance proposal for changing a high-risk feature flag.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FeatureFlagGovernanceProposal {
+    pub id: u64,
+    pub flag_name: String,
+    pub new_enabled: bool,
+    pub new_rollout_pct: u32,
+    pub proposer: Address,
+    pub created_at: u64,
+    pub voting_ends_at: u64,
+    pub approve_votes: i128,
+    pub reject_votes: i128,
+    pub executed: bool,
 }
 
 /// Storage key for feature flags.
@@ -130,6 +153,16 @@ pub fn set_flag(env: &Env, flag: FeatureFlag) {
             .persistent()
             .set(&FeatureFlagKey::Index, &index);
     }
+}
+
+/// Check whether a feature flag is high-risk and requires governance voting.
+pub fn is_high_risk_flag(name: &String) -> bool {
+    for &high_risk in HIGH_RISK_FLAGS.iter() {
+        if name.as_str() == high_risk {
+            return true;
+        }
+    }
+    false
 }
 
 /// Deterministic per-address bucket in the range `[0, 100)`.
@@ -182,13 +215,14 @@ pub fn get_feature_flag(env: &Env, name: String) -> Option<FeatureFlag> {
 
 /// Create or update a feature flag.
 ///
-/// Only an admin may call this.  `admin` must have already called
-/// `require_auth()` before this function is invoked (enforced by the
-/// contract entry-point wrapper).
+/// For regular flags: only an admin may call this.
+/// For high-risk flags (FLAG_SLASH_V2, FLAG_FLASH_LOAN): requires governance voting
+/// in addition to admin authorization.
 ///
 /// # Errors
 ///
 /// * [`ContractError::InvalidAmount`] — `rollout_pct > 100`.
+/// * [`ContractError::GovernanceVotingRequired`] — high-risk flag requires voting.
 pub fn set_feature_flag(
     env: &Env,
     admin: Address,
@@ -198,8 +232,51 @@ pub fn set_feature_flag(
 ) -> Result<(), ContractError> {
     admin.require_auth();
 
+    if !crate::helpers::is_admin(env, &admin) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
     if rollout_pct > 100 {
         return Err(ContractError::InvalidAmount);
+    }
+
+    // High-risk flags require governance voting
+    if is_high_risk_flag(&name) {
+        // Propose governance vote instead of directly setting the flag
+        let proposal_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&crate::types::DataKey::FeatureFlagProposalCounter)
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .persistent()
+            .set(&crate::types::DataKey::FeatureFlagProposalCounter, &proposal_id);
+
+        let now = env.ledger().timestamp();
+        let proposal = FeatureFlagGovernanceProposal {
+            id: proposal_id,
+            flag_name: name.clone(),
+            new_enabled: enabled,
+            new_rollout_pct: rollout_pct,
+            proposer: admin.clone(),
+            created_at: now,
+            voting_ends_at: now + FLAG_GOVERNANCE_VOTING_PERIOD_SECS,
+            approve_votes: 0,
+            reject_votes: 0,
+            executed: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&crate::types::DataKey::FeatureFlagProposal(name.clone()), &proposal);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("fflag"), soroban_sdk::symbol_short!("gov_prop")),
+            (proposal_id, name, enabled, rollout_pct),
+        );
+
+        return Err(ContractError::GovernanceVotingRequired);
     }
 
     let flag = FeatureFlag {
@@ -265,6 +342,10 @@ pub fn rollout_step(
 /// Immediately disable a feature flag for all callers (emergency kill-switch).
 pub fn kill_flag(env: &Env, admin: Address, name: String) -> Result<(), ContractError> {
     admin.require_auth();
+
+    if !crate::helpers::is_admin(env, &admin) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
 
     let mut flag = get_flag(env, &name).ok_or(ContractError::InvalidAmount)?;
     flag.enabled = false;

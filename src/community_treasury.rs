@@ -190,6 +190,12 @@ pub fn create_proposal(
         .set(&DataKey::TreasuryProposalCounter, &proposal_id);
 
     let now = env.ledger().timestamp();
+    let admin_approval_deadline = if requires_admin {
+        now + TREASURY_ADMIN_APPROVAL_TIMEOUT_SECS
+    } else {
+        0 // No deadline if admin approval not required
+    };
+    
     let proposal = TreasuryProposal {
         id: proposal_id,
         proposer: proposer.clone(),

@@ -268,7 +268,7 @@ impl QuorumCreditContract {
         // RBAC requires every admin to have a role before they can pass
         // require_admin_approval_for_action; grant SuperAdmin to the initial
         // admin set so admin functions work immediately after deployment.
-        rbac::migrate_legacy_admins_to_superadmin(&env);
+        rbac::initialize_legacy_admin_roles(&env);
 
         env.events().publish(
             (symbol_short!("contract"), symbol_short!("init")),
