@@ -710,6 +710,10 @@ pub enum DataKey {
     VouchCommitment(Address, Address),
     /// Confidential loan commitment: borrower → commitment record
     LoanCommitment(Address),
+    /// Whether a confidential vouch commitment has already been revealed/settled: (voucher, borrower) → bool
+    VouchCommitmentRevealed(Address, Address),
+    /// Whether a confidential loan commitment has already been revealed/settled: borrower → bool
+    LoanCommitmentRevealed(Address),
     /// Monotonic counter for confidential proof records
     ZkProofCounter,
     /// Confidential proof record by ID

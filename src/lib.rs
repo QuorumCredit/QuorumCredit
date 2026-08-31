@@ -548,10 +548,13 @@ impl QuorumCreditContract {
         vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
     }
 
-    /// Confidential vouch with zk-SNARK proof verification
+    /// Confidential (self-attestation) vouch with commitment + proof verification.
     ///
-    /// Allows vouchers to stake without revealing the exact amount on-chain.
-    /// The zk-SNARK proof demonstrates that:
+    /// **Not a privacy guarantee**: `stake_amount` is a plain on-chain argument and is
+    /// recorded via the regular `vouch()` call below, so it is visible to any observer.
+    /// `proof` and `commitment` provide binding/self-attestation (see `zk_snarks.rs`), not
+    /// confidentiality. See `docs/threat-model.md` ("Confidentiality Model") for details.
+    /// The `proof` demonstrates that, at call time:
     /// - The voucher has sufficient balance
     /// - The stake amount is within allowed bounds
     /// - The voucher is not blacklisted
@@ -603,6 +606,37 @@ impl QuorumCreditContract {
 
         vouch::vouch(env, voucher, borrower, stake_amount, token, chain_id)
     }
+
+    /// Settlement-time reveal for a confidential vouch commitment recorded by
+    /// `vouch_confidential()`. Verifies that `amount`/`blinding` hash to the commitment
+    /// stored for `(voucher, borrower)`, then marks it revealed so it cannot be replayed.
+    pub fn reveal_vouch_commitment(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        amount: i128,
+        blinding: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        voucher.require_auth();
+
+        let key = DataKey::VouchCommitment(voucher.clone(), borrower.clone());
+        let commitment: ConfidentialCommitment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::CommitmentNotFound)?;
+
+        let revealed_key = DataKey::VouchCommitmentRevealed(voucher.clone(), borrower.clone());
+        if env.storage().persistent().get(&revealed_key).unwrap_or(false) {
+            return Err(ContractError::CommitmentAlreadyRevealed);
+        }
+
+        zk_snarks::reveal_commitment_bytes(&env, &commitment, amount, &blinding)?;
+
+        env.storage().persistent().set(&revealed_key, &true);
+        Ok(())
+    }
+
     pub fn batch_vouch(
         env: Env,
         voucher: Address,
@@ -816,13 +850,16 @@ impl QuorumCreditContract {
         result
     }
 
-    /// Confidential loan request with zk-SNARK proof verification
+    /// Confidential (self-attestation) loan request with commitment + proof verification.
     ///
-    /// Allows borrowers to request loans without revealing exact amounts on-chain.
-    /// The zk-SNARK proof demonstrates that:
+    /// **Not a privacy guarantee**: `amount` is a plain on-chain argument and is recorded
+    /// via the regular `request_loan()` call below, so it is visible to any observer.
+    /// `proof` and `commitment` provide binding/self-attestation (see `zk_snarks.rs`), not
+    /// confidentiality. See `docs/threat-model.md` ("Confidentiality Model") for details.
+    /// The `proof` demonstrates that, at call time:
     /// - The borrower meets eligibility requirements
     /// - The requested amount is within bounds
-    /// - Sufficient vouches exist (without revealing individual vouch amounts)
+    /// - Sufficient vouches exist
     pub fn request_loan_confidential(
         env: Env,
         borrower: Address,
@@ -881,6 +918,34 @@ impl QuorumCreditContract {
         loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
     }
 
+    /// Settlement-time reveal for a confidential loan commitment recorded by
+    /// `request_loan_confidential()`. Verifies that `amount`/`blinding` hash to the
+    /// commitment stored for `borrower`, then marks it revealed so it cannot be replayed.
+    pub fn reveal_loan_commitment(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        blinding: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        borrower.require_auth();
+
+        let key = DataKey::LoanCommitment(borrower.clone());
+        let commitment: ConfidentialCommitment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::CommitmentNotFound)?;
+
+        let revealed_key = DataKey::LoanCommitmentRevealed(borrower.clone());
+        if env.storage().persistent().get(&revealed_key).unwrap_or(false) {
+            return Err(ContractError::CommitmentAlreadyRevealed);
+        }
+
+        zk_snarks::reveal_commitment_bytes(&env, &commitment, amount, &blinding)?;
+
+        env.storage().persistent().set(&revealed_key, &true);
+        Ok(())
+    }
 
     pub fn dispute_vouch(
         env: Env,
