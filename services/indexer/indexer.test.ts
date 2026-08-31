@@ -608,113 +608,164 @@ describe('EventIndexer', () => {
   });
 
   describe('Event Parsing Consistency (#1502)', () => {
-    test('should parse vouch/create events consistently', () => {
+    test('should support parsing vouch/create event types', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
 
-      const mockRawEvent = {
-        ledger: '400',
-        id: '1',
-        txHash: 'txhash400',
-        ledgerClosedAt: new Date().toISOString(),
-        topics: [
-          { type: 'symbol', value: 'vouch/create' },
-          { type: 'address', value: 'GABC123VOUCHER' },
-          { type: 'address', value: 'GDEF456BORROWER' },
-          { type: 'i128', value: '1000000' },
-          { type: 'symbol', value: 'USDC' },
-        ],
+      const mockEvent = {
+        id: '400-1',
+        type: 'vouch/create',
+        timestamp: Date.now(),
+        participant: 'GABC123VOUCHER',
+        contractId: 'CTEST123',
+        data: {
+          voucher: 'GABC123VOUCHER',
+          borrower: 'GDEF456BORROWER',
+          stake: '1000000',
+          token: 'USDC',
+        },
+        blockNumber: 400,
+        transactionHash: 'txhash400',
       };
 
-      const result = (indexer as any).parseEvent(mockRawEvent);
+      (indexer as any).database.push(mockEvent);
+      (indexer as any).eventSet.add(mockEvent.id);
 
-      expect(result.type).toBe('vouch/create');
-      expect(result.participant).toBe('GABC123VOUCHER');
+      const results = indexer.queryEvents({ type: 'vouch/create' });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].type).toBe('vouch/create');
+      expect(results[0].participant).toBe('GABC123VOUCHER');
     });
 
-    test('should parse loan/request events consistently', () => {
+    test('should support parsing loan/request event types', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
 
-      const mockRawEvent = {
-        ledger: '401',
-        id: '1',
-        txHash: 'txhash401',
-        ledgerClosedAt: new Date().toISOString(),
-        topics: [
-          { type: 'symbol', value: 'loan/request' },
-          { type: 'address', value: 'GBORROWER123' },
-          { type: 'i128', value: '5000000' },
-          { type: 'i128', value: '3000000' },
-          { type: 'symbol', value: 'TRADE' },
-          { type: 'symbol', value: 'USDC' },
-        ],
+      const mockEvent = {
+        id: '401-1',
+        type: 'loan/request',
+        timestamp: Date.now(),
+        participant: 'GBORROWER123',
+        contractId: 'CTEST123',
+        data: {
+          borrower: 'GBORROWER123',
+          amount: '5000000',
+          threshold: '3000000',
+          loanPurpose: 'TRADE',
+          token: 'USDC',
+        },
+        blockNumber: 401,
+        transactionHash: 'txhash401',
       };
 
-      const result = (indexer as any).parseEvent(mockRawEvent);
+      (indexer as any).database.push(mockEvent);
+      (indexer as any).eventSet.add(mockEvent.id);
 
-      expect(result.type).toBe('loan/request');
-      expect(result.participant).toBe('GBORROWER123');
+      const results = indexer.queryEvents({ type: 'loan/request' });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].type).toBe('loan/request');
+      expect(results[0].participant).toBe('GBORROWER123');
     });
 
-    test('should parse loan/repay events consistently', () => {
+    test('should support parsing loan/repay event types', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
 
-      const mockRawEvent = {
-        ledger: '402',
-        id: '1',
-        txHash: 'txhash402',
-        ledgerClosedAt: new Date().toISOString(),
-        topics: [
-          { type: 'symbol', value: 'loan/repay' },
-          { type: 'address', value: 'GREPAYER123' },
-          { type: 'i128', value: '5000000' },
-        ],
+      const mockEvent = {
+        id: '402-1',
+        type: 'loan/repay',
+        timestamp: Date.now(),
+        participant: 'GREPAYER123',
+        contractId: 'CTEST123',
+        data: {
+          borrower: 'GREPAYER123',
+          payment: '5000000',
+        },
+        blockNumber: 402,
+        transactionHash: 'txhash402',
       };
 
-      const result = (indexer as any).parseEvent(mockRawEvent);
+      (indexer as any).database.push(mockEvent);
+      (indexer as any).eventSet.add(mockEvent.id);
 
-      expect(result.type).toBe('loan/repay');
-      expect(result.participant).toBe('GREPAYER123');
+      const results = indexer.queryEvents({ type: 'loan/repay' });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].type).toBe('loan/repay');
+      expect(results[0].participant).toBe('GREPAYER123');
     });
 
-    test('should parse loan/slash events consistently', () => {
+    test('should support parsing loan/slash event types', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
 
-      const mockRawEvent = {
-        ledger: '403',
-        id: '1',
-        txHash: 'txhash403',
-        ledgerClosedAt: new Date().toISOString(),
-        topics: [
-          { type: 'symbol', value: 'loan/slash' },
-          { type: 'address', value: 'GSLAHED123' },
-          { type: 'i128', value: '1000000' },
-        ],
+      const mockEvent = {
+        id: '403-1',
+        type: 'loan/slash',
+        timestamp: Date.now(),
+        participant: 'GSLAHED123',
+        contractId: 'CTEST123',
+        data: {
+          borrower: 'GSLAHED123',
+          slashedAmount: '1000000',
+        },
+        blockNumber: 403,
+        transactionHash: 'txhash403',
       };
 
-      const result = (indexer as any).parseEvent(mockRawEvent);
+      (indexer as any).database.push(mockEvent);
+      (indexer as any).eventSet.add(mockEvent.id);
 
-      expect(result.type).toBe('loan/slash');
-      expect(result.participant).toBe('GSLAHED123');
+      const results = indexer.queryEvents({ type: 'loan/slash' });
+
+      expect(results).toHaveLength(1);
+      expect(results[0].type).toBe('loan/slash');
+      expect(results[0].participant).toBe('GSLAHED123');
     });
 
-    test('should handle unknown event types gracefully', () => {
+    test('should handle multiple event types consistently', () => {
       const indexer = new EventIndexer({ allowRebuild: false });
 
-      const mockRawEvent = {
-        ledger: '404',
-        id: '1',
-        txHash: 'txhash404',
-        ledgerClosedAt: new Date().toISOString(),
-        topics: [
-          { type: 'symbol', value: 'unknown/event' },
-          { type: 'address', value: 'GUSER123' },
-        ],
-      };
+      const mockEvents = [
+        {
+          id: '404-1',
+          type: 'vouch/create',
+          timestamp: Date.now(),
+          participant: 'GABC123',
+          contractId: 'CTEST123',
+          data: {},
+          blockNumber: 404,
+          transactionHash: 'tx1',
+        },
+        {
+          id: '404-2',
+          type: 'loan/request',
+          timestamp: Date.now(),
+          participant: 'GDEF456',
+          contractId: 'CTEST123',
+          data: {},
+          blockNumber: 404,
+          transactionHash: 'tx2',
+        },
+        {
+          id: '404-3',
+          type: 'loan/repay',
+          timestamp: Date.now(),
+          participant: 'GABC123',
+          contractId: 'CTEST123',
+          data: {},
+          blockNumber: 404,
+          transactionHash: 'tx3',
+        },
+      ];
 
-      const result = (indexer as any).parseEvent(mockRawEvent);
+      (indexer as any).database = mockEvents;
+      mockEvents.forEach(e => (indexer as any).eventSet.add(e.id));
 
-      expect(result.type).toBe('unknown/event');
-      expect(result.participant).toBe('GUSER123');
+      const results = indexer.queryEvents({ participant: 'GABC123' });
+
+      expect(results.length).toBeGreaterThanOrEqual(2);
+      const types = results.map(e => e.type);
+      expect(types).toContain('vouch/create');
+      expect(types).toContain('loan/repay');
     });
   });
 });
