@@ -48,6 +48,8 @@ pub enum ContractError {
     ReminderAlreadySent = 43,
     /// Insurance pool has no funds to cover the claim.
     InsurancePoolEmpty = 44,
+    /// Admin contribution exceeds `insurance_fund_max_contribution` cap (#1437).
+    InsuranceContributionTooLarge = 221,
     /// Insurance claim already made for this loan.
     InsuranceClaimAlreadyMade = 45,
     /// Basis points value is invalid (must be 0–10000).
@@ -337,7 +339,16 @@ EmergencyBypassNotAuthorised = 131,
     VoteAttestationNonceReused = 218,
     /// The vote attestation is outside the accepted freshness window.
     VoteAttestationExpired = 219,
-    /// Issue #1428: A non-released vouch protection bond already exists for this
-    /// (voucher, loan_id) pair. Release the existing bond before staking another.
-    BondAlreadyActive = 221,
+    // ── Issue #10: Refinance chain limits ────────────────────────────────────
+    /// The borrower has reached the maximum number of refinances allowed in a
+    /// single loan chain (`max_refinances_per_loan_chain`).
+    RefinanceLimitExceeded = 221,
+    /// A refinance was attempted before the minimum cooldown period between
+    /// consecutive refinances has elapsed.
+    RefinanceCooldownActive = 222,
+    // ── Issue #11: Refinance eligibility enforcement ─────────────────────────
+    /// `refinance_loan` was called when the shared eligibility predicate
+    /// (same logic used by `refinance_quote`) determined the borrower is not
+    /// eligible for a beneficial refinance at this time.
+    RefinanceNotEligible = 223,
 }
