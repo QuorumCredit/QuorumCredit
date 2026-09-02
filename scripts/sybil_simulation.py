@@ -1,4 +1,20 @@
 import math
+import os
+import sys
+
+# Ensure parent directory is in Python path for scripts.fixtures imports
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+try:
+    from scripts.fixtures.vouch_graph import (
+        VouchEdge,
+        VouchGraph,
+        generate_legitimate_vouch_graph,
+        generate_sybil_vouch_graph,
+        generate_sybil_attack_scenario,
+    )
+except ImportError:
+    pass
 
 # Constants
 C_ADDR = 1.5  # XLM to stand up a Stellar account (minimum reserve + trustline)
@@ -173,19 +189,20 @@ def simulate_governance_override(real_stake_xlm):
         "redesign_total_capital": redesign_total_capital,
     }
 
-# Run simulations
-vouch_500 = simulate_vouching_score(500)
-vouch_1000 = simulate_vouching_score(1000)
+def run_simulations() -> str:
+    # Run simulations
+    vouch_500 = simulate_vouching_score(500)
+    vouch_1000 = simulate_vouching_score(1000)
 
-rep_1_5 = simulate_reputation_multiplier(1.5)
-rep_2_0 = simulate_reputation_multiplier(2.0)
+    rep_1_5 = simulate_reputation_multiplier(1.5)
+    rep_2_0 = simulate_reputation_multiplier(2.0)
 
-gov_10 = simulate_governance_override(10)
-gov_50 = simulate_governance_override(50)
-gov_200 = simulate_governance_override(200)
+    gov_10 = simulate_governance_override(10)
+    gov_50 = simulate_governance_override(50)
+    gov_200 = simulate_governance_override(200)
 
-# Output results in Markdown
-report = f"""# Economic Security Model & Sybil Simulation Results
+    # Output results in Markdown
+    report = f"""# Economic Security Model & Sybil Simulation Results
 
 ## 1. Credit Score Vouching Component Simulation (Target Score)
 | Target Score | Legacy Cost (XLM) | Legacy Sybils | Redesign Cost (XLM) | Redesign Sybils | Cost Increase |
@@ -208,7 +225,12 @@ report = f"""# Economic Security Model & Sybil Simulation Results
 
 Note: Redesign Capital includes both the required stake (locked capital) and account reservation costs.
 """
+    return report
 
-print(report)
-with open("docs/economic_security_model.md", "w") as f:
-    f.write(report)
+
+if __name__ == "__main__":
+    report = run_simulations()
+    print(report)
+    with open("docs/economic_security_model.md", "w") as f:
+        f.write(report)
+
