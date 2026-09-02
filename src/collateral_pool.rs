@@ -266,7 +266,7 @@ pub fn assign_pool_to_borrower(
     pool_id: u64,
     borrower: Address,
 ) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers)?;
+    require_admin_approval(&env, &admin_signers);
 
     let mut pool = load_pool(&env, pool_id)?;
 

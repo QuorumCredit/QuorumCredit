@@ -54,6 +54,30 @@ Covers: exploit in progress, panicking contract calls, invariant violations, stu
 - Route through governance/timelock unless the severity justifies an emergency multisig action (requires 2 of the documented signers, logged in `#incidents`).
 - Re-run the full invariant test suite (`src/invariants.rs`, `src/property_based_invariants_test.rs`) against the patched contract before redeploying.
 
+#### Compromised Admin Key
+
+1. **Assess exposure**: determine which admin-gated actions the compromised key could take
+   unilaterally (i.e. does it bring any single-signer set over `admin_threshold` on its own?).
+   Check `Config.admin_threshold` via `get_config()` and count remaining uncompromised keys.
+2. **If there is immediate risk of unilateral action**: gather the remaining uncompromised admin
+   keyholders and initiate the **governance-vote removal path** as quickly as possible:
+   `propose_admin_removal` → `vote_admin_removal` → `finalize_admin_removal`. This path does
+   not require the compromised key's cooperation or signature.
+   See [governance-manual.md — Admin Set Changes Decision Tree](./governance-manual.md#admin-set-changes--decision-tree).
+3. **If the key is rotated (lost or migrated, not stolen)**: use direct `rotate_admin` if you
+   can still assemble `admin_threshold` from uncompromised keys without the lost one. Use the
+   governance-vote removal path only when you cannot assemble the threshold without the
+   suspect key.
+4. **Cancel in-flight proposals**: before removing the compromised key, check for any pending
+   governance proposals or admin-action queue entries that the compromised key has already
+   signed. Cancel those proposals immediately to prevent them executing in a future window.
+5. **Freeze off-chain surfaces** if needed: disable mutating API endpoints (`/vouch`, loan
+   issuance) while the removal is in progress to limit blast radius.
+6. **Post-removal**: after the key is removed from `Config.admins`, document the incident in
+   the Historical Governance Decisions Log in `governance-manual.md`, audit all admin actions
+   taken in the 48 hours prior to detection, and rotate any other secrets co-located with the
+   compromised key (API keys, deployment credentials, etc.).
+
 ---
 
 ## 2. API / Server Outages
@@ -100,9 +124,16 @@ Covers: indexer database corruption/loss, lost webhook registrations, lost off-c
    - On-chain state (loans, vouches, balances): always recoverable by re-indexing from genesis or the last checkpoint — not permanent data loss. See `backup-recovery-guide.md`.
    - Off-chain-only state (expense ledger, recurring-payment schedules, webhook registrations — all in-memory stores in `server/src/*Store.ts`): **not recoverable without a backup**, since it has no on-chain source of truth. This is the case that needs a real backup/restore path in production, not just re-indexing.
 3. **Restore from backup** per `backup-recovery-guide.md`, verifying backup integrity (checksum, row counts) before cutting traffic back over.
-4. **Re-index** if the loss is confined to the indexer's sqlite database:
+4. **Re-index** if the loss is confined to the indexer's database:
    ```bash
-   cd services/indexer && npm run reindex -- --from-genesis
+   # The TypeScript indexer (services/indexer) now has cursor persistence (#1366)
+   # and will automatically resume from the last processed ledger.
+   # Only use --from-genesis if the cursor is also lost or corrupt:
+   cd services/indexer && npm start -- --from-genesis
+   
+   # If the database is corrupt, it will be preserved with a .corrupt suffix.
+   # Use --allow-rebuild to explicitly start with an empty database:
+   npm start -- --allow-rebuild --from-genesis
    ```
 
 ### If no backup exists

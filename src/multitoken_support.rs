@@ -7,7 +7,7 @@
 
 use crate::errors::ContractError;
 use crate::types::{
-    DataKey, Config, TokenBridgeMetadata, TokenSwapConfig, LiquidityTier,
+    DataKey, Config, TokenBridgeMetadata, TokenSwapConfig,
     DEFAULT_LIQUIDITY_TIER_BONUSES, LoanRecord,
 };
 use soroban_sdk::{token, Address, Env, Vec};

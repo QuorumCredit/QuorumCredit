@@ -44,3 +44,54 @@ This means partition detection is per-instance, not cluster-wide: in a multi-rep
 |---|---|---|
 | `PARTITION_FAILURE_THRESHOLD` | `5` | Consecutive failed bridge ticks before entering read-only mode |
 | `PARTITION_MAX_QUEUED_WRITES` | `500` | Bounded write-replay queue capacity; oldest dropped beyond this |
+
+## Post-Recovery Reconciliation
+
+When `droppedWrites > 0` after a partition clears, the `PartitionGuard` automatically:
+
+1. **Logs a `WARN`-level alert** (not just a metric increment) with the exact count of dropped writes and a pointer to this document.
+2. **Increments `qc_partition_dropped_writes_on_recovery_total`** so the alert is also visible in Prometheus.
+3. **Calls the optional `reconcile` callback** (if configured) to diff local projected state against the indexer.
+
+### Configuring the reconcile callback
+
+```typescript
+const guard = new PartitionGuard({
+  failureThreshold: 5,
+  maxQueuedWrites: 500,
+  reconcile: async () => {
+    // Diff local LoanProjector state against the indexer DB
+    // and flag any loans whose status diverged during the partition.
+    const localLoans = projector.getAll();
+    const indexerLoans = await indexerStore.getActiveLoans();
+    for (const loan of indexerLoans) {
+      const local = localLoans.find(l => l.id === loan.id);
+      if (!local || local.status !== loan.status) {
+        console.warn(`[Reconcile] Loan ${loan.id} status mismatch: local=${local?.status}, indexer=${loan.status}`);
+      }
+    }
+  },
+});
+```
+
+### Manual Recovery Procedure
+
+If `droppedWrites > 0` is reported after recovery:
+
+1. Check `GET /status/partition` — note the `droppedWrites` count.
+2. Query the indexer DB directly for the affected time window:
+   ```sql
+   SELECT * FROM events WHERE ledger_closed_at >= '<partition_start>' ORDER BY ledger ASC;
+   ```
+3. Compare indexer state against the in-memory projector state (`GET /status/loans` or socket snapshot).
+4. For any diverged loans, the safest path is a full projector rebuild from the indexer event log.
+5. Call `guard.resetDroppedWrites()` once reconciliation is confirmed complete.
+6. Monitor `qc_partition_dropped_writes_on_recovery_total` — it should not increment again if the root cause is fixed.
+
+### New Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `qc_partition_dropped_writes_on_recovery_total` | Counter | Incremented each time recovery finds dropped writes — each increment means diverged state is possible |
+| `qc_partition_reconcile_triggered_total` | Counter | How many times the reconcile callback was invoked |
+| `qc_partition_reconcile_failed_total` | Counter | How many times the reconcile callback threw an error |

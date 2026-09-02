@@ -27,7 +27,6 @@ fn validate_admin_member(env: &Env, admin: &Address, config: &Config) {
 }
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::AddAdmin) {
         panic_with_error!(&env, err);
     }
@@ -48,7 +47,6 @@ pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
 }
 
 pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::RemoveAdmin) {
         panic_with_error!(&env, err);
     }
@@ -86,7 +84,6 @@ pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Addr
 }
 
 pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, new_admin: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::RotateAdmin) {
         panic_with_error!(&env, err);
     }
@@ -119,7 +116,6 @@ pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, n
 }
 
 pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold: u32) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetAdminThreshold) {
         panic_with_error!(&env, err);
     }
@@ -144,7 +140,6 @@ pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold:
 
 /// Issue #688: Add an address to the admin whitelist.
 pub fn add_to_admin_whitelist(env: Env, admin_signers: Vec<Address>, address: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageWhitelist) {
         panic_with_error!(&env, err);
     }
@@ -169,7 +164,6 @@ pub fn add_to_admin_whitelist(env: Env, admin_signers: Vec<Address>, address: Ad
 
 /// Issue #688: Remove an address from the admin whitelist.
 pub fn remove_from_admin_whitelist(env: Env, admin_signers: Vec<Address>, address: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageWhitelist) {
         panic_with_error!(&env, err);
     }
@@ -193,7 +187,6 @@ pub fn remove_from_admin_whitelist(env: Env, admin_signers: Vec<Address>, addres
 
 /// Issue #689: Add an address to the admin blacklist.
 pub fn add_to_admin_blacklist(env: Env, admin_signers: Vec<Address>, address: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
         panic_with_error!(&env, err);
     }
@@ -218,7 +211,6 @@ pub fn add_to_admin_blacklist(env: Env, admin_signers: Vec<Address>, address: Ad
 
 /// Issue #689: Remove an address from the admin blacklist.
 pub fn remove_from_admin_blacklist(env: Env, admin_signers: Vec<Address>, address: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
         panic_with_error!(&env, err);
     }
@@ -241,7 +233,6 @@ pub fn remove_from_admin_blacklist(env: Env, admin_signers: Vec<Address>, addres
 }
 
 pub fn set_protocol_fee(env: Env, admin_signers: Vec<Address>, fee_bps: u32) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
         panic_with_error!(&env, err);
     }
@@ -262,7 +253,6 @@ pub fn set_protocol_fee(env: Env, admin_signers: Vec<Address>, fee_bps: u32) {
 }
 
 pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -272,7 +262,6 @@ pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address
 }
 
 pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: bool) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -286,7 +275,6 @@ pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: boo
 }
 
 pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
         panic_with_error!(&env, err);
     }
@@ -296,7 +284,6 @@ pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address
 }
 
 pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Upgrade) {
         panic_with_error!(&env, err);
     }
@@ -307,7 +294,6 @@ pub fn upgrade(env: Env, admin_signers: Vec<Address>, new_wasm_hash: BytesN<32>)
 }
 
 pub fn pause(env: Env, admin_signers: Vec<Address>) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause) {
         panic_with_error!(&env, err);
     }
@@ -334,7 +320,6 @@ pub fn pause(env: Env, admin_signers: Vec<Address>) {
 /// Only reads and withdrawals are allowed during the thaw window (24 h).
 /// After the window elapses the contract auto-transitions back to `Normal`.
 pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause) {
         panic_with_error!(&env, err);
     }
@@ -367,9 +352,14 @@ pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
 }
 
 pub fn unpause(env: Env, admin_signers: Vec<Address>) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Unpause) {
         panic_with_error!(&env, err);
+    }
+    // Issue #1423: a circuit-breaker-induced pause must be explicitly
+    // acknowledged (via `acknowledge_circuit_breaker`) before it can be cleared,
+    // so a breaker incident is never silently unpaused with no record.
+    if !crate::circuit_breaker::is_circuit_breaker_acknowledged(&env) {
+        panic_with_error!(&env, ContractError::CircuitBreakerNotAcknowledged);
     }
     env.storage().instance().set(&DataKey::Paused, &false);
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::None);
@@ -383,7 +373,6 @@ pub fn unpause(env: Env, admin_signers: Vec<Address>) {
 /// Pause the contract and immediately enter Thawing (combined one-step operation).
 /// Writes are blocked immediately; reads and withdrawals allowed for `thaw_duration` seconds.
 pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause) {
         panic_with_error!(&env, err);
     }
@@ -418,7 +407,6 @@ pub fn is_in_thaw_period(env: &Env) -> bool {
 }
 
 pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
         panic_with_error!(&env, err);
     }
@@ -441,7 +429,6 @@ pub fn set_blacklist_reason(
     borrower: Address,
     reason: soroban_sdk::Bytes,
 ) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageBlacklisted) {
         return Err(err);
     }
@@ -452,7 +439,7 @@ pub fn set_blacklist_reason(
         .set(&DataKey::BlacklistReason(borrower.clone()), &reason);
 
     env.events().publish(
-        (symbol_short!("admin"), symbol_short!("blacklist_reason")),
+        (symbol_short!("admin"), symbol_short!("bl_reason")),
         (borrower.clone(), env.ledger().timestamp()),
     );
 
@@ -469,7 +456,6 @@ pub fn get_blacklist_reason(env: Env, borrower: Address) -> Option<soroban_sdk::
 
 pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     require_not_paused(&env).expect("contract paused");
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetConfig) {
         panic_with_error!(&env, err);
     }
@@ -519,7 +505,10 @@ pub fn update_config(
     slash_bps: Option<i128>,
 ) {
     require_not_paused(&env).expect("contract paused");
-    require_admin_approval(&env, &admin_signers);
+    // require_admin_approval_with_permission (below) already covers threshold,
+    // membership, and revocation checks plus auth, so no separate
+    // require_admin_approval call here — that would double-authorize each
+    // signer and panic with Auth(ExistingValue).
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -563,7 +552,6 @@ pub fn batch_update_config(
     liquidity_mining_rate_bps: Option<u32>,
 ) {
     require_not_paused(&env).expect("contract paused");
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -634,7 +622,6 @@ pub fn set_dynamic_slash_threshold(
     admin_signers: Vec<Address>,
     enabled: bool,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageDynamicSlash) {
         panic_with_error!(&env, err);
     }
@@ -664,7 +651,6 @@ pub fn set_loan_size_slash_enabled(
     admin_signers: Vec<Address>,
     enabled: bool,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageDynamicSlash) {
         panic_with_error!(&env, err);
     }
@@ -686,7 +672,6 @@ pub fn set_loan_size_slash_max_bps(
     admin_signers: Vec<Address>,
     max_bps: i128,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::ManageDynamicSlash) {
         panic_with_error!(&env, err);
     }
@@ -709,7 +694,6 @@ pub fn set_loan_size_slash_max_bps(
 }
 
 pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetReputationNft) {
         panic_with_error!(&env, err);
     }
@@ -734,7 +718,6 @@ pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: A
 /// * `amount` - Minimum stake amount, in stroops (0 disables the minimum check).
 ///   1 XLM = 10,000,000 stroops.
 pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
         panic_with_error!(&env, err);
     }
@@ -760,7 +743,6 @@ pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
 /// * `amount` - Maximum loan amount, in stroops (0 = no cap enforced).
 ///   1 XLM = 10,000,000 stroops.
 pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
         panic_with_error!(&env, err);
     }
@@ -781,7 +763,6 @@ pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) 
 }
 
 pub fn set_min_vouchers(env: Env, admin_signers: Vec<Address>, count: u32) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
         panic_with_error!(&env, err);
     }
@@ -797,7 +778,6 @@ pub fn set_min_vouchers(env: Env, admin_signers: Vec<Address>, count: u32) {
 }
 
 pub fn set_max_loan_to_stake_ratio(env: Env, admin_signers: Vec<Address>, ratio: u32) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
         panic_with_error!(&env, err);
     }
@@ -810,7 +790,6 @@ pub fn set_max_loan_to_stake_ratio(env: Env, admin_signers: Vec<Address>, ratio:
 }
 
 pub fn set_grace_period(env: Env, admin_signers: Vec<Address>, period: u64) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
         panic_with_error!(&env, err);
     }
@@ -910,7 +889,6 @@ pub fn get_config(env: Env) -> Config {
 }
 
 pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
     crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig)?;
     require_valid_token(&env, &token)?;
     let mut cfg = config(&env);
@@ -923,7 +901,6 @@ pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) 
 }
 
 pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -960,7 +937,6 @@ pub fn is_whitelist_enabled(env: Env) -> bool {
 }
 
 pub fn set_max_vouchers_per_borrower(env: Env, admin_signers: Vec<Address>, max_vouchers: u32) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
         panic_with_error!(&env, err);
     }
@@ -993,7 +969,6 @@ pub fn withdraw_slash_treasury(
     recipient: Address,
     amount: i128,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
         panic_with_error!(&env, err);
     }
@@ -1021,7 +996,6 @@ pub fn withdraw_slash_treasury(
 }
 
 pub fn propose_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
     crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::AddAdmin)?;
 
     if new_admin == Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF") {
@@ -1064,14 +1038,13 @@ pub fn accept_admin(env: Env) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Designate a successor admin who can claim admin rights without multi-sig approval.
+/// Designate a successor admin who can claim admin rights after a timelock delay.
 /// Only the current admin set can designate a successor. Pass `None` to clear.
 pub fn set_successor_admin(
     env: Env,
     admin_signers: Vec<Address>,
     successor: Option<Address>,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::AddAdmin) {
         panic_with_error!(&env, err);
     }
@@ -1086,15 +1059,48 @@ pub fn set_successor_admin(
     cfg.successor_admin = successor.clone();
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    if successor.is_some() {
+        let claimable_at = env.ledger().timestamp() + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS;
+        env.storage().instance().set(&DataKey::SuccessorAdminClaimableAt, &claimable_at);
+    } else {
+        env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+    }
+
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("successor")),
         (admin_signers.get(0).unwrap(), successor),
     );
 }
 
-/// Claim admin rights as the designated successor admin.
+/// Issue #1443: Cancel/revoke a pending successor admin designation before it is claimed.
+/// Requires admin multi-sig approval.
+pub fn cancel_successor_admin(
+    env: Env,
+    admin_signers: Vec<Address>,
+) -> Result<(), ContractError> {
+    crate::rbac::require_admin_approval_for_action(
+        &env,
+        &admin_signers,
+        crate::rbac::AdminAction::RemoveAdmin,
+    )?;
+
+    let mut cfg = config(&env);
+    let prev_successor = cfg.successor_admin.take();
+
+    env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+    env.storage().instance().set(&DataKey::Config, &cfg);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("cx_succ")),
+        (admin_signers.get(0).unwrap(), prev_successor),
+    );
+
+    Ok(())
+}
+
+/// Issue #1443: Claim admin rights as the designated successor admin after the timelock delay has elapsed.
 /// The caller must match the stored `successor_admin` address and authenticate.
-/// On success, the caller is added to the admin list and the successor slot is cleared.
+/// On success, the caller is added to the admin list, the successor slot is cleared, and a distinct event is emitted.
 pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
     let mut cfg = config(&env);
     let successor = cfg
@@ -1104,20 +1110,31 @@ pub fn claim_successor_admin(env: Env) -> Result<(), ContractError> {
 
     successor.require_auth();
 
+    let claimable_at: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::SuccessorAdminClaimableAt)
+        .unwrap_or(0);
+
+    if env.ledger().timestamp() < claimable_at {
+        return Err(ContractError::TimelockDelayNotElapsed);
+    }
+
     cfg.admins.push_back(successor.clone());
     cfg.successor_admin = None;
+    env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
     env.storage().instance().set(&DataKey::Config, &cfg);
 
+    // Emit a distinct event when a successor is claimed so monitoring can alert immediately
     env.events().publish(
-        (symbol_short!("admin"), symbol_short!("cl_succ")),
-        successor,
+        (symbol_short!("admin"), symbol_short!("succ_clm")),
+        (successor, env.ledger().timestamp()),
     );
 
     Ok(())
 }
 
 pub fn set_prepayment_penalty_bps(env: Env, admin_signers: Vec<Address>, penalty_bps: u32) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
         panic_with_error!(&env, err);
     }
@@ -1138,13 +1155,18 @@ pub fn get_prepayment_penalty_bps(env: Env) -> u32 {
         .unwrap_or(0)
 }
 
-/// Issue #554: Propose an admin action (e.g., pause, slash, config change).
+/// Issue #554 / #1442: Propose an admin action (e.g., pause, slash, config change).
 pub fn propose_admin_action(
     env: Env,
     proposer: Address,
-    action_type: soroban_sdk::String,
+    action_type: GovernanceAction,
 ) -> Result<u64, ContractError> {
     proposer.require_auth();
+
+    let cfg = config(&env);
+    if !cfg.admins.iter().any(|a| a == proposer) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
 
     let action_id: u64 = env
         .storage()
@@ -1178,7 +1200,7 @@ pub fn propose_admin_action(
     Ok(action_id)
 }
 
-/// Issue #554: Approve an admin action. Requires admin signature.
+/// Issue #554 / #1442: Approve an admin action. Requires admin signature.
 pub fn approve_admin_action(
     env: Env,
     admin: Address,
@@ -1220,7 +1242,7 @@ pub fn approve_admin_action(
     Ok(())
 }
 
-/// Issue #554: Execute an admin action if threshold is met.
+/// Issue #554 / #1442: Execute an admin action if threshold is met.
 pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractError> {
     let mut proposal: AdminActionProposal = env
         .storage()
@@ -1237,6 +1259,9 @@ pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractErro
         return Err(ContractError::UnauthorizedCaller);
     }
 
+    // Dispatch the concrete state change
+    execute_governance_action_internal(&env, &proposal.action_type)?;
+
     proposal.executed = true;
     env.storage()
         .instance()
@@ -1248,6 +1273,13 @@ pub fn execute_admin_action(env: Env, action_id: u64) -> Result<(), ContractErro
     );
 
     Ok(())
+}
+
+/// Get an admin action proposal by ID.
+pub fn get_admin_action_proposal(env: Env, action_id: u64) -> Option<AdminActionProposal> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AdminAction(action_id))
 }
 
 // ── Issue #682: Multi-sig config update proposals ─────────────────────────────
@@ -1391,7 +1423,7 @@ pub fn get_config_update_proposal(env: Env, proposal_id: u64) -> Option<ConfigUp
 // ── Issue #683: Emergency pause ───────────────────────────────────────────────
 
 pub fn emergency_pause(env: Env, admin_signers: Vec<Address>) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
+    crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause)?;
 
     let mut cfg = config(&env);
     cfg.emergency_pause_enabled = true;
@@ -1406,7 +1438,6 @@ pub fn emergency_pause(env: Env, admin_signers: Vec<Address>) -> Result<(), Cont
 }
 
 pub fn emergency_unpause(env: Env, admin_signers: Vec<Address>) -> Result<(), ContractError> {
-    require_admin_approval(&env, &admin_signers);
     crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::Pause)?;
 
     let mut cfg = config(&env);
@@ -1429,7 +1460,6 @@ pub fn set_confirmation_required(
     admin_signers: Vec<Address>,
     enabled: bool,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetLoanParams) {
         panic_with_error!(&env, err);
     }
@@ -1456,7 +1486,6 @@ pub fn set_admin_compensation_bps(
     admin_signers: Vec<Address>,
     compensation_bps: u32,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateFees) {
         panic_with_error!(&env, err);
     }
@@ -1593,7 +1622,6 @@ pub fn set_removal_vote_threshold(
     admin_signers: Vec<Address>,
     threshold: u32,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -1613,7 +1641,6 @@ pub fn set_rate_limit_config(
     admin_signers: Vec<Address>,
     rate_limit_config: crate::types::RateLimitConfig,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -1628,7 +1655,6 @@ pub fn set_role_permissions(
     account: Address,
     permissions: crate::types::RolePermissions,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -1658,7 +1684,6 @@ pub fn set_governance_queue_config(
     admin_signers: Vec<Address>,
     config: GovernanceQueueConfig,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -2164,6 +2189,12 @@ fn execute_governance_action_internal(
             }
             cfg.successor_admin = successor.clone();
             env.storage().instance().set(&DataKey::Config, &cfg);
+            if successor.is_some() {
+                let claimable_at = env.ledger().timestamp() + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS;
+                env.storage().instance().set(&DataKey::SuccessorAdminClaimableAt, &claimable_at);
+            } else {
+                env.storage().instance().remove(&DataKey::SuccessorAdminClaimableAt);
+            }
         }
         GovernanceAction::SetConfirmationRequired(enabled) => {
             let mut cfg = config(env);
@@ -2271,7 +2302,6 @@ pub fn set_multi_tier_thresholds(
     admin_signers: Vec<Address>,
     thresholds: MultiTierAdminThresholds,
 ) {
-    require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
     }
@@ -2325,6 +2355,75 @@ pub fn get_effective_approval_threshold(
         cfg.admin_threshold
     }
 }
+
+/// Issue #1071: Set insurance fund premium in basis points.
+/// Percentage of loan principal collected at disbursement.
+pub fn set_insurance_fund_premium_bps(env: Env, admin_signers: Vec<Address>, premium_bps: u32) {
+    require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
+    if premium_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.insurance_fund_premium_bps = premium_bps;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("insur")),
+        (
+            admin_signers.get(0).unwrap(),
+            premium_bps,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
+/// Issue #1071: Set insurance maximum payout in basis points.
+/// Caps insurance payout as percentage of the shortfall.
+pub fn set_insurance_max_payout_bps(env: Env, admin_signers: Vec<Address>, max_payout_bps: u32) {
+    require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
+    if max_payout_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.insurance_max_payout_bps = max_payout_bps;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("insur")),
+        (
+            admin_signers.get(0).unwrap(),
+            max_payout_bps,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
+/// Issue #1071: Set insurance premium rate in basis points (deprecated, use set_insurance_fund_premium_bps).
+pub fn set_insurance_premium_bps(env: Env, admin_signers: Vec<Address>, premium_bps: u32) {
+    require_admin_approval(&env, &admin_signers);
+    if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
+        panic_with_error!(&env, err);
+    }
+    if premium_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    let mut cfg = config(&env);
+    cfg.insurance_premium_bps = premium_bps;
+    env.storage().instance().set(&DataKey::Config, &cfg);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("insur")),
+        (
+            admin_signers.get(0).unwrap(),
+            premium_bps,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
 /// Emergency admin revocation — removes a compromised admin key with N-1 approval.
 ///
 /// This function allows the remaining admins to revoke a compromised key without
@@ -2453,4 +2552,92 @@ pub fn get_config_patch(_env: Env, _idx: u32) -> Option<crate::types::ConfigPatc
 
 pub fn get_config_patch_count(_env: Env) -> u32 {
     0
+}
+
+/// Issue #1421 — Phase 2 Backfill: populate `PaymentHistory` for a pre-upgrade loan.
+///
+/// Many loans created before the credit-score upgrade have no `PaymentHistory` records,
+/// which leaves `avg_repayment_time` permanently neutral (0) even for borrowers who
+/// repaid early.  This admin-gated function lets operators inject historical payment
+/// records so that credit scores can be re-calculated with accurate timeliness data.
+///
+/// # Restrictions
+///
+/// - Caller must satisfy the admin approval threshold.
+/// - The loan identified by `loan_id` must exist.
+/// - The loan must be in a **terminal** state (`Repaid` or `Defaulted`).
+///   Active loans are rejected to prevent race conditions with the live repayment path.
+///
+/// # Arguments
+///
+/// * `env`            – Soroban environment.
+/// * `admin_signers`  – Admin addresses satisfying the threshold.
+/// * `loan_id`        – The ID of the pre-upgrade loan to backfill.
+/// * `payment_records` – Historical payments ordered by ascending timestamp.
+///                       Each record must have `amount > 0` and
+///                       `cumulative_repaid` monotonically increasing.
+///
+/// # Errors
+///
+/// * `UnauthorizedCaller`    — admin threshold not met.
+/// * `NoActiveLoan`          — no loan with `loan_id` found.
+/// * `InvalidStateTransition` — loan is not in a terminal (`Repaid`/`Defaulted`) state.
+/// * `InvalidAmount`          — a payment record has non-positive `amount` or
+///                              non-monotonically increasing `cumulative_repaid`.
+pub fn backfill_payment_history(
+    env: Env,
+    admin_signers: Vec<Address>,
+    loan_id: u64,
+    payment_records: crate::types::Vec<crate::types::PaymentRecord>,
+) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    // Load the loan record — fail fast if it does not exist
+    let loan: crate::types::LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    // Only allow backfill for terminal-state loans (Repaid or Defaulted).
+    // Active loans interact with the live repayment path.
+    match loan.status {
+        crate::types::LoanStatus::Repaid | crate::types::LoanStatus::Defaulted => {}
+        _ => return Err(ContractError::InvalidStateTransition),
+    }
+
+    // Validate the payment records: amount > 0, cumulative_repaid monotonically increasing.
+    let mut last_cumulative: i128 = -1;
+    for record in payment_records.iter() {
+        if record.amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        if record.cumulative_repaid <= last_cumulative {
+            return Err(ContractError::InvalidAmount);
+        }
+        last_cumulative = record.cumulative_repaid;
+    }
+
+    // Write the records, appending to any existing history so the function is
+    // safe to call multiple times (e.g. when backfilling in chunks).
+    let mut history: crate::types::Vec<crate::types::PaymentRecord> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::PaymentHistory(loan_id))
+        .unwrap_or_else(|| crate::types::Vec::new(&env));
+
+    for record in payment_records.iter() {
+        history.push_back(record);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::PaymentHistory(loan_id), &history);
+
+    env.events().publish(
+        (soroban_sdk::symbol_short!("admin"), soroban_sdk::symbol_short!("backfill")),
+        (loan_id, loan.borrower.clone()),
+    );
+
+    Ok(())
 }

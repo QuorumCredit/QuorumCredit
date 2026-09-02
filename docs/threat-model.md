@@ -214,6 +214,41 @@ malicious token onboarded), the contract's guarantees degrade to whatever the re
 uncompromised controls provide — which is why residual risk is tracked per-component above
 rather than assumed away.
 
+### Confidentiality Model: `zk_snarks.rs` Is Not Zero-Knowledge
+
+**This is the single most important disclaimer in this document for integrators.**
+`src/zk_snarks.rs` (types `ZkProof`, `ConfidentialCommitment`; functions
+`create_vouch_proof`, `create_loan_proof`, `commit_amount`, `reveal_commitment`, and the
+`*_confidential` entry points in `lib.rs`) is **not a zero-knowledge proof system and
+provides no cryptographic privacy**, despite the "zk" naming.
+
+**What it actually is:** commitment-based self-attestation with on-chain input
+verification. A "proof" is a deterministic SHA3-256 hash of values the caller supplies in
+plaintext, bound to their identity, token, and amount. On-chain code checks that the hash
+is well-formed and that the plaintext values satisfy protocol constraints (balance,
+blacklist status, eligibility, vouch count). Nothing about the underlying amount, balance,
+blacklist status, or vouch count is hidden — all of it is a plain call argument or is read
+directly from on-chain storage, and is visible to any observer of the transaction or ledger
+state.
+
+**What the "commitment" gives you:** `ConfidentialCommitment` (produced by `commit_amount`)
+lets a caller bind themselves to a value at commit time and later prove, via
+`reveal_commitment`, that the value they settle with matches what they committed to. This
+prevents a commitment/settlement-value mismatch — it does **not** hide the value from
+observers at any point; the amount is a plaintext argument to `vouch_confidential` /
+`request_loan_confidential` regardless of what is later revealed.
+
+**Threat this creates:** an integrator who assumes `vouch_confidential` /
+`request_loan_confidential` hide stake amounts, balances, or eligibility from
+counterparties or the public ledger will build a system with a privacy hole matching that
+assumption. There is no attack to mitigate here beyond correcting the assumption — the
+mitigation is documentation (this section, the `zk_snarks.rs` module doc, and the doc
+comments on the `*_confidential` entry points in `lib.rs`), not code, because there is no
+cryptographic privacy primitive to harden.
+
+**Residual risk:** High for any integrator who has not read this section — the naming
+(`Zk*`, `PROOF_TYPE_*`) still invites the wrong assumption. Tracked in issue #1471.
+
 ---
 
 ## Yield Reserve Depletion (Original Analysis)
@@ -576,3 +611,41 @@ fn fuzz_yield_calculation() {
 - [Error Reference](../README.md#error-reference)
 - [Deployment Guide](./deployment-guide.md)
 - [Monitoring Guide](./monitoring-guide.md)
+
+---
+
+## Slash Appeal Mechanisms — Mutual Exclusion
+
+The contract implements **two parallel slash-appeal paths** that were historically independent:
+
+| Mechanism | Reference | Initiator | Decision body | Storage key |
+|---|---|---|---|---|
+| **Evidence-based appeal (#552)** | `appeal_slash_with_evidence` / `vote_on_slash_appeal` / `execute_slash_appeal` | Any slashed voucher | Admin multi-sig vote | `DataKey::SlashAppeal(borrower, voucher)` |
+| **Escrow-quorum appeal (#841)** | `appeal_slash` / `vote_appeal` / `finalize_appeal` | Borrower | 2/3 voucher-stake quorum | `DataKey::SlashEscrow(borrower)` |
+
+### Threat: Double-Refund via Concurrent Appeals
+
+**Description:** If both mechanisms could be active simultaneously for the same borrower,
+a voucher could receive a refund from both paths — first from an approved evidence-based appeal
+(`execute_slash_appeal` transfers restored_amount to the voucher) and then again from an
+approved escrow-quorum appeal (`finalize_appeal_internal` distributes escrow_amount pro-rata).
+
+**Impact:** A voucher's effective loss from a slash (which was legitimate) would be fully or
+partially reversed twice, draining up to `2 × slashed_amount` from the contract.
+
+**Mitigation (Issue #1450):** A mutual-exclusion flag `DataKey::EvidenceAppealPending(borrower)`
+is set to `true` when `appeal_slash_with_evidence` is called and cleared when
+`execute_slash_appeal` runs or when `vote_on_slash_appeal` rejects the appeal. The `appeal_slash`
+(#841 path) checks this flag and returns `ContractError::AppealAlreadyPending` if it is set.
+Symmetrically, `appeal_slash_with_evidence` checks for an active `DataKey::SlashEscrow` with
+`status == AppealStatus::Pending` and rejects with `ContractError::AppealAlreadyPending`.
+
+**Superseding rule:** Whichever mechanism is initiated first takes priority. The other
+mechanism is blocked until the active appeal is resolved (approved, rejected, or expired).
+There is no automatic escalation from one mechanism to the other.
+
+**Residual Risk: Low.** The mutual-exclusion check is a storage read (not a lock), so a
+theoretical TOCTOU window exists within a single ledger transaction if both calls could be
+batched by a malicious client. Soroban's single-threaded, sequential transaction model means
+two invocations cannot race within one ledger close, so the practical residual risk is
+negligible.

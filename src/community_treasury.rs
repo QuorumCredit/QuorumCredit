@@ -37,6 +37,10 @@ pub const LARGE_ALLOCATION_THRESHOLD_BPS: u32 = 3_000;
 /// Voting period for treasury proposals in seconds (7 days).
 pub const TREASURY_VOTING_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// Issue #1448: Admin approval deadline for large allocations (30 days).
+/// If admin has not approved by this time, proposal is auto-rejected.
+pub const ADMIN_APPROVAL_DEADLINE_SECS: u64 = 30 * 24 * 60 * 60;
+
 // ── Data Structures ───────────────────────────────────────────────────────────
 
 /// Status of a treasury proposal.
@@ -79,6 +83,9 @@ pub struct TreasuryProposal {
     pub status: TreasuryProposalStatus,
     /// Whether this proposal is a large allocation requiring admin approval.
     pub requires_admin: bool,
+    /// Issue #1448: Timestamp deadline for admin approval (only set for large allocations).
+    /// If admin does not approve by this time, proposal is auto-rejected.
+    pub admin_approval_deadline: Option<u64>,
 }
 
 /// Monthly treasury spending report.
@@ -183,6 +190,12 @@ pub fn create_proposal(
         .set(&DataKey::TreasuryProposalCounter, &proposal_id);
 
     let now = env.ledger().timestamp();
+    let admin_approval_deadline = if requires_admin {
+        now + TREASURY_ADMIN_APPROVAL_TIMEOUT_SECS
+    } else {
+        0 // No deadline if admin approval not required
+    };
+    
     let proposal = TreasuryProposal {
         id: proposal_id,
         proposer: proposer.clone(),
@@ -195,6 +208,8 @@ pub fn create_proposal(
         no_votes: 0,
         status: TreasuryProposalStatus::Active,
         requires_admin,
+        /// Issue #1448: Initialize admin_approval_deadline as None; will be set when moving to PendingAdminApproval
+        admin_approval_deadline: None,
     };
 
     env.storage()
@@ -327,7 +342,9 @@ pub fn finalize_proposal(
 
     if proposal.requires_admin {
         // Move to pending admin approval.
+        // Issue #1448: Set admin approval deadline
         proposal.status = TreasuryProposalStatus::PendingAdminApproval;
+        proposal.admin_approval_deadline = Some(now + ADMIN_APPROVAL_DEADLINE_SECS);
         env.storage()
             .persistent()
             .set(&DataKey::TreasuryProposal(proposal_id), &proposal);
@@ -410,6 +427,55 @@ pub fn admin_approve_proposal(
     Ok(())
 }
 
+/// Issue #1448: Auto-reject a stale large allocation proposal.
+///
+/// Can be called by anyone after the admin approval deadline has passed.
+/// This prevents indefinite blocking of community-approved funds.
+///
+/// # Errors
+/// - `ProposalNotFound`        — unknown proposal.
+/// - `InvalidStateTransition`  — proposal is not in `PendingAdminApproval`.
+/// - `InvalidAmount`           — deadline has not yet expired.
+pub fn auto_reject_stale_proposal(
+    env: &Env,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    require_not_paused(env)?;
+
+    let mut proposal = env
+        .storage()
+        .persistent()
+        .get::<DataKey, TreasuryProposal>(&DataKey::TreasuryProposal(proposal_id))
+        .ok_or(ContractError::ProposalNotFound)?;
+
+    if proposal.status != TreasuryProposalStatus::PendingAdminApproval {
+        return Err(ContractError::InvalidStateTransition);
+    }
+
+    let deadline = proposal
+        .admin_approval_deadline
+        .ok_or(ContractError::InvalidAmount)?;
+
+    let now = env.ledger().timestamp();
+    if now <= deadline {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    // Auto-reject: mark as Rejected due to admin inaction
+    proposal.status = TreasuryProposalStatus::Rejected;
+    env.storage()
+        .persistent()
+        .set(&DataKey::TreasuryProposal(proposal_id), &proposal);
+
+    // Issue #1448: Emit distinct event for auto-rejection
+    env.events().publish(
+        (symbol_short!("treasury"), symbol_short!("auto_rej")),
+        proposal_id,
+    );
+
+    Ok(())
+}
+
 // ── Queries ───────────────────────────────────────────────────────────────────
 
 /// Return a treasury proposal by ID.
@@ -458,153 +524,307 @@ fn update_monthly_report(env: &Env, deposited: i128, spent: i128) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+    use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::{Env, String};
 
-    fn setup() -> (Env, Address) {
+    fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token_id = env.register_stellar_asset_contract_v2(admin);
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &admins, &1, &token_id.address());
         let proposer = Address::generate(&env);
-        (env, proposer)
+        (env, contract_id, proposer)
     }
 
     #[test]
     fn test_deposit_increases_balance() {
-        let (env, _) = setup();
-        deposit_to_treasury(&env, 1_000_000);
-        assert_eq!(get_treasury_balance(&env), 1_000_000);
+        let (env, contract_id, _) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let balance = env.as_contract(&contract_id, || get_treasury_balance(&env));
+        assert_eq!(balance, 1_000_000);
     }
 
     #[test]
     fn test_create_proposal_requires_positive_amount() {
-        let (env, proposer) = setup();
-        deposit_to_treasury(&env, 1_000_000);
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
         let recipient = Address::generate(&env);
-        let result = create_proposal(
-            &env,
-            proposer,
-            recipient,
-            -1,
-            String::from_str(&env, "bad"),
-        );
+        let result = env.as_contract(&contract_id, || {
+            create_proposal(&env, proposer, recipient, -1, String::from_str(&env, "bad"))
+        });
         assert_eq!(result, Err(ContractError::InvalidAmount));
     }
 
     #[test]
     fn test_create_proposal_succeeds() {
-        let (env, proposer) = setup();
-        deposit_to_treasury(&env, 1_000_000);
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
         let recipient = Address::generate(&env);
-        let id = create_proposal(
-            &env,
-            proposer,
-            recipient,
-            100_000,
-            String::from_str(&env, "Community grant"),
-        )
-        .unwrap();
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer,
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Community grant"),
+                )
+            })
+            .unwrap();
         assert_eq!(id, 1);
-        let p = get_treasury_proposal(&env, 1).unwrap();
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, 1))
+            .unwrap();
         assert_eq!(p.amount, 100_000);
         assert_eq!(p.status, TreasuryProposalStatus::Active);
     }
 
     #[test]
     fn test_vote_and_finalize_proposal() {
-        let (env, proposer) = setup();
-        deposit_to_treasury(&env, 1_000_000);
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
         let recipient = Address::generate(&env);
-        let id = create_proposal(
-            &env,
-            proposer.clone(),
-            recipient,
-            100_000,
-            String::from_str(&env, "Grant"),
-        )
-        .unwrap();
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer.clone(),
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Grant"),
+                )
+            })
+            .unwrap();
 
         let voter1 = Address::generate(&env);
         let voter2 = Address::generate(&env);
-        vote_on_proposal(&env, voter1, id, true).unwrap();
-        vote_on_proposal(&env, voter2, id, true).unwrap();
-
-        // Advance time past voting period.
-        env.ledger().set(LedgerInfo {
-            timestamp: env.ledger().timestamp() + TREASURY_VOTING_PERIOD_SECS + 1,
-            protocol_version: 22,
-            sequence_number: env.ledger().sequence(),
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: u32::MAX,
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter2, id, true).unwrap()
         });
 
-        finalize_proposal(&env, id).unwrap();
-        let p = get_treasury_proposal(&env, id).unwrap();
+        // Advance time past voting period.
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
         assert_eq!(p.status, TreasuryProposalStatus::Executed);
-        assert_eq!(get_treasury_balance(&env), 900_000);
+        let balance = env.as_contract(&contract_id, || get_treasury_balance(&env));
+        assert_eq!(balance, 900_000);
     }
 
     #[test]
     fn test_rejected_proposal_when_no_quorum() {
-        let (env, proposer) = setup();
-        deposit_to_treasury(&env, 1_000_000);
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
         let recipient = Address::generate(&env);
-        let id = create_proposal(
-            &env,
-            proposer,
-            recipient,
-            100_000,
-            String::from_str(&env, "Grant"),
-        )
-        .unwrap();
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer,
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Grant"),
+                )
+            })
+            .unwrap();
 
         let voter1 = Address::generate(&env);
-        vote_on_proposal(&env, voter1, id, false).unwrap();
-
-        env.ledger().set(LedgerInfo {
-            timestamp: env.ledger().timestamp() + TREASURY_VOTING_PERIOD_SECS + 1,
-            protocol_version: 22,
-            sequence_number: env.ledger().sequence(),
-            network_id: Default::default(),
-            base_reserve: 10,
-            min_temp_entry_ttl: 1,
-            min_persistent_entry_ttl: 1,
-            max_entry_ttl: u32::MAX,
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, false).unwrap()
         });
 
-        finalize_proposal(&env, id).unwrap();
-        let p = get_treasury_proposal(&env, id).unwrap();
+        // Advance time past voting period.
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
         assert_eq!(p.status, TreasuryProposalStatus::Rejected);
     }
 
     #[test]
     fn test_cannot_vote_twice() {
-        let (env, proposer) = setup();
-        deposit_to_treasury(&env, 1_000_000);
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
         let recipient = Address::generate(&env);
-        let id = create_proposal(
-            &env,
-            proposer,
-            recipient,
-            100_000,
-            String::from_str(&env, "Grant"),
-        )
-        .unwrap();
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer,
+                    recipient,
+                    100_000,
+                    String::from_str(&env, "Grant"),
+                )
+            })
+            .unwrap();
 
         let voter = Address::generate(&env);
-        vote_on_proposal(&env, voter.clone(), id, true).unwrap();
-        let result = vote_on_proposal(&env, voter, id, false);
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter.clone(), id, true).unwrap()
+        });
+        let result = env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, false));
         assert_eq!(result, Err(ContractError::AlreadyVoted));
     }
 
     #[test]
     fn test_monthly_report_updated_on_deposit() {
-        let (env, _) = setup();
-        deposit_to_treasury(&env, 500_000);
+        let (env, contract_id, _) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 500_000));
         let month_id = env.ledger().timestamp() / (30 * 24 * 60 * 60);
-        let report = get_treasury_report(&env, month_id).unwrap();
+        let report = env
+            .as_contract(&contract_id, || get_treasury_report(&env, month_id))
+            .unwrap();
         assert_eq!(report.deposited, 500_000);
+    }
+
+    #[test]
+    fn test_auto_reject_stale_large_allocation() {
+        // Issue #1448: Test auto-rejection of stale proposals
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 10_000_000));
+        let recipient = Address::generate(&env);
+
+        // Create a large allocation (exceeds threshold)
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer.clone(),
+                    recipient,
+                    4_000_000, // > 30% of 10M = large allocation
+                    String::from_str(&env, "Large grant"),
+                )
+            })
+            .unwrap();
+
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+
+        // Finalize voting to move to PendingAdminApproval
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::PendingAdminApproval);
+        assert!(p.admin_approval_deadline.is_some());
+
+        // Advance past the admin approval deadline
+        env.ledger().with_mut(|l| l.timestamp += ADMIN_APPROVAL_DEADLINE_SECS + 1);
+
+        // Auto-reject should succeed now
+        let result = env.as_contract(&contract_id, || auto_reject_stale_proposal(&env, id));
+        assert!(result.is_ok());
+
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_cannot_auto_reject_before_deadline() {
+        // Issue #1448: Auto-rejection should fail before deadline
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 10_000_000));
+        let recipient = Address::generate(&env);
+
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer.clone(),
+                    recipient,
+                    4_000_000,
+                    String::from_str(&env, "Large grant"),
+                )
+            })
+            .unwrap();
+
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        // Try to auto-reject before deadline (should fail)
+        let result = env.as_contract(&contract_id, || auto_reject_stale_proposal(&env, id));
+        assert_eq!(result, Err(ContractError::InvalidAmount));
+    }
+
+    #[test]
+    fn test_admin_can_approve_before_deadline() {
+        // Issue #1448: Admin approval before deadline should succeed
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 10_000_000));
+        let recipient = Address::generate(&env);
+
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(
+                    &env,
+                    proposer.clone(),
+                    recipient.clone(),
+                    4_000_000,
+                    String::from_str(&env, "Large grant"),
+                )
+            })
+            .unwrap();
+
+        let voter1 = Address::generate(&env);
+        let voter2 = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter1, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        // Admin approves before deadline
+        let admin = Address::generate(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let result = env.as_contract(&contract_id, || {
+            admin_approve_proposal(&env, admin_signers, id)
+        });
+        assert!(result.is_ok());
+
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Executed);
     }
 }

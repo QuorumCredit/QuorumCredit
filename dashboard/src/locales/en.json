@@ -1,0 +1,79 @@
+{
+  "nav": {
+    "title": "QuorumCredit",
+    "tagline": "Proof of Trust Lending",
+    "statusLive": "Live",
+    "statusOffline": "Offline"
+  },
+  "accessibility": {
+    "colorblindFriendly": "🎨 Colorblind-friendly",
+    "highContrast": "⚡ High Contrast"
+  },
+  "emptyState": {
+    "loading": "Loading your loans…",
+    "loans": {
+      "title": "No loans yet",
+      "subtitle": "Request your first loan to get started. Your active and completed loans will appear here."
+    },
+    "vouches": {
+      "title": "No vouches yet",
+      "subtitle": "You haven't backed any borrowers yet. Vouch for a borrower to start earning yield."
+    },
+    "giveUp": {
+      "title": "Unable to connect",
+      "subtitle": "The metrics server could not be reached after several attempts. Please check your connection or try again.",
+      "retry": "Try again"
+    }
+  },
+  "reputation": {
+    "heading": "Reputation",
+    "tier": "Tier",
+    "creditScore": "Credit Score"
+  },
+  "loans": {
+    "activeHeading": "Active Loans",
+    "closedHeading": "Closed Loans",
+    "updated": "Updated {{time}}"
+  },
+  "loanCard": {
+    "borrower": "Borrower",
+    "principal": "Principal",
+    "yieldEarned": "Yield Earned",
+    "dueDate": "Due Date",
+    "repaymentProgress": "Repayment Progress",
+    "repaid": "Repaid",
+    "id": "ID"
+  },
+  "analytics": {
+    "pageTitle": "QuorumCredit Admin Dashboard",
+    "colorblindFriendly": "Colorblind-friendly mode",
+    "highContrast": "High contrast",
+    "statusLive": "Live",
+    "statusDisconnected": "Disconnected",
+    "filtersFrom": "From:",
+    "filtersTo": "To:",
+    "filterLoanSize": "Loan size:",
+    "filterAll": "All",
+    "filterSmall": "Small (<0.1 XLM)",
+    "filterMedium": "Medium (0.1–10 XLM)",
+    "filterLarge": "Large (>10 XLM)",
+    "fetchButton": "Fetch",
+    "fetchLoading": "Loading…",
+    "errorPrefix": "Error:",
+    "tvlOverTime": "TVL Over Time",
+    "defaultRateOverTime": "Default Rate Over Time",
+    "topBorrowers": "Top Borrowers",
+    "topVouchers": "Top Vouchers",
+    "exportCSV": "Export CSV",
+    "exportJSON": "Export JSON",
+    "kpiTvl": "TVL (XLM)",
+    "kpiActiveLoans": "Active Loans",
+    "kpiDefaultRate": "Default Rate",
+    "kpiTotalBorrowers": "Total Borrowers",
+    "kpiTotalVouchers": "Total Vouchers",
+    "kpiAvgLoanSize": "Avg Loan Size",
+    "loadingTitle": "Loading analytics…",
+    "errorTitle": "Failed to load analytics",
+    "retryButton": "Retry"
+  }
+}

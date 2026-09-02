@@ -13,8 +13,9 @@
 
 use crate::errors::ContractError;
 use crate::helpers::require_admin_approval;
-use crate::types::DataKey;
-use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
+use crate::types::{DataKey, VOTE_ATTESTATION_MAX_AGE_SECS, VOTE_ATTESTATION_MAX_SKEW_SECS};
+use crate::vouch;
+use soroban_sdk::{contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Vec};
 
 /// Cross-chain governance proposal
 #[contracttype]
@@ -27,7 +28,7 @@ pub struct CrossChainProposal {
     /// Action to execute (e.g., "update_config", "slash_borrower")
     pub action: String,
     /// Encoded action parameters
-    pub action_params: Vec<u8>,
+    pub action_params: Bytes,
     /// Chain where vote results are collected from
     pub origin_chain: u32,
     /// When voting period ends (ledger seconds)
@@ -90,13 +91,53 @@ pub struct CrossChainVote {
     pub timestamp: u64,
 }
 
+/// Canonical bytes a vote attestor key must sign for this attestation.
+pub(crate) fn vote_attestation_message(
+    env: &Env,
+    origin_chain: u32,
+    proposal_id: u64,
+    approve_stake: i128,
+    reject_stake: i128,
+    voter_count: u32,
+    attested_at: u64,
+    nonce: u64,
+) -> Bytes {
+    let payload = (
+        origin_chain,
+        proposal_id,
+        approve_stake,
+        reject_stake,
+        voter_count,
+        attested_at,
+        nonce,
+    );
+    let encoded = payload.to_xdr(env);
+    env.crypto().sha256(&encoded).into()
+}
+
+/// Check if a vote attestation nonce has already been used.
+fn is_vote_attestation_nonce_used(env: Env, origin_chain: u32, nonce: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VoteAttestationNonceUsed(origin_chain, nonce))
+        .unwrap_or(false)
+}
+
+/// Check if a `submit_cross_chain_vote` (chain_id, nonce) pair has already been used.
+fn is_cross_chain_vote_nonce_used(env: Env, chain_id: u32, nonce: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CrossChainVoteNonceUsed(chain_id, nonce))
+        .unwrap_or(false)
+}
+
 /// Admin: Create a new cross-chain governance proposal
 pub fn create_cross_chain_proposal(
     env: Env,
     admin_signers: Vec<Address>,
     description: String,
     action: String,
-    action_params: Vec<u8>,
+    action_params: Bytes,
     origin_chain: u32,
     voting_period_seconds: u64,
 ) -> Result<u64, ContractError> {
@@ -137,14 +178,24 @@ pub fn create_cross_chain_proposal(
 
 /// Submit a vote on a cross-chain proposal
 /// Can only be called by active vouchers
+///
+/// `nonce` must be unique per `chain_id` (mirroring `is_bridge_nonce_used` in
+/// `cross_chain.rs`) so the same voter's weight from a given origin chain
+/// cannot be resubmitted and double-counted across separate calls. See
+/// `docs/governance-manual.md` for the nonce scheme.
 pub fn submit_cross_chain_vote(
     env: Env,
     voter: Address,
     proposal_id: u64,
     approve: bool,
     chain_id: u32,
+    nonce: u64,
 ) -> Result<(), ContractError> {
     voter.require_auth();
+
+    if is_cross_chain_vote_nonce_used(env.clone(), chain_id, nonce) {
+        return Err(ContractError::VoteAttestationNonceReused);
+    }
 
     let now = env.ledger().timestamp();
     let mut proposal: CrossChainProposal = env
@@ -170,19 +221,20 @@ pub fn submit_cross_chain_vote(
     proposal.total_participated_stake = proposal.total_participated_stake.saturating_add(voter_stake);
 
     // Find or update chain aggregate
-    let mut found = false;
-    for chain_agg in proposal.chain_votes.iter_mut() {
-        if chain_agg.chain_id == chain_id {
+    let found = match proposal.chain_votes.iter().position(|c| c.chain_id == chain_id) {
+        Some(i) => {
+            let mut chain_agg = proposal.chain_votes.get(i as u32).unwrap();
             if approve {
                 chain_agg.approve_stake = chain_agg.approve_stake.saturating_add(voter_stake);
             } else {
                 chain_agg.reject_stake = chain_agg.reject_stake.saturating_add(voter_stake);
             }
             chain_agg.total_voters += 1;
-            found = true;
-            break;
+            proposal.chain_votes.set(i as u32, chain_agg);
+            true
         }
-    }
+        None => false,
+    };
 
     if !found {
         let new_agg = ChainVoteAggregate {
@@ -213,6 +265,12 @@ pub fn submit_cross_chain_vote(
         .persistent()
         .set(&DataKey::CrossChainProposal(proposal_id), &proposal);
 
+    // Mark nonce as used (after successful tallying) so this exact
+    // (chain_id, nonce) cannot be resubmitted.
+    env.storage()
+        .persistent()
+        .set(&DataKey::CrossChainVoteNonceUsed(chain_id, nonce), &true);
+
     Ok(())
 }
 
@@ -225,10 +283,58 @@ pub fn aggregate_remote_votes(
 ) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
 
-    // Verify attestation (in production, would verify Ed25519 signature from bridge)
+    // Verify proposal ID matches
     if attestation.proposal_id != proposal_id {
         return Err(ContractError::InvalidStateTransition);
     }
+
+    // The origin chain must be an actively registered bridge, not just any
+    // chain ID an admin happens to supply -- mirrors the bridge attestation
+    // model in `cross_chain.rs::check_attestation`.
+    vouch::validate_bridge(&env, attestation.origin_chain)?;
+
+    // Verify nonce has not been used (replay protection)
+    if is_vote_attestation_nonce_used(env.clone(), attestation.origin_chain, attestation.nonce) {
+        return Err(ContractError::VoteAttestationNonceReused);
+    }
+
+    // Check attestation freshness
+    let now = env.ledger().timestamp();
+    if attestation.attested_at > now {
+        if attestation.attested_at - now > VOTE_ATTESTATION_MAX_SKEW_SECS {
+            return Err(ContractError::VoteAttestationExpired);
+        }
+    } else if now - attestation.attested_at > VOTE_ATTESTATION_MAX_AGE_SECS {
+        return Err(ContractError::VoteAttestationExpired);
+    }
+
+    // Get bridge public key for signature verification
+    let public_key: BytesN<32> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::BridgePublicKey(attestation.origin_chain))
+        .ok_or(ContractError::BridgeNotConfigured)?;
+
+    // Construct message and verify signature
+    let message = vote_attestation_message(
+        &env,
+        attestation.origin_chain,
+        attestation.proposal_id,
+        attestation.approve_stake,
+        attestation.reject_stake,
+        attestation.voter_count,
+        attestation.attested_at,
+        attestation.nonce,
+    );
+
+    env.crypto()
+        .ed25519_verify(&public_key, &message, &attestation.signature);
+
+    // Mark nonce as used (after successful verification)
+    env.storage().persistent().set(
+        &DataKey::VoteAttestationNonceUsed(attestation.origin_chain, attestation.nonce),
+        &true,
+    );
 
     let mut proposal: CrossChainProposal = env
         .storage()
@@ -237,7 +343,7 @@ pub fn aggregate_remote_votes(
         .ok_or(ContractError::ProposalNotFound)?;
 
     // Check voting period
-    if env.ledger().timestamp() > proposal.voting_ends_at {
+    if now > proposal.voting_ends_at {
         return Err(ContractError::VotingPeriodEnded);
     }
 
@@ -264,7 +370,32 @@ pub fn aggregate_remote_votes(
     Ok(())
 }
 
-/// Check if a proposal has passed (approve stake > reject stake)
+/// Whether `proposal` has a legitimate quorum: approve stake exceeds reject
+/// stake, AND a strict majority of currently registered, active bridge chains
+/// have reported vote data (via `submit_cross_chain_vote` and/or
+/// `aggregate_remote_votes`). Without the second check, a proposal could pass
+/// on votes from a single reporting chain while every other registered chain
+/// simply never checked in (offline, censored, or never attested), silently
+/// excluding their voting weight from the outcome.
+fn proposal_meets_quorum(env: &Env, proposal: &CrossChainProposal) -> bool {
+    if proposal.approve_stake <= proposal.reject_stake {
+        return false;
+    }
+
+    let active_chains = vouch::get_bridges(env.clone())
+        .iter()
+        .filter(|b| b.active)
+        .count() as u32;
+
+    if active_chains == 0 {
+        return true;
+    }
+
+    proposal.chain_votes.len() * 2 > active_chains
+}
+
+/// Check if a proposal has passed (approve stake > reject stake, with a
+/// minimum-chains-reporting quorum requirement — see `proposal_meets_quorum`)
 pub fn has_proposal_passed(env: Env, proposal_id: u64) -> Result<bool, ContractError> {
     let proposal: CrossChainProposal = env
         .storage()
@@ -272,11 +403,20 @@ pub fn has_proposal_passed(env: Env, proposal_id: u64) -> Result<bool, ContractE
         .get(&DataKey::CrossChainProposal(proposal_id))
         .ok_or(ContractError::ProposalNotFound)?;
 
-    // Proposal passes if approve stake > reject stake
-    Ok(proposal.approve_stake > proposal.reject_stake)
+    Ok(proposal_meets_quorum(&env, &proposal))
 }
 
-/// Execute a cross-chain governance proposal (after voting period and timelock)
+/// Execute a cross-chain governance proposal (after voting period and timelock).
+///
+/// Idempotency: a proposal's `executed` flag is checked before any other
+/// condition, so a second (or later) call against an already-executed
+/// proposal is always rejected with `ProposalAlreadyFinalized` rather than
+/// silently no-op'ing or re-running the action — this guards against
+/// double-execution if the caller (or a retry) invokes this twice for the
+/// same proposal in the same or a later block. Only the call that actually
+/// flips `executed` from `false` to `true` emits the `(xchain, executed)`
+/// event, so an off-chain indexer never observes more than one execution
+/// event per proposal.
 pub fn execute_cross_chain_proposal(
     env: Env,
     admin_signers: Vec<Address>,
@@ -290,6 +430,11 @@ pub fn execute_cross_chain_proposal(
         .get(&DataKey::CrossChainProposal(proposal_id))
         .ok_or(ContractError::ProposalNotFound)?;
 
+    // Check not already executed (idempotency guard against double-execution)
+    if proposal.executed {
+        return Err(ContractError::ProposalAlreadyFinalized);
+    }
+
     let now = env.ledger().timestamp();
 
     // Check voting period ended
@@ -302,14 +447,9 @@ pub fn execute_cross_chain_proposal(
         return Err(ContractError::TimelockDelayNotElapsed);
     }
 
-    // Check proposal passed
-    if proposal.approve_stake <= proposal.reject_stake {
+    // Check proposal passed (majority stake AND minimum-chains-reporting quorum)
+    if !proposal_meets_quorum(&env, &proposal) {
         return Err(ContractError::QuorumNotMet);
-    }
-
-    // Check not already executed
-    if proposal.executed {
-        return Err(ContractError::ProposalAlreadyFinalized);
     }
 
     // Mark as executed
@@ -320,6 +460,11 @@ pub fn execute_cross_chain_proposal(
 
     // In production, would execute the action here
     // For now, just mark as executed
+
+    env.events().publish(
+        (soroban_sdk::symbol_short!("xchain"), soroban_sdk::symbol_short!("executed")),
+        proposal_id,
+    );
 
     Ok(())
 }
@@ -353,16 +498,28 @@ pub fn get_proposal_results(
     ))
 }
 
-/// Query per-chain vote breakdown
+/// Query per-chain vote breakdown, paginated so the call stays within
+/// Soroban's read/return-size budget regardless of how many chains have
+/// voted on the proposal.
+///
+/// Returns the requested page plus `next_cursor`: `Some(offset)` to pass on
+/// the next call, or `None` once the end of the list has been reached.
 pub fn get_chain_vote_breakdown(
     env: Env,
     proposal_id: u64,
-) -> Result<Vec<ChainVoteAggregate>, ContractError> {
+    offset: u32,
+    limit: u32,
+) -> Result<(Vec<ChainVoteAggregate>, Option<u32>), ContractError> {
     let proposal: CrossChainProposal = env
         .storage()
         .persistent()
         .get(&DataKey::CrossChainProposal(proposal_id))
         .ok_or(ContractError::ProposalNotFound)?;
 
-    Ok(proposal.chain_votes)
+    Ok(crate::helpers::paginate_vec(
+        &env,
+        &proposal.chain_votes,
+        offset,
+        limit,
+    ))
 }

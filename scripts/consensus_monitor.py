@@ -27,6 +27,8 @@ import urllib.error
 from dataclasses import dataclass, field
 from typing import Any
 
+from stellar_sdk import Account, Address, Keypair, TransactionBuilder
+
 
 DEFAULT_CHECKS = [
     "get_config",
@@ -60,33 +62,97 @@ def get_latest_ledger(endpoint: str) -> int:
     return int(result.get("result", {}).get("sequence", -1))
 
 
+def build_invoke_transaction(
+    endpoint: str, contract_id: str, function_name: str, network_passphrase: str
+) -> str:
+    """Build a Soroban invoke-host-function transaction envelope.
+
+    Returns the base64-encoded XDR transaction envelope ready to be
+    sent to simulateTransaction. Uses a dummy keypair and sequence
+    number; the RPC endpoint will simulate the call without requiring
+    a real signature.
+    """
+    dummy_key = Keypair.random()
+    source_account = Account(account_id=dummy_key.public_key, sequence=0)
+
+    tx_builder = TransactionBuilder(
+        source_account=source_account,
+        base_fee=100,
+        network_passphrase=network_passphrase,
+        v1=False,
+    )
+    tx_builder.set_timeout(300)
+
+    contract_address = Address(contract_id)
+
+    tx_builder.append_invoke_soroban_contract_op(
+        contract_address=contract_address,
+        method=function_name,
+        parameters=[],
+    )
+
+    tx = tx_builder.build()
+    return tx.to_xdr()
+
+
 def simulate_contract_call(
-    endpoint: str, contract_id: str, function_name: str
+    endpoint: str, contract_id: str, function_name: str, network_passphrase: str = "Test SDF Future Network ; October 2022"
 ) -> Any:
     """Simulate a read-only contract invocation via simulateTransaction.
 
-    In production this should build a proper Soroban invoke-host-function
-    transaction envelope with the Stellar SDK. This lightweight version
-    calls a simplified RPC method name so the monitor can run without a
-    heavyweight SDK dependency; swap in the real transaction-building
-    logic for your deployment (see docs/consensus-monitoring-guide.md).
+    Builds a proper Soroban invoke-host-function transaction envelope,
+    submits it to the RPC endpoint, and returns the base64-encoded result.
     """
+    try:
+        tx_xdr = build_invoke_transaction(
+            endpoint, contract_id, function_name, network_passphrase
+        )
+    except Exception as exc:
+        raise ValueError(f"Failed to build transaction: {exc}") from exc
+
     result = rpc_call(
         endpoint,
         "simulateTransaction",
-        {"contractId": contract_id, "function": function_name},
+        {"transaction": tx_xdr},
     )
-    return result.get("result")
+
+    error = result.get("error")
+    if error:
+        raise ValueError(f"RPC error: {error.get('message', 'Unknown error')}")
+
+    response_result = result.get("result")
+    if not response_result:
+        raise ValueError("Empty result from simulateTransaction")
+
+    result_xdr = response_result.get("result")
+    if not result_xdr:
+        raise ValueError("No result XDR in simulateTransaction response")
+
+    return parse_contract_result(result_xdr)
+
+
+def parse_contract_result(result_xdr_b64: str) -> str:
+    """Return the base64-encoded contract result for comparison.
+
+    The result XDR from simulateTransaction is returned as-is for
+    byte-for-byte comparison across validators. This preserves the exact
+    binary representation from each endpoint without decoding/re-encoding.
+    """
+    if not result_xdr_b64:
+        raise ValueError("Empty result XDR")
+    return result_xdr_b64
 
 
 def poll_validator(
-    name: str, endpoint: str, contract_id: str, checks: list[str]
+    name: str, endpoint: str, contract_id: str, checks: list[str], network_passphrase: str
 ) -> ValidatorResult:
     result = ValidatorResult(name=name, endpoint=endpoint)
     try:
         result.ledger = get_latest_ledger(endpoint)
         for check in checks:
-            result.values[check] = simulate_contract_call(endpoint, contract_id, check)
+            result.values[check] = simulate_contract_call(
+                endpoint, contract_id, check, network_passphrase
+            )
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         result.error = str(exc)
     return result
@@ -146,12 +212,17 @@ def send_alert(message: str, config: dict, dry_run: bool) -> None:
 
 
 def reconcile(
-    validators: list[dict], contract_id: str, checks: list[str], retries: int, delay: float
+    validators: list[dict],
+    contract_id: str,
+    checks: list[str],
+    retries: int,
+    delay: float,
+    network_passphrase: str,
 ) -> list[ValidatorResult]:
     """Retry polling to distinguish transient lag from real divergence."""
     for attempt in range(1, retries + 1):
         results = [
-            poll_validator(v["name"], v["endpoint"], contract_id, checks)
+            poll_validator(v["name"], v["endpoint"], contract_id, checks, network_passphrase)
             for v in validators
         ]
         problems = compare_results(results, ledger_tolerance=2)
@@ -193,13 +264,16 @@ def main() -> int:
     validators = config.get("validators", [])
     contract_id = config.get("contract_id")
     checks = config.get("checks", DEFAULT_CHECKS)
+    network_passphrase = config.get(
+        "network_passphrase", "Test SDF Future Network ; October 2022"
+    )
 
     if not validators or not contract_id:
         print("Config must include 'validators' and 'contract_id'", file=sys.stderr)
         return 2
 
     results = reconcile(
-        validators, contract_id, checks, args.reconcile_retries, args.reconcile_delay
+        validators, contract_id, checks, args.reconcile_retries, args.reconcile_delay, network_passphrase
     )
     problems = compare_results(results, ledger_tolerance=2)
 

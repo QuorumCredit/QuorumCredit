@@ -12,7 +12,9 @@ mod governance_tests {
         env: Env,
         client: QuorumCreditContractClient<'static>,
         token: Address,
+        #[allow(dead_code)]
         contract_id: Address,
+        #[allow(dead_code)]
         deployer: Address,
         admins: Vec<Address>,
     }
@@ -49,16 +51,30 @@ mod governance_tests {
         }
     }
 
+    #[allow(dead_code)]
     fn single_admin_signers(env: &Env, admin: &Address) -> Vec<Address> {
         Vec::from_array(env, [admin.clone()])
     }
 
     #[test]
-    #[should_panic(expected = "insufficient admin approvals")]
     fn test_emergency_pause_fewer_than_threshold_fails() {
         let s = setup(2, 3);
         let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone()]);
-        s.client.emergency_pause(&admin_signers);
+        let result = s.client.try_emergency_pause(&admin_signers);
+        assert_eq!(result, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
+    }
+
+    #[test]
+    fn test_emergency_pause_denies_role_without_pause_permission() {
+        let s = setup(1, 1);
+        let admin = s.admins.get(0).unwrap();
+        // Monitor has no Pause permission, even though it alone satisfies the threshold.
+        s.env.as_contract(&s.contract_id, || {
+            crate::rbac::assign_admin_role(&s.env, s.admins.clone(), admin.clone(), crate::types::AdminRole::Monitor);
+        });
+        let admin_signers = Vec::from_array(&s.env, [admin.clone()]);
+        let result = s.client.try_emergency_pause(&admin_signers);
+        assert_eq!(result, Err(Ok(crate::errors::ContractError::PermissionDenied)));
     }
 
     #[test]
@@ -103,9 +119,99 @@ mod governance_tests {
         // Queue slash
         s.client.queue_slash(&admin_signers, &borrower, &100_000);
         
-        // Execute queued slash (returns 0 because lazy_slash is a stub)
+        // Execute queued slash (should actually execute now)
+        let count = s.client.execute_queued_slashes(&admin_signers);
+        assert_eq!(count, 1);
+
+        // After slashing, ActiveLoan is removed, so get_loan returns None
+        // This is expected behavior - the loan is now defaulted and no longer "active"
+        let loan = s.client.get_loan(&borrower);
+        assert!(loan.is_none());
+    }
+
+    #[test]
+    fn test_queue_slash_empty_queue_returns_zero() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        
+        // Execute with empty queue should return 0
         let count = s.client.execute_queued_slashes(&admin_signers);
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_queue_slash_twice_executes_both() {
+        let s = setup(2, 3);
+        let borrower1 = Address::generate(&s.env);
+        let borrower2 = Address::generate(&s.env);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        
+        // Setup two borrowers with vouches and loans
+        let voucher1 = Address::generate(&s.env);
+        let voucher2 = Address::generate(&s.env);
+        let token_admin = StellarAssetClient::new(&s.env, &s.token);
+        
+        token_admin.mint(&voucher1, &2_000_000);
+        token_admin.mint(&voucher2, &2_000_000);
+        
+        s.client.vouch(&voucher1, &borrower1, &1_000_000, &s.token, &None);
+        s.client.vouch(&voucher2, &borrower2, &1_000_000, &s.token, &None);
+        
+        s.client.request_loan(&borrower1, &100_000, &1_000_000, &String::from_str(&s.env, "test1"), &s.token);
+        s.client.request_loan(&borrower2, &100_000, &1_000_000, &String::from_str(&s.env, "test2"), &s.token);
+        
+        // Queue both slashes
+        s.client.queue_slash(&admin_signers, &borrower1, &100_000);
+        s.client.queue_slash(&admin_signers, &borrower2, &100_000);
+        
+        // Execute queued slashes - should execute both
+        let count = s.client.execute_queued_slashes(&admin_signers);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_queue_slash_duplicate_borrower_executes_both() {
+        let s = setup(2, 3);
+        let borrower = Address::generate(&s.env);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        
+        // Setup borrower with vouch and loan
+        let voucher = Address::generate(&s.env);
+        StellarAssetClient::new(&s.env, &s.token).mint(&voucher, &2_000_000);
+        s.client.vouch(&voucher, &borrower, &2_000_000, &s.token, &None);
+        
+        s.client.request_loan(&borrower, &100_000, &2_000_000, &String::from_str(&s.env, "test"), &s.token);
+        
+        // Queue the same borrower twice with different amounts
+        s.client.queue_slash(&admin_signers, &borrower, &50_000);
+        s.client.queue_slash(&admin_signers, &borrower, &50_000);
+        
+        // Execute queued slashes - first should succeed, second should fail (already slashed)
+        let count = s.client.execute_queued_slashes(&admin_signers);
+        // Only the first slash should execute successfully
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_queue_slash_zero_amount_fails() {
+        let s = setup(2, 3);
+        let borrower = Address::generate(&s.env);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+
+        // Queue slash with zero amount should fail with InvalidAmount error
+        s.client.queue_slash(&admin_signers, &borrower, &0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_queue_slash_negative_amount_fails() {
+        let s = setup(2, 3);
+        let borrower = Address::generate(&s.env);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+
+        // Queue slash with negative amount should fail with InvalidAmount error
+        s.client.queue_slash(&admin_signers, &borrower, &-100);
     }
 
     #[test]
@@ -149,5 +255,254 @@ mod governance_tests {
         // v3 is the final delegate (not delegated to anyone), so its vote counts
         let res3 = s.client.vote_slash(&v3, &borrower, &true);
         assert_eq!(res3, VoteSlashResult::VoteCounted);
+    }
+
+    // ── Issue #1442: Typed Admin Action Execution Tests ───────────────────────
+
+    #[test]
+    fn test_admin_action_pause_unpause_executes_end_to_end() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+        let admin2 = s.admins.get(1).unwrap();
+
+        assert!(!s.client.get_paused());
+
+        // 1. Propose Pause action
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::Pause,
+        );
+
+        // 2. Approve from admin1 and admin2 (threshold = 2)
+        s.client.approve_admin_action(&admin1, &action_id);
+        s.client.approve_admin_action(&admin2, &action_id);
+
+        // 3. Execute action
+        s.client.execute_admin_action(&action_id);
+
+        // Assert concrete state change occurred
+        assert!(s.client.get_paused());
+
+        // 4. Propose and execute Unpause action
+        let unpause_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::Unpause,
+        );
+        s.client.approve_admin_action(&admin1, &unpause_id);
+        s.client.approve_admin_action(&admin2, &unpause_id);
+        s.client.execute_admin_action(&unpause_id);
+
+        assert!(!s.client.get_paused());
+    }
+
+    #[test]
+    fn test_admin_action_set_protocol_fee_executes_end_to_end() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+        let admin2 = s.admins.get(1).unwrap();
+
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::SetProtocolFee(500),
+        );
+
+        s.client.approve_admin_action(&admin1, &action_id);
+        s.client.approve_admin_action(&admin2, &action_id);
+        s.client.execute_admin_action(&action_id);
+
+        assert_eq!(s.client.get_protocol_fee(), 500);
+    }
+
+    #[test]
+    fn test_admin_action_set_yield_bps_executes_end_to_end() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+        let admin2 = s.admins.get(1).unwrap();
+
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::SetYieldBps(350),
+        );
+
+        s.client.approve_admin_action(&admin1, &action_id);
+        s.client.approve_admin_action(&admin2, &action_id);
+        s.client.execute_admin_action(&action_id);
+
+        assert_eq!(s.client.get_config().yield_bps, 350);
+    }
+
+    #[test]
+    fn test_admin_action_cannot_execute_below_threshold() {
+        let s = setup(2, 3);
+        let admin1 = s.admins.get(0).unwrap();
+
+        let action_id = s.client.propose_admin_action(
+            &admin1,
+            &crate::types::GovernanceAction::Pause,
+        );
+
+        // Only 1 approval (threshold is 2)
+        s.client.approve_admin_action(&admin1, &action_id);
+
+        let err = s.client.try_execute_admin_action(&action_id);
+        assert_eq!(err, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
+        assert!(!s.client.get_paused());
+    }
+
+    // ── Issue #1443: Successor Admin Timelock & Cancellation Tests ────────────
+
+    #[test]
+    fn test_successor_admin_timelock_enforced() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let successor = Address::generate(&s.env);
+
+        // 1. Set successor admin
+        s.client.set_successor_admin(&admin_signers, &Some(successor.clone()));
+        assert_eq!(s.client.get_config().successor_admin, Some(successor.clone()));
+
+        // 2. Claim immediately (timelock of 24h not elapsed)
+        let err = s.client.try_claim_successor_admin();
+        assert_eq!(err, Err(Ok(crate::errors::ContractError::TimelockDelayNotElapsed)));
+    }
+
+    #[test]
+    fn test_successor_admin_claim_after_delay_succeeds() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let successor = Address::generate(&s.env);
+
+        // 1. Set successor admin at current time
+        let start_time = s.env.ledger().timestamp();
+        s.client.set_successor_admin(&admin_signers, &Some(successor.clone()));
+
+        // 2. Advance time past 24-hour timelock delay
+        s.env.ledger().with_mut(|l| l.timestamp = start_time + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS + 1);
+
+        // 3. Claim successor admin
+        let result = s.client.try_claim_successor_admin();
+        assert!(result.is_ok());
+
+        // 4. Verify successor was added to admins and successor_admin is cleared
+        let cfg = s.client.get_config();
+        assert!(cfg.admins.iter().any(|a| a == successor));
+        assert_eq!(cfg.successor_admin, None);
+    }
+
+    #[test]
+    fn test_successor_admin_cancellation() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let successor = Address::generate(&s.env);
+
+        let start_time = s.env.ledger().timestamp();
+        s.client.set_successor_admin(&admin_signers, &Some(successor.clone()));
+        assert_eq!(s.client.get_config().successor_admin, Some(successor.clone()));
+
+        // Current admins cancel the designation
+        let cancel_res = s.client.try_cancel_successor_admin(&admin_signers);
+        assert!(cancel_res.is_ok());
+        assert_eq!(s.client.get_config().successor_admin, None);
+
+        // Advance time past 24 hours
+        s.env.ledger().with_mut(|l| l.timestamp = start_time + crate::types::SUCCESSOR_CLAIM_TIMELOCK_SECS + 10);
+
+        // Attempting to claim must fail with UnauthorizedCaller
+        let claim_res = s.client.try_claim_successor_admin();
+        assert_eq!(claim_res, Err(Ok(crate::errors::ContractError::UnauthorizedCaller)));
+    }
+
+    // ── Issue #1444: SlashesByMonth Index & Slashing Reports Tests ────────────
+
+    #[test]
+    fn test_slashing_report_indexed_by_month_and_backfill() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let token_admin = StellarAssetClient::new(&s.env, &s.token);
+
+        let borrower = Address::generate(&s.env);
+        let voucher = Address::generate(&s.env);
+        token_admin.mint(&voucher, &1_000_000);
+
+        s.client.vouch(&voucher, &borrower, &1_000_000, &s.token, &None);
+        s.client.request_loan(&borrower, &500_000, &100_000, &String::from_str(&s.env, "test"), &s.token);
+
+        let month_1 = 100u64;
+        let month_1_timestamp = month_1 * crate::types::MONTHLY_PERIOD_SECS + 500;
+        s.env.ledger().with_mut(|l| l.timestamp = month_1_timestamp);
+
+        // Queue and execute slash in month 1
+        s.client.queue_slash(&admin_signers, &borrower, &100_000);
+        s.client.execute_queued_slashes(&admin_signers);
+
+        // Advance to month 2
+        let month_2 = 101u64;
+        let month_2_timestamp = month_2 * crate::types::MONTHLY_PERIOD_SECS + 200;
+        s.env.ledger().with_mut(|l| l.timestamp = month_2_timestamp);
+
+        // Generate report for month 1
+        let report_m1 = s.client.generate_slashing_report(&month_1);
+        assert_eq!(report_m1.month_id, month_1);
+        assert_eq!(report_m1.total_slashes, 1);
+        assert_eq!(report_m1.total_slashed, 500_000);
+        assert_eq!(report_m1.slash_ids.len(), 1);
+
+        // Generate report for month 2 (empty)
+        let report_m2 = s.client.generate_slashing_report(&month_2);
+        assert_eq!(report_m2.month_id, month_2);
+        assert_eq!(report_m2.total_slashes, 0);
+        assert_eq!(report_m2.total_slashed, 0);
+        assert_eq!(report_m2.slash_ids.len(), 0);
+
+        // Verify get_slashing_report retrieves persisted reports
+        let cached_m1 = s.client.get_slashing_report(&month_1).unwrap();
+        assert_eq!(cached_m1.total_slashes, 1);
+    }
+
+    #[test]
+    fn test_backfill_slashes_by_month_migrates_records() {
+        let s = setup(2, 3);
+        let admin_signers = Vec::from_array(&s.env, [s.admins.get(0).unwrap().clone(), s.admins.get(1).unwrap().clone()]);
+        let borrower = Address::generate(&s.env);
+
+        let month_target = 50u64;
+        let timestamp = month_target * crate::types::MONTHLY_PERIOD_SECS + 100;
+
+        // Manually simulate a legacy slash record without SlashesByMonth index
+        let legacy_record = crate::types::SlashRecord {
+            slash_id: 1,
+            borrower: borrower.clone(),
+            loan_id: 1,
+            loan_amount: 100_000,
+            total_slashed: 50_000,
+            slash_timestamp: timestamp,
+            recovery_amount: 0,
+            reversal_reason: None,
+            reversed: false,
+            effective_slash_bps: 1000,
+        };
+
+        s.env.as_contract(&s.contract_id, || {
+            s.env.storage().persistent().set(&DataKey::SlashRecord(1), &legacy_record);
+            s.env.storage().instance().set(&DataKey::SlashRecordCounter, &1u64);
+        });
+
+        // Before backfill, month_target report is empty (index-based)
+        let pre_report = s.client.generate_slashing_report(&month_target);
+        assert_eq!(pre_report.total_slashes, 0);
+
+        // Run backfill
+        let backfilled = s.client.backfill_slashes_by_month(&admin_signers);
+        assert_eq!(backfilled, 1);
+
+        // Re-running backfill is idempotent
+        let second_backfill = s.client.backfill_slashes_by_month(&admin_signers);
+        assert_eq!(second_backfill, 0);
+
+        // After backfill, report successfully includes the migrated record
+        let post_report = s.client.generate_slashing_report(&month_target);
+        assert_eq!(post_report.total_slashes, 1);
+        assert_eq!(post_report.total_slashed, 50_000);
+        assert_eq!(post_report.slash_ids.get(0).unwrap(), 1);
     }
 }

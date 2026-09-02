@@ -14,8 +14,8 @@ together into a single operational curriculum rather than duplicating them.
 ## 1. Operator Roles
 
 QuorumCredit operations are split into distinct roles, mirroring the
-on-chain RBAC roles in `src/rbac.rs` (see `docs/RBAC_QUICK_REFERENCE.md`)
-so that on-chain permissions and operational responsibilities stay aligned:
+on-chain RBAC roles in `src/rbac.rs` so that on-chain permissions and
+operational responsibilities stay aligned:
 
 ### 1.1 On-Call Operator
 - **Responsibility**: first responder for alerts (Section 3), triages
@@ -80,7 +80,7 @@ start regardless of whether any alerts have fired overnight:
    pending (`src/invariants.rs`); this should normally be covered by
    automated alerting, but a manual daily check is a cheap second layer.
 6. **Withdrawal queue depth check** — confirm the withdrawal queue isn't
-   growing unexpectedly (see `WITHDRAWAL_QUEUE_OPTIMIZATION.md`), which
+   growing unexpectedly (see `src/withdrawal_queue_test.rs`), which
    can indicate a stuck batch-processing job rather than organic demand.
 7. **Handoff notes** — log anything notable for the next shift, even if
    nothing fired — "quiet shift, all checks green" is still a useful
@@ -183,7 +183,7 @@ processing transactions)?
          │                   if within safe resource limits.
          └─ Throughput drop → likely a regression from a recent change;
                               escalate to engineering, reference
-                              WITHDRAWAL_QUEUE_OPTIMIZATION.md for the
+                              src/withdrawal_queue_test.rs for the
                               expected throughput baseline to compare against.
 ```
 

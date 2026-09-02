@@ -33,11 +33,11 @@ scalability envelope is bounded by three layers:
   `src/vouch.rs`, `src/collateral_pool.rs`) each have an associated rent
   cost and a bump/TTL mechanism. Storage that isn't actively bumped expires
   and must be restored, which is itself a bounded, costed operation.
-- The storage-redesign work (see `src/storage_redesign_test.rs` and the
-  `CREDIT_SCORE_IMPLEMENTATION_SUMMARY.md` / backup-restore PR history) was
-  itself driven by earlier capacity constraints — moving from monolithic
-  per-user blobs toward paginated storage was necessary to keep individual
-  reads/writes within Soroban's footprint limits as user counts grow.
+- The storage-redesign work (see `src/storage_redesign_test.rs` and
+  `src/credit_score.rs`) was itself driven by earlier capacity constraints —
+  moving from monolithic per-user blobs toward paginated storage was
+  necessary to keep individual reads/writes within Soroban's footprint
+  limits as user counts grow.
 
 ### 1.3 Off-chain dependency limits
 - **Indexer throughput**: components under `tools/indexer` and the
@@ -61,7 +61,7 @@ Ranked roughly by how soon each is expected to bind as usage grows:
    an unusually large number of vouchers increases the CPU/read cost of
    every credit-score recalculation and slash event that touches them.
 2. **Withdrawal queue processing.** Batch processing of a large withdrawal
-   queue (see `WITHDRAWAL_QUEUE_OPTIMIZATION.md`, `src/withdrawal_queue_test.rs`)
+   queue (see `src/withdrawal_queue_test.rs`)
    is bounded by how many queue entries can be processed within one
    transaction's resource budget; very large queues require multiple
    transactions to fully drain.

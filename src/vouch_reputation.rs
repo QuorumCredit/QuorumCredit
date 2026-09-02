@@ -1,10 +1,47 @@
+//! Issue #1173: reputation-weighted vouch strength — a voucher's stake counts
+//! for more or less toward a borrower's quorum depending on that voucher's
+//! own reputation score.
+//!
+//! ## Vouch identifier scheme (#1408)
+//! Each vouch's computed [`VouchReputationWeight`] is persisted under
+//! `DataKey::VouchReputationWeight(vouch_id)`. `vouch_id` is **not** a
+//! sequential counter — there is no persistent counter state for it — it is
+//! [`derive_vouch_id`], a SHA-256 hash (truncated to 8 bytes) of the vouch's
+//! `(borrower, voucher, token)` triple. That triple is guaranteed unique
+//! among a borrower's *active* vouches (vouch.rs's `DuplicateVouch` check
+//! rejects a second active vouch sharing a `(voucher, token)` pair for the
+//! same borrower), so it's a stable, collision-resistant identifier without
+//! needing new persistent counter state to hand out and track sequential IDs.
+//! Recompute it the same way to look up a specific vouch's weight record via
+//! [`get_vouch_reputation_weight`].
+
 use crate::errors::ContractError;
 use crate::helpers::config;
 use crate::types::{
     DataKey, VouchRecord, VouchReputationWeight, VoucherStats, WeightedVouchDistribution,
     BPS_DENOMINATOR,
 };
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{xdr::ToXdr, Address, BytesN, Env, Vec};
+
+/// Derives a stable per-vouch identifier from `(borrower, voucher, token)`
+/// (#1408). vouch.rs rejects a second active vouch sharing a `(voucher,
+/// token)` pair for the same borrower (`ContractError::DuplicateVouch`), so
+/// this triple is guaranteed unique among a borrower's active vouches — it's
+/// a fine substitute for a real incrementing counter without needing a new
+/// piece of persistent state to hand out and track sequential IDs.
+///
+/// Hashed (SHA-256, truncated to the first 8 bytes) rather than combined
+/// arithmetically, since `Address` has no stable numeric representation to
+/// combine directly. XDR encoding is used for the same reason it's used in
+/// merkle_tree.rs: it's the canonical, self-describing serialization the
+/// host itself already uses for these types.
+pub fn derive_vouch_id(env: &Env, borrower: &Address, voucher: &Address, token: &Address) -> u64 {
+    let payload = (borrower.clone(), voucher.clone(), token.clone());
+    let encoded = payload.to_xdr(env);
+    let hash: BytesN<32> = env.crypto().sha256(&encoded).into();
+    let bytes = hash.to_array();
+    u64::from_be_bytes(bytes[0..8].try_into().unwrap())
+}
 
 /// Issue #1173: Calculate weighted vouch strength based on voucher reputation.
 /// Formula: base_strength × (1 + (voucher_score / 1000))
@@ -23,8 +60,8 @@ pub fn calculate_weighted_vouch_strength(
         .unwrap_or(VoucherStats {
             successful_vouches: 0,
             total_vouches_slashed: 0,
-            total_stake: 0,
             total_yield_earned: 0,
+            total_slashed: 0,
         });
 
     // Calculate reputation score (0-1000 scale)
@@ -52,6 +89,15 @@ pub fn calculate_weighted_vouch_strength(
         .set(&DataKey::VouchReputationWeight(vouch_id), &weight_record.clone());
 
     Ok(weight_record)
+}
+
+/// Read back a single vouch's stored reputation weight record (#1408) —
+/// recompute the same `(borrower, voucher, token)` triple via
+/// `derive_vouch_id` to look one up.
+pub fn get_vouch_reputation_weight(env: &Env, vouch_id: u64) -> Option<VouchReputationWeight> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VouchReputationWeight(vouch_id))
 }
 
 /// Issue #1173: Calculate reputation score from voucher stats.
@@ -123,8 +169,12 @@ pub fn update_weighted_vouch_distribution(
             .checked_add(vouch.stake)
             .ok_or(ContractError::ArithmeticOverflow)?;
 
-        // Calculate weight for this vouch
-        let weight_record = calculate_weighted_vouch_strength(env, 0, &vouch.voucher, vouch.stake)?;
+        // Calculate weight for this vouch. #1408: previously hardcoded vouch_id
+        // to 0 for every vouch, so each iteration overwrote the same
+        // VouchReputationWeight(0) storage slot — only the last vouch
+        // processed ever had a retrievable weight record afterward.
+        let vouch_id = derive_vouch_id(env, borrower, &vouch.voucher, &vouch.token);
+        let weight_record = calculate_weighted_vouch_strength(env, vouch_id, &vouch.voucher, vouch.stake)?;
 
         total_weighted_stake = total_weighted_stake
             .checked_add(weight_record.weighted_strength)

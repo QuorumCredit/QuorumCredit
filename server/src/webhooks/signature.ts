@@ -2,12 +2,14 @@
  * Webhook Signature Verification Module
  * 
  * #1082: Add Webhook Signature Verification
+ * #1367: Replace Math.random() with crypto.randomBytes; migrate WebhookRegistry to persistent storage
  * 
  * This module implements HMAC-SHA256 signature verification for webhook requests
  * to prevent spoofing attacks.
  */
 
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
+import type { Redis } from 'ioredis';
 
 export interface WebhookRegistration {
   id: string;
@@ -34,12 +36,11 @@ export interface SignedWebhookRequest {
 
 /**
  * Generate a new webhook secret (32-byte random hex string)
+ * 
+ * #1367: Uses crypto.randomBytes (CSPRNG) instead of Math.random().
  */
 export function generateWebhookSecret(): string {
-  return createHmac('sha256', Math.random().toString())
-    .update(Date.now().toString())
-    .digest('hex')
-    .slice(0, 64); // 32 bytes in hex
+  return randomBytes(32).toString('hex'); // 64 hex chars = 32 bytes
 }
 
 /**
@@ -185,17 +186,67 @@ export function validateIncomingWebhook(
 }
 
 /**
- * Simple in-memory webhook registration store
- * In production, this should be replaced with a database
+ * #1367: Persistent, multi-instance-safe webhook registry interface.
+ * Follows the same LocalXxx/RedisXxx pattern used in jtiRevocationStore.ts.
  */
-export class WebhookRegistry {
-  private registrations: Map<string, WebhookRegistration> = new Map();
-
+export interface WebhookRegistry {
   /**
    * Register a new webhook
    */
-  registerWebhook(url: string, events: string[]): WebhookRegistration {
-    const id = `wh_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  registerWebhook(url: string, events: string[]): Promise<WebhookRegistration>;
+
+  /**
+   * Get webhook registration by ID
+   */
+  getWebhook(id: string): Promise<WebhookRegistration | undefined>;
+
+  /**
+   * Update webhook last used timestamp
+   */
+  updateLastUsed(id: string): Promise<void>;
+
+  /**
+   * Disable a webhook
+   */
+  disableWebhook(id: string): Promise<void>;
+
+  /**
+   * Enable a webhook
+   */
+  enableWebhook(id: string): Promise<void>;
+
+  /**
+   * Delete a webhook
+   */
+  deleteWebhook(id: string): Promise<boolean>;
+
+  /**
+   * List all webhooks
+   */
+  listWebhooks(): Promise<WebhookRegistration[]>;
+
+  /**
+   * Get webhooks for a specific event
+   */
+  getWebhooksForEvent(event: string): Promise<WebhookRegistration[]>;
+
+  /**
+   * Close / clean up underlying connections
+   */
+  close(): Promise<void>;
+}
+
+// ── Local (single-instance) implementation ─────────────────────────────────────
+
+/**
+ * In-process webhook registry backed by a plain Map.
+ * NOT multi-instance-safe — for local dev and unit tests only.
+ */
+export class LocalWebhookRegistry implements WebhookRegistry {
+  private registrations: Map<string, WebhookRegistration> = new Map();
+
+  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+    const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const secret = generateWebhookSecret();
     
     const registration: WebhookRegistration = {
@@ -211,17 +262,11 @@ export class WebhookRegistry {
     return registration;
   }
 
-  /**
-   * Get webhook registration by ID
-   */
-  getWebhook(id: string): WebhookRegistration | undefined {
+  async getWebhook(id: string): Promise<WebhookRegistration | undefined> {
     return this.registrations.get(id);
   }
 
-  /**
-   * Update webhook last used timestamp
-   */
-  updateLastUsed(id: string): void {
+  async updateLastUsed(id: string): Promise<void> {
     const registration = this.registrations.get(id);
     if (registration) {
       registration.lastUsed = new Date();
@@ -229,10 +274,7 @@ export class WebhookRegistry {
     }
   }
 
-  /**
-   * Disable a webhook
-   */
-  disableWebhook(id: string): void {
+  async disableWebhook(id: string): Promise<void> {
     const registration = this.registrations.get(id);
     if (registration) {
       registration.enabled = false;
@@ -240,10 +282,7 @@ export class WebhookRegistry {
     }
   }
 
-  /**
-   * Enable a webhook
-   */
-  enableWebhook(id: string): void {
+  async enableWebhook(id: string): Promise<void> {
     const registration = this.registrations.get(id);
     if (registration) {
       registration.enabled = true;
@@ -251,29 +290,220 @@ export class WebhookRegistry {
     }
   }
 
-  /**
-   * Delete a webhook
-   */
-  deleteWebhook(id: string): boolean {
+  async deleteWebhook(id: string): Promise<boolean> {
     return this.registrations.delete(id);
   }
 
-  /**
-   * List all webhooks
-   */
-  listWebhooks(): WebhookRegistration[] {
+  async listWebhooks(): Promise<WebhookRegistration[]> {
     return Array.from(this.registrations.values());
   }
 
-  /**
-   * Get webhooks for a specific event
-   */
-  getWebhooksForEvent(event: string): WebhookRegistration[] {
+  async getWebhooksForEvent(event: string): Promise<WebhookRegistration[]> {
     return Array.from(this.registrations.values()).filter(
       (reg) => reg.enabled && reg.events.includes(event)
     );
   }
+
+  async close(): Promise<void> {
+    this.registrations.clear();
+  }
 }
 
-// Export a singleton instance for convenience
-export const webhookRegistry = new WebhookRegistry();
+// ── Redis (multi-instance) implementation ──────────────────────────────────────
+
+const REDIS_WEBHOOK_PREFIX = 'qc:webhook:';
+const REDIS_WEBHOOK_IDS_KEY = 'qc:webhook:ids';
+
+/**
+ * Redis-backed webhook registry for multi-instance deployments.
+ * 
+ * Storage schema:
+ *   qc:webhook:{id} → JSON serialized WebhookRegistration
+ *   qc:webhook:ids → SET of all webhook IDs
+ */
+export class RedisWebhookRegistry implements WebhookRegistry {
+  constructor(private readonly redis: Redis) {}
+
+  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+    const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
+    const secret = generateWebhookSecret();
+    
+    const registration: WebhookRegistration = {
+      id,
+      url,
+      secret,
+      createdAt: new Date(),
+      events,
+      enabled: true,
+    };
+
+    await this.redis.set(
+      `${REDIS_WEBHOOK_PREFIX}${id}`,
+      JSON.stringify(registration)
+    );
+    await this.redis.sadd(REDIS_WEBHOOK_IDS_KEY, id);
+    
+    return registration;
+  }
+
+  async getWebhook(id: string): Promise<WebhookRegistration | undefined> {
+    const raw = await this.redis.get(`${REDIS_WEBHOOK_PREFIX}${id}`);
+    if (!raw) return undefined;
+    
+    const registration = JSON.parse(raw);
+    // Parse Date fields back from ISO strings
+    registration.createdAt = new Date(registration.createdAt);
+    if (registration.lastUsed) {
+      registration.lastUsed = new Date(registration.lastUsed);
+    }
+    return registration;
+  }
+
+  async updateLastUsed(id: string): Promise<void> {
+    const registration = await this.getWebhook(id);
+    if (registration) {
+      registration.lastUsed = new Date();
+      await this.redis.set(
+        `${REDIS_WEBHOOK_PREFIX}${id}`,
+        JSON.stringify(registration)
+      );
+    }
+  }
+
+  async disableWebhook(id: string): Promise<void> {
+    const registration = await this.getWebhook(id);
+    if (registration) {
+      registration.enabled = false;
+      await this.redis.set(
+        `${REDIS_WEBHOOK_PREFIX}${id}`,
+        JSON.stringify(registration)
+      );
+    }
+  }
+
+  async enableWebhook(id: string): Promise<void> {
+    const registration = await this.getWebhook(id);
+    if (registration) {
+      registration.enabled = true;
+      await this.redis.set(
+        `${REDIS_WEBHOOK_PREFIX}${id}`,
+        JSON.stringify(registration)
+      );
+    }
+  }
+
+  async deleteWebhook(id: string): Promise<boolean> {
+    const deleted = await this.redis.del(`${REDIS_WEBHOOK_PREFIX}${id}`);
+    await this.redis.srem(REDIS_WEBHOOK_IDS_KEY, id);
+    return deleted > 0;
+  }
+
+  async listWebhooks(): Promise<WebhookRegistration[]> {
+    const ids = await this.redis.smembers(REDIS_WEBHOOK_IDS_KEY);
+    const webhooks: WebhookRegistration[] = [];
+    
+    for (const id of ids) {
+      const webhook = await this.getWebhook(id);
+      if (webhook) webhooks.push(webhook);
+    }
+    
+    return webhooks;
+  }
+
+  async getWebhooksForEvent(event: string): Promise<WebhookRegistration[]> {
+    const all = await this.listWebhooks();
+    return all.filter(
+      (reg) => reg.enabled && reg.events.includes(event)
+    );
+  }
+
+  async close(): Promise<void> {
+    await this.redis.quit();
+  }
+}
+
+// ── Factory ────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the appropriate webhook registry based on whether Redis is configured.
+ * Mirrors the `buildRevocationStore` pattern in auth/jtiRevocationStore.ts.
+ */
+export function buildWebhookRegistry(redisUrl: string | undefined): WebhookRegistry {
+  if (redisUrl) {
+    // Lazily import ioredis so it is not required in local/test environments.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Redis } = require('ioredis') as typeof import('ioredis');
+    const redis = new Redis(redisUrl, { lazyConnect: false });
+    return new RedisWebhookRegistry(redis);
+  }
+  return new LocalWebhookRegistry();
+}
+
+/**
+ * Singleton instance for convenience.
+ * In production, call buildWebhookRegistry with your Redis URL instead.
+ * 
+ * #1367: This local singleton is preserved for backwards compatibility in tests
+ * and local development, but production deployments MUST use buildWebhookRegistry
+ * with a Redis URL to achieve multi-instance safety.
+ */
+export const webhookRegistry = new LocalWebhookRegistry();
+
+// ── SSRF validation (issue #1486) ──────────────────────────────────────────────
+
+const ALLOWED_SCHEMES = new Set(["http", "https"]);
+const BLOCKED_HOSTNAMES = new Set([
+  "localhost",
+  "127.0.0.1",
+  "::1",
+  "0.0.0.0",
+  "169.254.169.254",
+  "metadata.google.internal",
+  "metadata.internal",
+]);
+
+const PRIVATE_IPV4_RE = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/;
+const LINK_LOCAL_IPV4_RE = /^169\.254\./;
+
+export interface WebhookUrlValidationOptions {
+  /** When true, skip scheme/host validation. Intended for local/dev environments only. */
+  allowPrivateHosts?: boolean;
+}
+
+/**
+ * Validate a webhook registration URL to prevent SSRF attacks.
+ *
+ * Rejects:
+ * - non-http(s) schemes
+ * - loopback/link-local/private IPv4 ranges
+ * - cloud metadata endpoints
+ *
+ * Returns the normalized URL when valid, or throws with a descriptive message.
+ */
+export function validateWebhookUrl(rawUrl: string, options: WebhookUrlValidationOptions = {}): URL {
+  const { allowPrivateHosts = false } = options;
+
+  const url = new URL(rawUrl);
+
+  if (!ALLOWED_SCHEMES.has(url.protocol.replace(":", ""))) {
+    throw new Error(`unsupported scheme: ${url.protocol}`);
+  }
+
+  if (allowPrivateHosts) return url;
+
+  const hostname = url.hostname.toLowerCase();
+
+  if (BLOCKED_HOSTNAMES.has(hostname)) {
+    throw new Error(`blocked host: ${hostname}`);
+  }
+
+  if (PRIVATE_IPV4_RE.test(hostname) || LINK_LOCAL_IPV4_RE.test(hostname)) {
+    throw new Error(`private IP range not allowed: ${hostname}`);
+  }
+
+  if (hostname === "::1" || hostname.startsWith("0.") || hostname === "0") {
+    throw new Error(`loopback address not allowed: ${hostname}`);
+  }
+
+  return url;
+}

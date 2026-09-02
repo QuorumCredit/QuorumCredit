@@ -7,8 +7,8 @@ use crate::helpers::{
 };
 use crate::types::{
     BatchVouchResult, BorrowerExposure, BridgeRecord, ChainExposure, DataKey, PortfolioRiskReport,
-    PortfolioSnapshot, QueuedWithdrawal, StagnantVouch, TokenExposure, VouchHistoryEntry,
-    VouchRecord, VouchMerkleRoot, VouchSplitRecord, MAX_HOT_VOUCH_HISTORY_ENTRIES,
+    PortfolioSnapshot, QueuedWithdrawal, StagnantVouch, TokenExposure, VouchAuditEventType,
+    VouchHistoryEntry, VouchRecord, VouchMerkleRoot, VouchSplitRecord, MAX_HOT_VOUCH_HISTORY_ENTRIES,
     MAX_WITHDRAWAL_QUEUE_SIZE, PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS,
     BPS_DENOMINATOR, SECS_PER_DAY, VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES,
 };
@@ -203,6 +203,11 @@ fn validate_vouch<'a>(
         return Err(ContractError::Blacklisted);
     }
 
+    // Issue #1429: lazily settle the borrower's overdue loans before accepting a
+    // new vouch, so stake is never committed against a borrower whose default
+    // history has not yet been flagged.
+    crate::lazy_default_detection::check_all_defaults_for_borrower(env, borrower)?;
+
     if cfg.whitelist_enabled {
         let is_whitelisted: bool = env
             .storage()
@@ -359,8 +364,16 @@ fn commit_vouch(
         },
     );
 
-    // Issue #1179: Log audit trail event for vouch creation (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for vouch creation.
+    crate::audit::log_vouch_audit_event(
+        env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchAuditEventType::Created,
+        stake,
+        stake,
+    )?;
 
     // Issue #1177: Initialize maturity tracking (stub - to be implemented)
     // crate::maturity::initialize_vouch_maturity(...) - deferred implementation
@@ -369,6 +382,10 @@ fn commit_vouch(
         &DataKey::LastVouchTimestamp(voucher.clone()),
         &timestamp,
     );
+
+    // Issue #1422: (re)evaluate this voucher's fraud score on every new vouch so
+    // rapid vouch cycling / circular vouching is scored as it accrues.
+    let _ = crate::detection::update_fraud_score(env.clone(), voucher.clone());
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("create")),
@@ -528,6 +545,7 @@ pub fn increase_stake(
         .ok_or(ContractError::StakeOverflow)?;
 
     let token = vouch_rec.token.clone();
+    let resulting_stake = vouch_rec.stake;
     vouches.set(idx, vouch_rec);
     env.storage()
         .persistent()
@@ -539,14 +557,23 @@ pub fn increase_stake(
 
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     env.events().publish(
         (symbol_short!("vouch"), symbol_short!("increase")),
         (voucher.clone(), borrower.clone(), additional),
     );
 
-    // Issue #1179: Log audit trail event for stake increase (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for stake increase.
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchAuditEventType::StakeIncreased,
+        additional,
+        resulting_stake,
+    )?;
 
     Ok(())
 }
@@ -597,10 +624,11 @@ pub fn decrease_stake(
         
         // Invalidate the weighted stake cache
         invalidate_weighted_stake_cache(&env, &borrower, &token);
+        crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
         // Issue #1285: extend TTL on the queued-withdrawal write path.
         bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
-        
+
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_rec.token, false, 0);
     }
 
@@ -624,6 +652,7 @@ pub fn decrease_stake(
 
     // Invalidate the weighted stake cache
     invalidate_weighted_stake_cache(&env, &borrower, &token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     // Issue #1285: extend TTL on decrease_stake write path.
     bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
@@ -636,8 +665,17 @@ pub fn decrease_stake(
         (voucher.clone(), borrower.clone(), amount),
     );
 
-    // Issue #1179: Log audit trail event for stake decrease (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for stake decrease.
+    let resulting_stake = vouch_rec.stake.checked_sub(amount).ok_or(ContractError::ArithmeticError)?;
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &borrower,
+        &voucher,
+        &token,
+        VouchAuditEventType::StakeDecreased,
+        amount,
+        resulting_stake,
+    )?;
 
     Ok(())
 }
@@ -677,10 +715,11 @@ pub fn withdraw_vouch(
         
         // Invalidate the weighted stake cache
         crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &vouch_token);
+        crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
         // Issue #1285: extend TTL on withdraw_vouch queued path.
         bump_persistent(&env, &DataKey::Vouches(borrower.clone()));
-        
+
         return queue_withdrawal_internal(&env, voucher, borrower, vouch_token, false, 0);
     }
 
@@ -695,6 +734,7 @@ pub fn withdraw_vouch(
 
     // Invalidate the weighted stake cache
     crate::vouch::invalidate_weighted_stake_cache(&env, &borrower, &vouch_token);
+    crate::cache::invalidate_yield_cache(&env, &borrower, &voucher);
 
     token_client.transfer(&env.current_contract_address(), &voucher, &vouch_stake);
 
@@ -703,8 +743,16 @@ pub fn withdraw_vouch(
         (voucher.clone(), borrower.clone(), vouch_stake),
     );
 
-    // Issue #1179: Log audit trail event for vouch withdrawal (stub - to be implemented)
-    // crate::audit::log_vouch_audit_event(...) - deferred implementation
+    // Issue #1179: audit trail entry for vouch withdrawal.
+    crate::audit::log_vouch_audit_event(
+        &env,
+        &borrower,
+        &voucher,
+        &vouch_token,
+        VouchAuditEventType::Withdrawn,
+        vouch_stake,
+        0,
+    )?;
 
     Ok(())
 }
@@ -1003,6 +1051,7 @@ mod tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Vec};
 
+    #[allow(dead_code)]
     fn setup_contract(env: &Env) -> (Address, Address) {
         let deployer = Address::generate(env);
         let admin = Address::generate(env);
@@ -1860,6 +1909,10 @@ pub fn compute_and_store_merkle_root(env: Env, borrower: Address) -> Result<soro
         return Err(ContractError::NoVouchesForBorrower);
     }
 
+    if vouches.len() > crate::merkle_tree::MAX_VOUCH_SET_SIZE as usize {
+        return Err(ContractError::InvalidAmount);
+    }
+
     // Each leaf commits to a vouch's (voucher, stake, token, vouch_timestamp)
     // tuple via crate::merkle_tree::hash_leaf. See docs/vouch-merkle-proof.md
     // for the full leaf/root format and its guarantees.
@@ -2429,8 +2482,8 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match token_addrs.iter().position(|t| t == v.token) {
             Some(i) => {
-                let updated = token_stakes.get(i).unwrap().saturating_add(v.stake);
-                token_stakes.set(i, updated);
+                let updated = token_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                token_stakes.set(i as u32, updated);
             }
             None => {
                 token_addrs.push_back(v.token.clone());
@@ -2440,8 +2493,8 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match chain_ids.iter().position(|c| c == v.chain_id) {
             Some(i) => {
-                let updated = chain_stakes.get(i).unwrap().saturating_add(v.stake);
-                chain_stakes.set(i, updated);
+                let updated = chain_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                chain_stakes.set(i as u32, updated);
             }
             None => {
                 chain_ids.push_back(v.chain_id);

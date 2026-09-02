@@ -240,7 +240,7 @@ class TestStateAnomalyMonitor(unittest.TestCase):
 
     def test_legitimate_vouch_graph_produces_no_anomalies(self):
         """A normal vouch graph generated from shared fixtures produces no false positive anomalies."""
-        legit_graph = generate_legitimate_vouch_graph()
+        legit_graph = generate_legitimate_vouch_graph(num_vouchers=80, num_borrowers=20)
         snapshot_dict = legit_graph.to_state_snapshot_dict(
             captured_at="2026-08-30T02:00:00Z",
             total_loans=53,
