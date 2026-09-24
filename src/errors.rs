@@ -261,6 +261,54 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "ProposalAlreadyFinalized"),
             String::from_str(env, "Governance proposal has already been finalized."),
         ),
+        ContractError::InvalidThreshold => (
+            String::from_str(env, "InvalidThreshold"),
+            String::from_str(env, "Invalid credential multi-signature threshold. Must be > 0 and <= number of signers."),
+        ),
+        ContractError::InsufficientSignatures => (
+            String::from_str(env, "InsufficientSignatures"),
+            String::from_str(env, "Insufficient signatures for multi-signature verification."),
+        ),
+        ContractError::UnauthorizedSigner => (
+            String::from_str(env, "UnauthorizedSigner"),
+            String::from_str(env, "Signer is not authorized to sign this credential."),
+        ),
+        ContractError::SignatureError => (
+            String::from_str(env, "SignatureError"),
+            String::from_str(env, "Signature verification failed."),
+        ),
+        ContractError::CredentialRateLimitExceeded => (
+            String::from_str(env, "CredentialRateLimitExceeded"),
+            String::from_str(env, "Credential verification rate limit exceeded for this holder."),
+        ),
+        ContractError::InvalidRateLimit => (
+            String::from_str(env, "InvalidRateLimit"),
+            String::from_str(env, "Invalid rate limit configuration. Limit must be positive."),
+        ),
+        ContractError::MetadataTamperDetected => (
+            String::from_str(env, "MetadataTamperDetected"),
+            String::from_str(env, "Credential metadata tampering detected. Metadata hash mismatch."),
+        ),
+        ContractError::MetadataHashMismatch => (
+            String::from_str(env, "MetadataHashMismatch"),
+            String::from_str(env, "Credential metadata hash does not match. Metadata may have been modified."),
+        ),
+        ContractError::QuorumSliceNotFound => (
+            String::from_str(env, "QuorumSliceNotFound"),
+            String::from_str(env, "Quorum slice not found."),
+        ),
+        ContractError::SelfHealingDisabled => (
+            String::from_str(env, "SelfHealingDisabled"),
+            String::from_str(env, "Self-healing is not enabled for this slice."),
+        ),
+        ContractError::InsufficientQuorum => (
+            String::from_str(env, "InsufficientQuorum"),
+            String::from_str(env, "Insufficient quorum to perform self-healing."),
+        ),
+        _ => (
+            String::from_str(env, "UnknownError"),
+            String::from_str(env, "An unknown error occurred."),
+        ),
     }
 }
 
@@ -621,4 +669,26 @@ EmergencyBypassNotAuthorised = 131,
     /// (same logic used by `refinance_quote`) determined the borrower is not
     /// eligible for a beneficial refinance at this time.
     RefinanceNotEligible = 223,
+    /// Issue #1599: Invalid credential multi-signature threshold.
+    InvalidThreshold = 224,
+    /// Issue #1599: Insufficient signatures for multi-signature verification.
+    InsufficientSignatures = 225,
+    /// Issue #1599: Signer is not authorized to sign this credential.
+    UnauthorizedSigner = 226,
+    /// Issue #1599: Signature verification failed.
+    SignatureError = 227,
+    /// Issue #1603: Credential verification rate limit exceeded.
+    CredentialRateLimitExceeded = 228,
+    /// Issue #1603: Invalid rate limit configuration.
+    InvalidRateLimit = 229,
+    /// Issue #1605: Credential metadata tampering detected.
+    MetadataTamperDetected = 230,
+    /// Issue #1605: Credential metadata hash mismatch.
+    MetadataHashMismatch = 231,
+    /// Issue #1606: Quorum slice not found.
+    QuorumSliceNotFound = 232,
+    /// Issue #1606: Self-healing is not enabled for this slice.
+    SelfHealingDisabled = 233,
+    /// Issue #1606: Insufficient quorum to perform self-healing.
+    InsufficientQuorum = 234,
 }
