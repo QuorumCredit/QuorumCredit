@@ -91,6 +91,80 @@ jobs:
           path: docs/benchmark_report.html
           retention-days: 30
 
+      - name: Restore last merged gas baseline
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: gas-baseline
+          path: .gas-baseline
+
+      - name: Enforce gas regression threshold
+        env:
+          GAS_REGRESSION_THRESHOLD_BPS: "500"
+        run: |
+          set -euo pipefail
+
+          THRESHOLD_BPS="${GAS_REGRESSION_THRESHOLD_BPS:-500}"
+          BASELINE_FILE="docs/benchmarks.json"
+          PREVIOUS_BASELINE=".gas-baseline/benchmarks.json"
+
+          if [ ! -f "$BASELINE_FILE" ]; then
+            echo "::warning::No $BASELINE_FILE found; skipping gas regression gate."
+            exit 0
+          fi
+
+          if [ ! -f "$PREVIOUS_BASELINE" ]; then
+            echo "::notice::No persisted baseline artifact found; treating this run as the initial baseline."
+            exit 0
+          fi
+
+          python3 - "$PREVIOUS_BASELINE" "$BASELINE_FILE" "$THRESHOLD_BPS" <<'PY'
+          import json
+          import sys
+
+          previous_path, current_path, threshold_bps = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+          def load(path):
+              with open(path, "r", encoding="utf-8") as handle:
+                  return json.load(handle)
+
+          def index(entries):
+              result = {}
+              for entry in entries:
+                  name = entry.get("operation") or entry.get("name")
+                  if name is not None:
+                      result[name] = entry
+              return result
+
+          previous = index(load(previous_path))
+          current = index(load(current_path))
+
+          regressions = []
+          for name, entry in current.items():
+              if entry.get("regression_detected") is not True:
+                  continue
+              bps = entry.get("regression_percentage_bps")
+              if bps is None:
+                  bps = 0
+              if bps > threshold_bps:
+                  regressions.append((name, bps))
+
+          if regressions:
+              for name, bps in regressions:
+                  print(f"::error::Gas regression for '{name}': {bps} bps exceeds threshold {threshold_bps} bps")
+              sys.exit(1)
+
+          print(f"No gas regression beyond {threshold_bps} bps detected.")
+          PY
+
+      - name: Upload gas baseline
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-baseline
+          path: docs/benchmarks.json
+          retention-days: 90
+
       - name: Check for regression (main branch only)
         if: github.ref == 'refs/heads/main'
         run: |
