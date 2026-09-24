@@ -1,5 +1,11 @@
 # Monitoring and Alerting Setup Guide
 
+> **Role:** Quick start. This is the short, opinionated path to get Prometheus, Grafana, and AlertManager scraping the QuorumCredit indexer's `/metrics` endpoint.
+>
+> For the complete reference — full metric semantics, every dashboard panel, the full alert catalog, and detailed runbooks — see [monitoring-setup-guide.md](./monitoring-setup-guide.md).
+>
+> **Keep both in sync:** if you change a metric, alert, or dashboard here, update the complete reference too (and vice versa). See the checklist in [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 Comprehensive monitoring for QuorumCredit protocol operations.
 
 ## Prerequisites
@@ -307,42 +313,4 @@ sqlite3 /data/indexer.db "SELECT ledger, value_json FROM events WHERE category =
 
 **Resolution:**
 1. Investigate borrower defaults
-2. Check for coordinated attacks
-3. Review voucher selection process
-4. Consider adjusting slash threshold if legitimate
-
-### Alert: HighLoanUtilization
-
-**Severity:** Medium
-
-**Symptoms:**
-- Active loans >> repaid loans
-
-**Diagnosis:**
-```bash
-# Check active vs total loan counts
-curl 'http://localhost:9090/metrics' | grep -E 'qc_active_loans|qc_loan_count_total'
-```
-
-**Resolution:**
-1. Check if borrowers are defaulting
-2. Review repayment rates
-3. Consider pausing new loans until existing ones are repaid
-
-## Monitoring Setup Checklist
-
-- [ ] Prometheus installed and configured
-- [ ] QuorumCredit indexer deployed and scraping
-- [ ] Grafana dashboards imported
-- [ ] Alert rules configured
-- [ ] Alert channels (Slack, PagerDuty) configured
-- [ ] On-call rotation established
-- [ ] Runbooks documented and accessible
-- [ ] Monitoring tested with synthetic transactions
-- [ ] Dashboards accessible to ops team
-- [ ] Metrics retention policy set (30 days minimum)
-
-## References
-
-- [Event Indexing Guide](./event-indexing-guide.md) — full event schema and indexer documentation
-- [tools/indexer/](../tools/indexer/) — indexer source code and integration tests
+2. Check for
