@@ -42,7 +42,8 @@ export class RequestValidator {
     const errors: string[] = [];
 
     // Require TLS in production
-    if (process.env.NODE_ENV === "production" && req.socket.encrypted !== true) {
+    const socket = req.socket as any;
+    if (process.env.NODE_ENV === "production" && socket.encrypted !== true) {
       errors.push("HTTPS required");
     }
 
