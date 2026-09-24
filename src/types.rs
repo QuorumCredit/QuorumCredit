@@ -1272,6 +1272,16 @@ pub enum DataKey {
     FieldPermissionMatrix(Address),
     /// (credential_id, field) → Vec<(u64, u32, u32)>: field permission change history
     FieldPermissionHistory(Address, Bytes),
+
+    // ── Issue #1633: Audit Trail Compression ───────────────────────────────
+    /// credential_id → Vec<(u64, String)>: current audit trail events
+    CredentialAuditTrail(Address),
+    /// (credential_id, archive_id) → CompressedAuditArchive: compressed archive record
+    CompressedAuditArchive(Address, u32),
+    /// credential_id → RetentionConfig: audit trail retention configuration
+    AuditTrailCompressionConfig(Address),
+    /// credential_id → Vec<(u64, u32, u32)>: compression history (timestamp, archive_id, event_count)
+    AuditTrailCompressionLog(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

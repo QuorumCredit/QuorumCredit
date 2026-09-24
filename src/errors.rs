@@ -273,6 +273,18 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "InvalidPermission"),
             String::from_str(env, "Permission value is invalid (must be 0-3) or permission configuration is invalid."),
         ),
+        ContractError::NoEventsToCompress => (
+            String::from_str(env, "NoEventsToCompress"),
+            String::from_str(env, "No events available to compress for the given credential. Ensure there are old events to archive."),
+        ),
+        ContractError::ArchiveNotFound => (
+            String::from_str(env, "ArchiveNotFound"),
+            String::from_str(env, "Compressed archive not found for the given credential and archive ID."),
+        ),
+        ContractError::InvalidRetentionPeriod => (
+            String::from_str(env, "InvalidRetentionPeriod"),
+            String::from_str(env, "Retention period is invalid (min 7 days, max 5 years). Provide a valid period."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown or unhandled error occurred."),
@@ -643,4 +655,10 @@ EmergencyBypassNotAuthorised = 131,
     NonceAlreadyUsed = 225,
     /// Invalid permission value or configuration for field-level access control.
     InvalidPermission = 226,
+    /// No events available to compress for the given credential.
+    NoEventsToCompress = 227,
+    /// Archive not found for the given credential and archive ID.
+    ArchiveNotFound = 228,
+    /// Audit trail retention period is invalid or out of range.
+    InvalidRetentionPeriod = 229,
 }
