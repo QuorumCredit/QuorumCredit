@@ -6,6 +6,7 @@ import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { loanCartStore } from "../cart/loanCartStore.js";
 import { batchVerificationStore } from "../batch/batchVerificationStore.js";
+import { auditReportGenerator, type ReportFormat } from "../batch/auditReportGenerator.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import type { SorobanRpcClient } from "../soroban/rpcClient.js";
 import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
@@ -537,6 +538,104 @@ export function handleHttpRequest(
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "invalid request body" }));
       });
+    return;
+  }
+
+  // Audit report generation endpoints (Issue #1595)
+  if (url.pathname === "/audit-report/generate" && req.method === "POST") {
+    readJsonBody<{
+      format?: ReportFormat;
+      periodStart?: number;
+      periodEnd?: number;
+    }>(req)
+      .then((body) => {
+        const format = (body.format || "json") as ReportFormat;
+        const batches = Array.from(batchVerificationStore["batches"]?.values?.() || []);
+        const report = auditReportGenerator.generateReport(
+          batches,
+          format,
+          body.periodStart,
+          body.periodEnd
+        );
+        metrics.incCounter("qc_audit_report_generated_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify({ reportId: report.reportId, generatedAt: report.generatedAt }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  if (url.pathname === "/audit-report/view" && req.method === "GET") {
+    const reportId = url.searchParams.get("reportId");
+    const format = (url.searchParams.get("format") || "json") as ReportFormat;
+
+    if (!reportId) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "reportId query param required" }));
+      return;
+    }
+
+    const formattedReport = auditReportGenerator.getFormattedReport(reportId, format);
+    if (!formattedReport) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "report not found" }));
+      return;
+    }
+
+    const contentType =
+      format === "csv" ? "text/csv" : format === "pdf" ? "application/pdf" : "application/json";
+    res.writeHead(200, { "content-type": contentType });
+    res.end(formattedReport);
+    return;
+  }
+
+  if (url.pathname === "/audit-report/schedule/create" && req.method === "POST") {
+    readJsonBody<{
+      format: ReportFormat;
+      frequency: "daily" | "weekly" | "monthly";
+      recipients: string[];
+    }>(req)
+      .then((body) => {
+        if (!body.format || !body.frequency || !Array.isArray(body.recipients)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "format, frequency, and recipients array are required",
+            })
+          );
+          return;
+        }
+        const schedule = auditReportGenerator.createSchedule(
+          body.format,
+          body.frequency,
+          body.recipients
+        );
+        metrics.incCounter("qc_audit_report_schedule_created_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(schedule));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  if (url.pathname === "/audit-report/schedule/list" && req.method === "GET") {
+    const schedules = auditReportGenerator.getSchedules();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ schedules }));
+    return;
+  }
+
+  if (url.pathname === "/audit-report/history" && req.method === "GET") {
+    const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+    const history = auditReportGenerator.getReportHistory(limit);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ reports: history }));
     return;
   }
 
