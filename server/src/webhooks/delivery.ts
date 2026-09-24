@@ -56,6 +56,15 @@ export interface DeliveryStats {
   averageAttempts: number;
 }
 
+export interface WebhookAlert {
+  webhookId: string;
+  type: "consecutive_failures" | "success_rate_degradation";
+  severity: "warning" | "critical";
+  failureCount?: number;
+  successRate?: number;
+  triggeredAt: number;
+}
+
 /** Retries after the initial attempt, before a delivery is marked failed. */
 export const MAX_RETRIES = 5;
 
@@ -86,13 +95,21 @@ export interface DeliveryStoreConfig {
   pendingTtlMs?: number;
   /** Interval between automatic TTL sweeps in milliseconds. */
   sweepIntervalMs?: number;
+  /** Consecutive failure threshold that triggers an alert. */
+  consecutiveFailureThreshold?: number;
+  /** Success rate threshold (basis points, 0-10000) that triggers degradation alert. */
+  successRateDegradationThreshold?: number;
 }
+
+export type WebhookAlertHandler = (alert: WebhookAlert) => void | Promise<void>;
 
 const DEFAULT_DELIVERY_STORE_CONFIG: Required<DeliveryStoreConfig> = {
   maxRecordsPerWebhook: 500,
   deliveredTtlMs: 24 * 60 * 60 * 1000, // 24 hours
   pendingTtlMs: 2 * 60 * 60 * 1000, // 2 hours
   sweepIntervalMs: 5 * 60 * 1000, // 5 minutes
+  consecutiveFailureThreshold: 5,
+  successRateDegradationThreshold: 5000, // 50% success rate
 };
 
 /**
@@ -108,6 +125,8 @@ const DEFAULT_DELIVERY_STORE_CONFIG: Required<DeliveryStoreConfig> = {
 export class WebhookDeliveryService {
   private readonly deliveries = new Map<string, DeliveryRecord>();
   private readonly byWebhook = new Map<string, string[]>();
+  private readonly consecutiveFailures = new Map<string, number>();
+  private readonly alertHandlers: WebhookAlertHandler[] = [];
   private nextId = 1;
   private readonly config: Required<DeliveryStoreConfig>;
   private sweepTimer?: ReturnType<typeof setInterval>;
@@ -115,6 +134,10 @@ export class WebhookDeliveryService {
   constructor(config: DeliveryStoreConfig = {}) {
     this.config = { ...DEFAULT_DELIVERY_STORE_CONFIG, ...config };
     this.startSweepTimer();
+  }
+
+  registerAlertHandler(handler: WebhookAlertHandler): void {
+    this.alertHandlers.push(handler);
   }
 
   /** Current number of delivery records held in memory. Exposed as a metric
@@ -187,6 +210,7 @@ export class WebhookDeliveryService {
     record.status = "failed";
     record.completedAt = Date.now();
     this.upsertRecord(record);
+    this.checkAndEmitAlerts(registration.id);
     return record;
   }
 
@@ -229,6 +253,49 @@ export class WebhookDeliveryService {
       this.byWebhook.set(record.webhookId, [record.id]);
     }
     this.evictIfNeeded(record.webhookId);
+  }
+
+  private checkAndEmitAlerts(webhookId: string): void {
+    const stats = this.stats(webhookId);
+    const consecutiveFailureCount = this.consecutiveFailures.get(webhookId) ?? 0;
+
+    if (stats.failed > 0) {
+      const newConsecutiveCount = consecutiveFailureCount + 1;
+      this.consecutiveFailures.set(webhookId, newConsecutiveCount);
+
+      if (newConsecutiveCount >= this.config.consecutiveFailureThreshold) {
+        this.emitAlert({
+          webhookId,
+          type: "consecutive_failures",
+          severity: "critical",
+          failureCount: newConsecutiveCount,
+          triggeredAt: Date.now(),
+        });
+      }
+    } else {
+      this.consecutiveFailures.delete(webhookId);
+    }
+
+    if (
+      stats.totalDeliveries > 0 &&
+      stats.successRateBps < this.config.successRateDegradationThreshold
+    ) {
+      this.emitAlert({
+        webhookId,
+        type: "success_rate_degradation",
+        severity: "warning",
+        successRate: stats.successRateBps,
+        triggeredAt: Date.now(),
+      });
+    }
+  }
+
+  private emitAlert(alert: WebhookAlert): void {
+    for (const handler of this.alertHandlers) {
+      void Promise.resolve(handler(alert)).catch((err) => {
+        console.error("Error in webhook alert handler:", err);
+      });
+    }
   }
 
   private evictIfNeeded(webhookId: string): void {
@@ -308,7 +375,13 @@ const REDIS_DELIVERY_INDEX_PREFIX = "qc:webhook:delivery:index:";
  *   qc:webhook:delivery:index:{webhookId} → SET of delivery IDs for that webhook
  */
 export class RedisWebhookDeliveryService {
+  private readonly alertHandlers: WebhookAlertHandler[] = [];
+
   constructor(private readonly redis: Redis, private readonly config: Required<DeliveryStoreConfig> = DEFAULT_DELIVERY_STORE_CONFIG) {}
+
+  registerAlertHandler(handler: WebhookAlertHandler): void {
+    this.alertHandlers.push(handler);
+  }
 
   async deliver(
     registration: WebhookRegistration,
@@ -362,7 +435,50 @@ export class RedisWebhookDeliveryService {
     record.status = "failed";
     record.completedAt = Date.now();
     await this.persistRecord(record);
+    await this.checkAndEmitAlerts(registration.id);
     return record;
+  }
+
+  private async checkAndEmitAlerts(webhookId: string): Promise<void> {
+    const stats = await this.stats(webhookId);
+    const consecutiveFailureKey = `qc:webhook:consecutive_failures:${webhookId}`;
+
+    if (stats.failed > 0) {
+      const currentCount = await this.redis.incr(consecutiveFailureKey);
+
+      if (currentCount >= this.config.consecutiveFailureThreshold) {
+        this.emitAlert({
+          webhookId,
+          type: "consecutive_failures",
+          severity: "critical",
+          failureCount: currentCount,
+          triggeredAt: Date.now(),
+        });
+      }
+    } else {
+      await this.redis.del(consecutiveFailureKey);
+    }
+
+    if (
+      stats.totalDeliveries > 0 &&
+      stats.successRateBps < this.config.successRateDegradationThreshold
+    ) {
+      this.emitAlert({
+        webhookId,
+        type: "success_rate_degradation",
+        severity: "warning",
+        successRate: stats.successRateBps,
+        triggeredAt: Date.now(),
+      });
+    }
+  }
+
+  private emitAlert(alert: WebhookAlert): void {
+    for (const handler of this.alertHandlers) {
+      void Promise.resolve(handler(alert)).catch((err) => {
+        console.error("Error in webhook alert handler:", err);
+      });
+    }
   }
 
   async getDelivery(id: string): Promise<DeliveryRecord | undefined> {
