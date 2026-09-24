@@ -145,12 +145,61 @@ The following are **out of scope**:
 
 ---
 
+## Contract Security Audit Framework
+
+This repository ships an automated security audit framework that scans contract
+source for common vulnerability classes, suggests remediations, and records an
+audit history across runs.
+
+### Vulnerability Detection Rules
+
+The framework evaluates each contract source against a set of detection rules.
+Each rule has an `id`, a `severity`, a `pattern` (regular expression matched
+against the source), and a `remediation` hint.
+
+| Rule ID | Severity | Detects |
+|---------|----------|---------|
+| `AUTH-001` | High | State-mutating entrypoints missing a `require_auth` guard |
+| `ARITH-001` | High | Unchecked arithmetic (`+`, `-`, `*`) on balances/amounts |
+| `REENTRANCY-001` | Critical | External calls made before state is committed |
+| `ACCESS-001` | High | Admin-only functions without an admin/threshold check |
+| `PANIC-001` | Medium | `unwrap()`/`expect()` on fallible contract calls |
+| `OVERFLOW-001` | High | Casts or arithmetic without overflow protection |
+| `STORAGE-001` | Medium | Unbounded iteration over persistent storage |
+
+### Pattern Matching
+
+Rules are applied by matching their `pattern` against the contract source. A
+finding is produced for every match and carries the rule id, severity, matched
+line, and the remediation hint. Findings are sorted by severity so the most
+critical issues surface first.
+
+### Auto-Remediation Suggestions
+
+Every finding includes a remediation suggestion derived from its rule. For
+example, `AUTH-001` suggests adding a `require_auth` guard to the entrypoint,
+and `ARITH-001` suggests using checked arithmetic (`checked_add`, `checked_sub`,
+`checked_mul`). Suggestions are advisory and should be reviewed before applying.
+
+### Audit History
+
+Each audit run is recorded with a timestamp, the scanned target, and the set of
+findings. The history is retained so regressions and resolved findings can be
+tracked across runs.
+
+### Running an Audit
+
+Run the audit framework against the contract source before every deployment and
+review any High or Critical findings before proceeding.
+
+---
+
 ## Security Best Practices for Deployers
 
 - Never commit `.env` files or secret keys — add `.env` to `.gitignore`
 - Use hardware wallets or multisig for admin keys
 - Set `admin_threshold > 1` in production to require M-of-N signatures
-- Run `cargo audit` before every deployment: `cargo install cargo-audit && cargo audit`
+- Run the contract security audit framework and `cargo audit` before every deployment: `cargo install cargo-audit && cargo audit`
 - Follow the required deployment sequence: build → deploy → initialize (same keypair)
 - Rotate webhook secrets regularly and store them in a secret manager, never in source control
 - Enable the request sanitization middleware on all public endpoints and keep it updated
