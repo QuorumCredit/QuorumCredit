@@ -1232,6 +1232,24 @@ pub enum DataKey {
     PubSubHealthy,              // bool: true when PubSub relay last checked in successfully
     RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
     WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
+
+    // ── Issue #1607-1611: Attestor Analytics and Quorum Slice Monitoring ───────
+    /// slice_id → Vec<Address> members of this quorum slice
+    AttestorSliceMembers(u64),
+    /// (attestor_a, attestor_b) → ConcordanceRecord for collusion detection
+    AttestorConcordance(Address, Address),
+    /// (attestor_a, attestor_b, timestamp) → (concordance_score, ledger) collusion alert
+    CollusionAlert(Address, Address, u64),
+    /// Last ledger at which collusion checks were performed
+    LastCollusionCheckLedger,
+    /// attestor → AttestorAvailability tracking record
+    AttestorAvailability(Address),
+    /// (attestor, timestamp) → availability_percentage low-availability alert
+    AvailabilityAlert(Address, u64),
+    /// slice_id → Vec<SlicePerformanceRecord> historical performance data
+    SlicePerformanceHistory(u64),
+    /// attestor → AttestorLocation geographic metadata
+    AttestorLocation(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
