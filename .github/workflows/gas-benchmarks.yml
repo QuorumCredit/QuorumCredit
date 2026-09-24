@@ -5,14 +5,18 @@ on:
     paths:
       - "src/**"
       - "docs/benchmarks.json"
+      - "docs/gas_trends.json"
       - "tools/benchmark_analyzer.py"
+      - "tools/gas_optimizer.py"
       - ".github/workflows/gas-benchmarks.yml"
   push:
     branches: [main]
     paths:
       - "src/**"
       - "docs/benchmarks.json"
+      - "docs/gas_trends.json"
       - "tools/benchmark_analyzer.py"
+      - "tools/gas_optimizer.py"
       - ".github/workflows/gas-benchmarks.yml"
 
 jobs:
@@ -39,6 +43,35 @@ jobs:
           python3 tools/benchmark_analyzer.py docs/benchmarks.json
         continue-on-error: true
 
+      - name: Profile gas usage per contract operation
+        run: |
+          python3 tools/gas_optimizer.py profile \
+            --input benchmark_output.txt \
+            --output docs/gas_profile.json
+        continue-on-error: true
+
+      - name: Generate optimization suggestions
+        run: |
+          python3 tools/gas_optimizer.py suggest \
+            --profile docs/gas_profile.json \
+            --output docs/gas_suggestions.md
+        continue-on-error: true
+
+      - name: Compare against benchmark baseline
+        run: |
+          python3 tools/gas_optimizer.py compare \
+            --profile docs/gas_profile.json \
+            --baseline docs/benchmarks.json \
+            --output docs/gas_comparison.md
+        continue-on-error: true
+
+      - name: Track gas cost trends over time
+        run: |
+          python3 tools/gas_optimizer.py trend \
+            --profile docs/gas_profile.json \
+            --history docs/gas_trends.json
+        continue-on-error: true
+
       - name: Comment PR with complexity analysis
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
@@ -57,9 +90,25 @@ jobs:
               operations.push(`- ${complexity}`);
             }
 
+            const suggestions = fs.existsSync('docs/gas_suggestions.md')
+              ? fs.readFileSync('docs/gas_suggestions.md', 'utf8')
+              : '_No optimization suggestions available._';
+
+            const comparison = fs.existsSync('docs/gas_comparison.md')
+              ? fs.readFileSync('docs/gas_comparison.md', 'utf8')
+              : '_No benchmark comparison available._';
+
             const comment = `## Gas Budget Complexity Analysis
 
 ${operations.length > 0 ? `Detected complexity classes:\n${operations.join('\n')}` : 'Running complexity analysis...'}
+
+### Optimization Suggestions
+
+${suggestions}
+
+### Benchmark Comparison
+
+${comparison}
 
 [View full report](benchmark_report.html) (attached to this run)`;
 
@@ -75,11 +124,18 @@ ${operations.length > 0 ? `Detected complexity classes:\n${operations.join('\n')
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-report
-          path: docs/benchmark_report.html
+          path: |
+            docs/benchmark_report.html
+            docs/gas_profile.json
+            docs/gas_suggestions.md
+            docs/gas_comparison.md
           retention-days: 30
 
       - name: Check for regression (main branch only)
         if: github.ref == 'refs/heads/main'
         run: |
           python3 tools/benchmark_analyzer.py docs/benchmarks.json
+          python3 tools/gas_optimizer.py trend \
+            --profile docs/gas_profile.json \
+            --history docs/gas_trends.json
           echo "✓ Benchmark baseline updated"

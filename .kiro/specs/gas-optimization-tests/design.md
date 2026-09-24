@@ -159,3 +159,154 @@ Based on the contract source, the most likely optimization opportunities are:
 1. **Redundant `config()` reads in loops** — `src/governance.rs` and `src/vouch.rs` call `config(&env)` inside loops. Caching the config before the loop eliminates repeated storage reads.
 2. **Redundant vouches iteration** — `repay` and `slash` both iterate the vouches list twice (once for total stake, once for distribution). A single-pass accumulator eliminates the second iteration.
 3. **Unnecessary clones** — Several functions clone `borrower` and `voucher` addresses more times than necessary. Reducing clones reduces memory allocation.
+
+## Gas Profiling
+
+Gas profiling is the process of attributing CPU instruction and memory consumption to individual contract operations so that hotspots can be identified before optimization. Profiling reuses the same `env.budget()` counters as the measurement tests but records a structured snapshot per operation rather than a single aggregate number.
+
+### `GasProfile` data model
+
+```rust
+/// A single profiling sample for one contract operation.
+#[derive(Clone, Debug)]
+pub struct GasProfile {
+    /// Contract function name, e.g. "vouch".
+    pub function: Symbol,
+    /// Scenario label, e.g. "typical" or "worst".
+    pub scenario: Symbol,
+    /// CPU instructions consumed by the operation.
+    pub cpu: u64,
+    /// Memory bytes consumed by the operation.
+    pub mem: u64,
+}
+```
+
+### Profiling helper
+
+```rust
+/// Run `op` with a fresh budget and capture its gas profile.
+fn profile<F: FnOnce()>(env: &Env, function: &str, scenario: &str, op: F) -> GasProfile {
+    env.budget().reset_default();
+    op();
+    GasProfile {
+        function: Symbol::new(env, function),
+        scenario: Symbol::new(env, scenario),
+        cpu: env.budget().cpu_instruction_count(),
+        mem: env.budget().mem_bytes_used(),
+    }
+}
+```
+
+Each measurement test is rewritten to call `profile(...)` and print the resulting `GasProfile`. This keeps the reset/read discipline of Property 3 while producing a uniform record that the benchmark and trend tooling can consume.
+
+## Optimization Suggestions
+
+After profiling, the suite derives actionable suggestions by comparing each `GasProfile` against its budget and against the previous recorded profile. Suggestions are emitted as plain text so they surface in `cargo test -- --nocapture` output and in CI logs.
+
+### Suggestion rules
+
+| Condition | Suggestion |
+|---|---|
+| `cpu > CPU_BUDGET_*` | "`{function}` [{scenario}] exceeds CPU budget by {delta}; inspect loops and storage reads." |
+| `mem > MEM_BUDGET_*` | "`{function}` [{scenario}] exceeds memory budget by {delta}; reduce clones/allocations." |
+| `cpu` within 10% of budget | "`{function}` [{scenario}] is close to its CPU budget; consider optimizing before it regresses." |
+| `cpu` grew > 5% vs previous run | "`{function}` [{scenario}] CPU regressed {pct}% vs previous run." |
+
+### Suggestion helper
+
+```rust
+/// Produce human-readable optimization suggestions for a profile.
+fn suggestions(p: &GasProfile, cpu_budget: u64, mem_budget: u64, prev: Option<&GasProfile>) -> Vec<String> {
+    let mut out = Vec::new();
+    if p.cpu > cpu_budget {
+        out.push(format!("{} [{}] exceeds CPU budget by {}", p.function, p.scenario, p.cpu - cpu_budget));
+    } else if p.cpu * 10 >= cpu_budget * 9 {
+        out.push(format!("{} [{}] is close to its CPU budget", p.function, p.scenario));
+    }
+    if p.mem > mem_budget {
+        out.push(format!("{} [{}] exceeds memory budget by {}", p.function, p.scenario, p.mem - mem_budget));
+    }
+    if let Some(prev) = prev {
+        if prev.cpu > 0 && p.cpu > prev.cpu && (p.cpu - prev.cpu) * 100 > prev.cpu * 5 {
+            out.push(format!("{} [{}] CPU regressed vs previous run", p.function, p.scenario));
+        }
+    }
+    out
+}
+```
+
+## Benchmark Comparisons
+
+Benchmark comparisons put two profiles for the same function/scenario side by side so a change can be judged objectively. Comparisons are used both for before/after optimization and for cross-implementation checks.
+
+### `GasBenchmark` data model
+
+```rust
+/// A before/after comparison for one function/scenario pair.
+#[derive(Clone, Debug)]
+pub struct GasBenchmark {
+    pub function: Symbol,
+    pub scenario: Symbol,
+    pub before: GasProfile,
+    pub after: GasProfile,
+}
+
+impl GasBenchmark {
+    /// CPU reduction as a percentage (0 when no change or growth).
+    pub fn cpu_reduction_pct(&self) -> u64 {
+        if self.before.cpu == 0 || self.after.cpu >= self.before.cpu {
+            return 0;
+        }
+        (self.before.cpu - self.after.cpu) * 100 / self.before.cpu
+    }
+
+    /// Memory reduction as a percentage (0 when no change or growth).
+    pub fn mem_reduction_pct(&self) -> u64 {
+        if self.before.mem == 0 || self.after.mem >= self.before.mem {
+            return 0;
+        }
+        (self.before.mem - self.after.mem) * 100 / self.before.mem
+    }
+}
+```
+
+A benchmark test profiles the same operation twice — once against the pre-optimization code path and once against the optimized path — and asserts the reduction is non-negative. The resulting percentages are appended to the Optimization Log in `docs/gas-budgets.md`.
+
+## Gas Cost Trends
+
+Trend tracking records each profile over time so slow regressions that stay under budget are still visible. Trends are stored as an append-only table in `docs/gas-budgets.md`; the suite never rewrites history.
+
+### Trend record
+
+```rust
+/// One row of the gas cost trend table.
+#[derive(Clone, Debug)]
+pub struct GasTrendPoint {
+    /// ISO-8601 date the sample was taken.
+    pub date: Symbol,
+    pub function: Symbol,
+    pub scenario: Symbol,
+    pub cpu: u64,
+    pub mem: u64,
+}
+```
+
+### Trend table format
+
+```markdown
+## Gas Cost Trends
+
+| Date | Function | Scenario | CPU | Memory | Δ CPU vs prev |
+|---|---|---|---|---|---|
+| 2024-01-01 | vouch | typical | TBD | TBD | — |
+```
+
+A trend test reads the last recorded row for each function/scenario, compares it to the freshly measured profile, and emits a suggestion when CPU grows by more than 5% (the same threshold used by the suggestion rules). This keeps trend detection consistent with the optimization suggestions and avoids a second, divergent threshold.
+
+## Data Models
+
+No new storage keys. The only persistent artefact is `docs/gas-budgets.md`.
+
+Budget constants are defined as `const u64` values at the top of `src/gas_test.rs`. They are the single source of truth — both measurement tests and regression tests reference them.
+
+Profiling, benchmarking, and trend tracking add three in-memory data models — `GasProfile`, `GasBenchmark`, and `GasTrendPoint` — all defined in `src/gas_test.rs`. None of them touch contract storage; they exist only for the duration of a test run and are persisted solely through the markdown tables in `docs/gas-budgets.md`.
