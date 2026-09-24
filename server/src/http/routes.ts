@@ -5,6 +5,7 @@ import { defaultAuthRateLimiter, type AuthRateLimiter } from "../auth/rateLimite
 import { metrics } from "./metricsRegistry.js";
 import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
 import { loanCartStore } from "../cart/loanCartStore.js";
+import { batchVerificationStore } from "../batch/batchVerificationStore.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import type { SorobanRpcClient } from "../soroban/rpcClient.js";
 import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
@@ -405,6 +406,137 @@ export function handleHttpRequest(
   if (url.pathname === "/cart/stats" && req.method === "GET") {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(loanCartStore.getStats()));
+    return;
+  }
+
+  // Batch credential verification endpoints (Issue #1594)
+  if (url.pathname === "/batch-verification/create" && req.method === "POST") {
+    readJsonBody<{
+      borrowerId: string;
+      credentialIds: string[];
+      webhookUrl?: string;
+    }>(req)
+      .then((body) => {
+        if (!body.borrowerId) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "borrowerId required" }));
+          return;
+        }
+        if (!Array.isArray(body.credentialIds) || body.credentialIds.length === 0) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "credentialIds must be a non-empty array" }));
+          return;
+        }
+        const batchId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const batch = batchVerificationStore.createBatch(
+          batchId,
+          body.borrowerId,
+          body.credentialIds,
+          body.webhookUrl
+        );
+        metrics.incCounter("qc_batch_verification_created_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(batch));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  if (url.pathname.startsWith("/batch-verification/") && req.method === "GET") {
+    const batchId = url.pathname.replace("/batch-verification/", "");
+    if (!batchId) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "batchId required" }));
+      return;
+    }
+    const batch = batchVerificationStore.getBatch(batchId);
+    if (!batch) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "batch not found" }));
+      return;
+    }
+    metrics.incCounter("qc_batch_verification_polled_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(batch));
+    return;
+  }
+
+  if (url.pathname === "/batch-verification/progress" && req.method === "GET") {
+    const batchId = url.searchParams.get("batchId");
+    if (!batchId) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "batchId query param required" }));
+      return;
+    }
+    const progress = batchVerificationStore.getProgress(batchId);
+    if (progress === null) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "batch not found" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ batchId, progress }));
+    return;
+  }
+
+  if (url.pathname === "/batch-verification/results" && req.method === "GET") {
+    const batchId = url.searchParams.get("batchId");
+    if (!batchId) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "batchId query param required" }));
+      return;
+    }
+    const results = batchVerificationStore.exportBatchResults(batchId);
+    if (!results) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "batch not found" }));
+      return;
+    }
+    metrics.incCounter("qc_batch_verification_results_exported_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(results));
+    return;
+  }
+
+  if (url.pathname === "/batch-verification/borrower" && req.method === "GET") {
+    const borrowerId = url.searchParams.get("borrowerId");
+    if (!borrowerId) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "borrowerId query param required" }));
+      return;
+    }
+    const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+    const batches = batchVerificationStore.getBorrowerbatches(borrowerId, limit);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ borrowerId, batches }));
+    return;
+  }
+
+  if (url.pathname === "/batch-verification/cancel" && req.method === "POST") {
+    readJsonBody<{ batchId: string }>(req)
+      .then((body) => {
+        if (!body.batchId) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "batchId required" }));
+          return;
+        }
+        const batch = batchVerificationStore.cancelBatch(body.batchId);
+        if (!batch) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "batch not found" }));
+          return;
+        }
+        metrics.incCounter("qc_batch_verification_cancelled_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(batch));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
     return;
   }
 
