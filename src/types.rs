@@ -1252,6 +1252,18 @@ pub enum DataKey {
     LastPublishedTransparencyScore(Address),
     /// slice_id → u64: timestamp of last transparency publication
     LastTransparencyPublishTime(Address),
+
+    // ── Issue #1628: Proof-of-Work for DDoS Mitigation ─────────────────────
+    /// u32: current proof-of-work difficulty level (number of leading zeros)
+    ProofOfWorkDifficulty,
+    /// (holder, nonce) → bool: whether this nonce has been used by this holder
+    ProofOfWorkNonceUsed(Address, u64),
+    /// Vec<(u64, u32, u32)>: difficulty adjustment history (timestamp, old_difficulty, new_difficulty)
+    ProofOfWorkDifficultyHistory,
+    /// u32: operation counter for difficulty adjustment
+    ProofOfWorkOperationCount,
+    /// u64: timestamp of last difficulty adjustment
+    ProofOfWorkLastAdjustment,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

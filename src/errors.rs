@@ -261,6 +261,18 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "ProposalAlreadyFinalized"),
             String::from_str(env, "Governance proposal has already been finalized."),
         ),
+        ContractError::InvalidDifficulty => (
+            String::from_str(env, "InvalidDifficulty"),
+            String::from_str(env, "Proof-of-work difficulty level is invalid or out of range (min 1, max 20)."),
+        ),
+        ContractError::NonceAlreadyUsed => (
+            String::from_str(env, "NonceAlreadyUsed"),
+            String::from_str(env, "Proof-of-work nonce has already been used and cannot be replayed. Use a new nonce."),
+        ),
+        _ => (
+            String::from_str(env, "UnknownError"),
+            String::from_str(env, "An unknown or unhandled error occurred."),
+        ),
     }
 }
 
@@ -621,4 +633,8 @@ EmergencyBypassNotAuthorised = 131,
     /// (same logic used by `refinance_quote`) determined the borrower is not
     /// eligible for a beneficial refinance at this time.
     RefinanceNotEligible = 223,
+    /// Proof-of-work difficulty level is invalid or out of range.
+    InvalidDifficulty = 224,
+    /// Proof-of-work nonce has already been used and cannot be replayed.
+    NonceAlreadyUsed = 225,
 }
