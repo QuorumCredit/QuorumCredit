@@ -1023,3 +1023,8 @@ MIT
 - [Stellar Documentation](https://developers.stellar.org)
 - [Soroban Docs](https://soroban.stellar.org)
 - [Stellar Developer Discord](https://discord.gg/stellardev)
+
+## Handsoff notes
+
+<!-- handsoff-issue-1506 -->
+- #1506: Node Indexer Ignores Reorgs
