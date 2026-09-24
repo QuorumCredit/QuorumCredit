@@ -169,6 +169,8 @@ mod loan_cart_test;
 mod repay_validation_test;
 #[cfg(test)]
 mod unimplemented_stubs_test;
+#[cfg(test)]
+mod credential_features_test;
 
 pub use errors::ContractError;
 pub use types::*;
