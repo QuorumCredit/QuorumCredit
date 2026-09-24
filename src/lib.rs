@@ -98,6 +98,7 @@ pub mod staking_pool;
 pub mod referral;
 pub mod loan_cart;
 pub mod reputation_nft;
+pub mod transparency;
 pub mod prediction_market;
 pub mod community_treasury;
 pub mod dynamic_interest;

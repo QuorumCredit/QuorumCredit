@@ -1232,6 +1232,26 @@ pub enum DataKey {
     PubSubHealthy,              // bool: true when PubSub relay last checked in successfully
     RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
     WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
+
+    // ── Issue #1617: Quorum Slice Transparency Index ────────────────────────
+    /// slice_id → u32: transparency score for the slice (0-100)
+    SliceTransparencyScore(Address),
+    /// slice_id → u32: number of validators in the slice
+    SliceValidatorCount(Address),
+    /// slice_id → u32: number of distinct domains in the slice
+    SliceDistinctDomains(Address),
+    /// slice_id → bool: whether the slice is public
+    SlicePublic(Address),
+    /// slice_id → bool: whether the slice is configurable
+    SliceConfigurable(Address),
+    /// slice_id → Vec<(u64, u32, u32)>: transparency change history (timestamp, prev_score, new_score)
+    TransparencyChangeHistory(Address),
+    /// slice_id → u32: previous transparency score before recalculation
+    PreviousSliceTransparencyScore(Address),
+    /// slice_id → u32: last published transparency score
+    LastPublishedTransparencyScore(Address),
+    /// slice_id → u64: timestamp of last transparency publication
+    LastTransparencyPublishTime(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
