@@ -274,6 +274,12 @@ Visit the published docs at:
 
 https://ndifreke000.github.io/QuorumCredit/
 
+### Module Guides
+
+- [Loan Cart Guide](docs/loan-cart-guide.md) — batch loan staging, volume discounts, abandonment analytics
+- [Loan Priority & Waterfall](docs/loan-priority-waterfall.md) — senior/mezzanine/junior tranching and default-proceeds routing
+- [Loan Attribution Model](docs/loan-attribution-model.md) — heuristic performance attribution (40%/35%/15%/10%) and known limitations
+
 ### Deploy to Testnet
 
 ```bash

@@ -32,6 +32,38 @@ This guide documents backup and recovery procedures for QuorumCredit contract st
   described later in this guide are illustrative examples, not scripts shipped
   in this repo.
 
+## Automated Backup Testing (Issue #1225)
+
+Backups that are never restored are unverified assumptions, not disaster recovery. `scripts/test_backup_restore.sh` closes that gap by running the full backup → restore → verify path on a schedule.
+
+**What it does, every run:**
+1. Runs `scripts/backup.sh` against the configured contract.
+2. Verifies the resulting manifest: completeness proof (`complete` must not be `false`) and a recomputed checksum match (catches silent corruption/truncation).
+3. Restores the archive via `scripts/restore.sh --scenario 6` into a **disposable staging contract** (`STAGING_CONTRACT_ID`) — dry-run by default, `--execute` only when `BACKUP_TEST_EXECUTE=true` is explicitly set.
+4. When executed, re-queries the staging contract for all sampled borrowers and diffs each against the backed-up values:
+   - `get_paused` — contract pause state
+   - `get_loan` — loan records for each borrower
+   - `get_vouches` — vouch records for each borrower
+   - `loan_status` — loan status for each borrower
+   - `total_vouched` — total vouched amounts for each borrower
+   
+   By default, all borrowers present in the backup's `derived_addresses.txt` are sampled. This can be overridden by setting `BACKUP_TEST_SAMPLE_BORROWERS` to point to a custom address list. A restore that "completes" but corrupts, drops, or misattributes any loan/vouch record will be caught as a failure rather than reported as a pass.
+5. Appends a result record (pass/fail, failure reason, per-step booleans, duration) to `backups/test-results/history.jsonl` and prints the all-time coverage/success rate computed from that history.
+
+**Schedule:** `.github/workflows/backup-restore-test.yml` runs this weekly (Sundays 03:00 UTC) and on manual dispatch, uploading the history file and produced archive as build artifacts. It requires these repository secrets/variables to actually exercise a restore (falls back to a backup-only drill if `STAGING_CONTRACT_ID` is unset):
+
+| Name | Kind | Purpose |
+|---|---|---|
+| `BACKUP_TEST_CONTRACT_ID` / `BACKUP_TEST_ADMIN_KEY` | secret | Contract to back up |
+| `BACKUP_TEST_STAGING_CONTRACT_ID` / `BACKUP_TEST_STAGING_ADMIN_KEY` | secret | Disposable staging contract to restore into |
+| `BACKUP_TEST_NETWORK` | variable | `testnet` (default) or `mainnet`-adjacent staging network |
+| `BACKUP_TEST_EXECUTE` | variable | `"true"` to actually apply the restore and run correctness verification; otherwise dry-run only |
+| `BACKUP_TEST_SAMPLE_BORROWERS` | variable (optional) | Path to a custom borrower address list for Step 4 sampling (defaults to all addresses in the backup) |
+
+**Coverage/success-rate tracking:** every run appends to `backups/test-results/history.jsonl` (one JSON object per line — `status`, `failure_reason`, `completeness`, `checksum_ok`, `restore_ok`, `correctness`, `duration_seconds`). The script prints a running `passed/total (success rate %)` summary each time; the file itself is the source of truth for trend analysis (e.g. `jq -s 'map(.status=="pass") | add / length' backups/test-results/history.jsonl`).
+
+**Still requires an operator:** deciding whether a `false` completeness proof or a correctness mismatch reflects a real data-loss event (vs. an indexer lag or a staging environment quirk) is a judgment call — the drill's job is to make that failure loud and immediate, not to self-diagnose it.
+
 ## Contract State Export
 
 ### Exporting Contract State
@@ -346,13 +378,14 @@ echo "Backup restoration test passed"
 
 ## Checklist
 
-- [ ] Automated backup script deployed
+- [x] Automated backup script deployed (`scripts/backup.sh`)
 - [ ] Backup storage configured
-- [ ] Backup verification script deployed
+- [x] Backup verification script deployed (`scripts/test_backup_restore.sh`)
+- [x] Weekly automated restore drill scheduled (`.github/workflows/backup-restore-test.yml`, Issue #1225)
 - [ ] Disaster recovery runbook reviewed
 - [ ] Team trained on recovery procedures
 - [ ] Monthly disaster recovery drills scheduled
 - [ ] Monitoring and alerts configured
 - [ ] Off-chain database backups enabled
 - [ ] Cold storage backups configured
-- [ ] Recovery procedures tested on testnet
+- [x] Recovery procedures tested on testnet (via the weekly drill, when `BACKUP_TEST_STAGING_CONTRACT_ID` is configured)

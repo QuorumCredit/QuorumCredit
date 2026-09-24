@@ -4,8 +4,9 @@ use crate::types::{
     COMPOUND_RATE_BPS, MILESTONE_25_DISCOUNT_BPS, MILESTONE_25_PCT_PERMILLE,
     MILESTONE_50_DISCOUNT_BPS, MILESTONE_50_PCT_PERMILLE, MILESTONE_75_DISCOUNT_BPS,
     MILESTONE_75_PCT_PERMILLE, MILESTONE_FLAG_25, MILESTONE_FLAG_50, MILESTONE_FLAG_75,
-    SECS_PER_DAY, MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
-    BPS_DENOMINATOR,
+    MIN_DYNAMIC_SLASH_BPS, MAX_DYNAMIC_SLASH_BPS, HEALTH_THRESHOLD_BPS,
+    PERSISTENT_TTL_THRESHOLD_LEDGERS, PERSISTENT_TTL_TARGET_LEDGERS,
+    INSTANCE_TTL_THRESHOLD_LEDGERS, INSTANCE_TTL_TARGET_LEDGERS,
 };
 use soroban_sdk::{token, Address, Env, String, Symbol, Vec};
 
@@ -124,14 +125,83 @@ pub fn validate_timestamp(_env: &Env, timestamp: u64, now: u64) -> Result<(), Co
 // ── Config & Loan Helpers ─────────────────────────────────────────────────────
 
 pub fn config(env: &Env) -> Config {
+    // Issue #1285: bump instance TTL on every config read so the contract
+    // instance never silently expires due to inactivity.
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD_LEDGERS, INSTANCE_TTL_TARGET_LEDGERS);
     env.storage()
         .instance()
         .get(&DataKey::Config)
         .expect("not initialized")
 }
 
+// ── Issue #1285: TTL / Storage Lifecycle Helpers ──────────────────────────────
+
+/// Extend the TTL of a persistent storage entry so it is never silently archived.
+///
+/// Soroban persistent entries expire after their TTL elapses; this helper bumps
+/// every long-lived key on hot read/write paths so the entry stays live.
+/// Only extends if the current TTL is below `PERSISTENT_TTL_THRESHOLD_LEDGERS`
+/// (≈30 days), which avoids unnecessary CPU when the entry was already recently
+/// touched.
+#[inline]
+pub fn bump_persistent(env: &Env, key: &DataKey) {
+    env.storage()
+        .persistent()
+        .extend_ttl(key, PERSISTENT_TTL_THRESHOLD_LEDGERS, PERSISTENT_TTL_TARGET_LEDGERS);
+}
+
+/// Extend the TTL of the contract instance (config, admins, paused flag, etc.).
+///
+/// Instance storage is cheaper to bump than persistent, and a single call
+/// covers every instance key.  Call this on every state-mutating entry point
+/// so the instance never silently expires.
+#[inline]
+pub fn bump_instance(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD_LEDGERS, INSTANCE_TTL_TARGET_LEDGERS);
+}
+
 pub fn get_admins(env: &Env) -> Vec<Address> {
     config(env).admins
+}
+
+/// Issue #1371: increment the protocol-wide default counter. Call this alongside
+/// every per-borrower `DataKey::DefaultCount` increment so `circuit_breaker::
+/// get_current_default_rate` reflects real state instead of a hardcoded 0.
+pub fn increment_total_default_count(env: &Env) -> u32 {
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TotalDefaultCount)
+        .unwrap_or(0);
+    let new_count = count + 1;
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalDefaultCount, &new_count);
+    new_count
+}
+
+/// Issue #1371: current protocol-wide default count.
+pub fn get_total_default_count(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalDefaultCount)
+        .unwrap_or(0)
+}
+
+/// Issue #1371: current protocol-wide loan count. `LoanCounter` is a monotonic
+/// counter incremented once per loan created (see `next_loan_id`), so it doubles
+/// as the total loan count the circuit breaker needs.
+pub fn get_total_loan_count(env: &Env) -> u32 {
+    let count: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LoanCounter)
+        .unwrap_or(0u64);
+    count.min(u32::MAX as u64) as u32
 }
 
 pub fn has_active_loan(env: &Env, borrower: &Address) -> bool {
@@ -150,6 +220,13 @@ pub fn get_active_loan_record(env: &Env, borrower: &Address) -> Result<LoanRecor
     env.storage()
         .persistent()
         .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)
+}
+
+pub fn get_loan_by_id(env: &Env, loan_id: &u64) -> Result<LoanRecord, ContractError> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Loan(*loan_id))
         .ok_or(ContractError::NoActiveLoan)
 }
 
@@ -322,7 +399,7 @@ pub fn require_admin_approval_for_operation(
     admin_signers: &Vec<Address>,
     operation_type: crate::types::AdminOperationType,
 ) {
-    use crate::types::{AdminOperationType, DataKey};
+    
     
     let cfg = config(env);
     
@@ -501,15 +578,102 @@ pub fn get_borrower_list_page(env: &Env, offset: u32, limit: u32) -> (Vec<Addres
     paginate_vec(env, &list, offset, limit)
 }
 
-pub fn primary_token(env: &Env) -> token::Client {
+// ── Issue #1288: On-chain TVL / active-loan-count counters ────────────────────
+
+/// Increment both `TotalActiveLoans` and `TotalValueLocked` when a loan is issued.
+pub fn increment_tvl_counters(env: &Env, amount: i128) {
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalActiveLoans)
+        .unwrap_or(0u32);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalActiveLoans, &(count + 1));
+
+    let tvl: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalValueLocked)
+        .unwrap_or(0i128);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalValueLocked, &(tvl + amount));
+}
+
+/// Decrement both counters when a loan is closed (repaid or slashed).
+/// Guards against underflow so the counters never go negative.
+pub fn decrement_tvl_counters(env: &Env, amount: i128) {
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalActiveLoans)
+        .unwrap_or(0u32);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalActiveLoans, &count.saturating_sub(1));
+
+    let tvl: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::TotalValueLocked)
+        .unwrap_or(0i128);
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalValueLocked, &(tvl - amount).max(0));
+}
+
+/// Return the running count of currently active loans (Issue #1288).
+pub fn get_active_loan_count(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TotalActiveLoans)
+        .unwrap_or(0u32)
+}
+
+/// Return the running total of outstanding loan principal in stroops (Issue #1288).
+pub fn get_total_value_locked(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TotalValueLocked)
+        .unwrap_or(0i128)
+}
+
+// ── Issue #1289: Global voucher registry ──────────────────────────────────────
+
+/// Return the total count of distinct addresses that have ever submitted a vouch.
+pub fn get_voucher_count(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, soroban_sdk::Vec<Address>>(&DataKey::VoucherRegistry)
+        .map(|v| v.len())
+        .unwrap_or(0u32)
+}
+
+/// Paginated read of the global VoucherRegistry (Issue #1289).
+/// Returns a page of voucher addresses and the cursor for the next page (`None` if exhausted).
+pub fn get_voucher_list_page(
+    env: &Env,
+    cursor: u32,
+    limit: u32,
+) -> (soroban_sdk::Vec<Address>, Option<u32>) {
+    let registry: soroban_sdk::Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherRegistry)
+        .unwrap_or(soroban_sdk::Vec::new(env));
+    paginate_vec(env, &registry, cursor, limit)
+}
+
+pub fn primary_token(env: &Env) -> token::Client<'_> {
     token::Client::new(env, &config(env).token)
 }
 
-pub fn token(env: &Env) -> token::Client {
+pub fn token(env: &Env) -> token::Client<'_> {
     primary_token(env)
 }
 
-pub fn token_client(env: &Env) -> token::Client {
+pub fn token_client(env: &Env) -> token::Client<'_> {
     primary_token(env)
 }
 

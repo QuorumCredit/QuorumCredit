@@ -8,6 +8,11 @@ import { Bridge } from "./bridge/bridge.js";
 import { attachLoanSocketServer } from "./ws/loanSocketServer.js";
 import { attachMetricsWsServer } from "./ws/metricsWsServer.js";
 import { handleHttpRequest } from "./http/routes.js";
+import { metrics } from "./http/metricsRegistry.js";
+import * as insuranceMarketplace from "./insurance-marketplace.js";
+import { buildRevocationStore } from "./auth/jtiRevocationStore.js";
+import { buildSorobanRpcClient } from "./soroban/rpcClient.js";
+import { buildRecurringPaymentStore } from "./recurring/recurringPaymentStore.js";
 
 export function buildBus(redisUrl: string | undefined): PubSubBus {
   if (redisUrl) return new RedisBus(redisUrl);
@@ -19,13 +24,50 @@ export function buildBus(redisUrl: string | undefined): PubSubBus {
 }
 
 async function main(): Promise<void> {
+  // Issue #1174: Initialize insurance marketplace with default providers and products
+  insuranceMarketplace.initializeDefaults();
+
   const config = loadConfig();
   const bus = buildBus(config.redisUrl);
   const store = new EventStore(config.indexerDbPath);
+  const revocationStore = buildRevocationStore(config.redisUrl);
+  const rpcClient = buildSorobanRpcClient(config.sorobanRpc.url, config.sorobanRpc.contractId, config.sorobanRpc.keeperSecretKey);
+  const paymentStore = buildRecurringPaymentStore(config.redisUrl);
 
-  const httpServer = createServer((req, res) =>
-    handleHttpRequest(req, res, { authSecret: config.authSecret, tokenTtlSeconds: config.tokenTtlSeconds })
-  );
+  const bridge = new Bridge({
+    bus,
+    store,
+    instanceId: config.instanceId,
+    pollIntervalMs: config.bridgePollIntervalMs,
+    leaderLockTtlMs: config.leaderLockTtlMs,
+    costAllocation: config.costAllocation,
+    partitionGuard: config.partitionGuard,
+  });
+
+  const httpServer = createServer((req, res) => {
+    // Issue #1231: request-count/error-rate/latency instrumentation, so a canary
+    // rollout controller (scripts/canary_deploy.sh) can poll /metrics on a canary
+    // instance and compare it against the stable fleet before shifting more traffic.
+    const startedAt = Date.now();
+    res.on("finish", () => {
+      const durationMs = Date.now() - startedAt;
+      metrics.incCounter("qc_http_requests_total");
+      metrics.incCounter("qc_http_request_duration_ms_sum", durationMs);
+      metrics.incCounter("qc_http_request_duration_ms_count");
+      if (res.statusCode >= 500) metrics.incCounter("qc_http_request_errors_total");
+    });
+
+    handleHttpRequest(req, res, {
+      authSecret: config.authSecret,
+      tokenTtlSeconds: config.tokenTtlSeconds,
+      costAllocator: bridge.costAllocator,
+      partitionGuard: bridge.partitionGuard,
+      serviceVersion: config.serviceVersion,
+      revocationStore,
+      rpcClient,
+      paymentStore,
+    });
+  });
 
   attachLoanSocketServer({
     httpServer,
@@ -33,6 +75,7 @@ async function main(): Promise<void> {
     store,
     authSecret: config.authSecret,
     connectionQueueMax: config.connectionQueueMax,
+    redisUrl: config.redisUrl,
   });
 
   attachMetricsWsServer({
@@ -41,15 +84,9 @@ async function main(): Promise<void> {
     store,
     authSecret: config.authSecret,
     connectionQueueMax: config.connectionQueueMax,
+    redisUrl: config.redisUrl,
   });
 
-  const bridge = new Bridge({
-    bus,
-    store,
-    instanceId: config.instanceId,
-    pollIntervalMs: config.bridgePollIntervalMs,
-    leaderLockTtlMs: config.leaderLockTtlMs,
-  });
   bridge.start();
 
   httpServer.listen(config.port, () => {
@@ -63,6 +100,9 @@ async function main(): Promise<void> {
     await bridge.stop();
     httpServer.close();
     await bus.close();
+    await revocationStore.close();
+    await rpcClient.close();
+    await paymentStore.close();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());

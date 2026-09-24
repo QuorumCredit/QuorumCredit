@@ -1,0 +1,36 @@
+name: Indexer CI
+
+on:
+  pull_request:
+    paths:
+      - "services/indexer/**"
+      - ".github/workflows/indexer-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/indexer/**"
+      - ".github/workflows/indexer-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/indexer
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/indexer/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
