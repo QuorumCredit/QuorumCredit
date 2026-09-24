@@ -1,0 +1,76 @@
+{
+  "nav": {
+    "title": "QuorumCredit",
+    "tagline": "Prêt sur preuve de confiance",
+    "statusLive": "En direct",
+    "statusOffline": "Hors ligne"
+  },
+  "accessibility": {
+    "colorblindFriendly": "🎨 Mode daltonien",
+    "highContrast": "⚡ Contraste élevé"
+  },
+  "emptyState": {
+    "loading": "Chargement de vos prêts…",
+    "loans": {
+      "title": "Aucun prêt pour l'instant",
+      "subtitle": "Demandez votre premier prêt pour commencer. Vos prêts actifs et terminés apparaîtront ici."
+    },
+    "vouches": {
+      "title": "Aucune caution pour l'instant",
+      "subtitle": "Vous n'avez encore cautionné aucun emprunteur. Cautionnez un emprunteur pour commencer à percevoir un rendement."
+    },
+    "giveUp": {
+      "title": "Impossible de se connecter",
+      "subtitle": "Le serveur de métriques n'a pas pu être atteint après plusieurs tentatives. Veuillez vérifier votre connexion ou réessayer.",
+      "retry": "Réessayer"
+    }
+  },
+  "reputation": {
+    "heading": "Réputation",
+    "tier": "Niveau",
+    "creditScore": "Score de crédit"
+  },
+  "loans": {
+    "activeHeading": "Prêts actifs",
+    "closedHeading": "Prêts clôturés",
+    "updated": "Mis à jour {{time}}"
+  },
+  "loanCard": {
+    "borrower": "Emprunteur",
+    "principal": "Capital",
+    "yieldEarned": "Rendement perçu",
+    "dueDate": "Date d'échéance",
+    "repaymentProgress": "Progression du remboursement",
+    "repaid": "Remboursé",
+    "id": "ID"
+  },
+  "analytics": {
+    "pageTitle": "Tableau de bord admin QuorumCredit",
+    "colorblindFriendly": "Mode daltonien",
+    "highContrast": "Contraste élevé",
+    "statusLive": "En direct",
+    "statusDisconnected": "Déconnecté",
+    "filtersFrom": "Du :",
+    "filtersTo": "Au :",
+    "filterLoanSize": "Taille du prêt :",
+    "filterAll": "Tout",
+    "filterSmall": "Petit (< 0,1 XLM)",
+    "filterMedium": "Moyen (0,1–10 XLM)",
+    "filterLarge": "Grand (> 10 XLM)",
+    "fetchButton": "Récupérer",
+    "fetchLoading": "Chargement…",
+    "errorPrefix": "Erreur :",
+    "tvlOverTime": "TVL dans le temps",
+    "defaultRateOverTime": "Taux de défaut dans le temps",
+    "topBorrowers": "Meilleurs emprunteurs",
+    "topVouchers": "Meilleurs cautions",
+    "exportCSV": "Exporter CSV",
+    "exportJSON": "Exporter JSON",
+    "kpiTvl": "TVL (XLM)",
+    "kpiActiveLoans": "Prêts actifs",
+    "kpiDefaultRate": "Taux de défaut",
+    "kpiTotalBorrowers": "Total emprunteurs",
+    "kpiTotalVouchers": "Total cautions",
+    "kpiAvgLoanSize": "Taille moy. des prêts"
+  }
+}

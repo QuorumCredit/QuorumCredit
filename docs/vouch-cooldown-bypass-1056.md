@@ -30,10 +30,10 @@ The `vouch_cooldown` mechanism enforces a minimum interval between vouch calls t
 
 | Error Code | Value | Description |
 |---|---|---|
-| `CooldownBypassAlreadyRequested` | 143 | Duplicate request for the same (borrower, voucher) pair |
-| `CooldownBypassNotFound` | 144 | No bypass request exists for the given pair |
-| `CooldownBypassAlreadyApproved` | 145 | Bypass has already been granted |
-| `CooldownBypassInsufficientApprovals` | 146 | Not enough admin approvals (unused; threshold checked internally) |
+| `CooldownBypassAlreadyRequested` | 174 | Duplicate request for the same (borrower, voucher) pair |
+| `CooldownBypassNotFound` | 175 | No bypass request exists for the given pair |
+| `CooldownBypassAlreadyApproved` | 176 | Bypass has already been granted |
+| `CooldownBypassInsufficientApprovals` | 177 | Not enough admin approvals (unused; threshold checked internally) |
 
 ### Flow
 
@@ -52,22 +52,22 @@ The `vouch_cooldown` mechanism enforces a minimum interval between vouch calls t
 
 3. **Consumption**: When `validate_vouch()` encounters an active cooldown, it calls `has_cooldown_bypass(env, voucher, borrower)` before rejecting with `VouchCooldownActive`. If a bypass is approved, the cooldown is skipped.
 
-4. **Cleanup**: Admins can call `clear_cooldown_bypass(admin_signers, borrower, voucher)` to remove a bypass record.
+4. **Cleanup**: Admins can call `clear_cooldown_bypass(admin_signers, voucher, borrower)` to remove a bypass record.
 
 ### Files Changed
 
 | File | Change |
 |---|---|
-| `src/cooldown_bypass.rs` | **NEW** — Core module with request, vote, check, and clear logic |
-| `src/cooldown_bypass_test.rs` | **NEW** — 12 tests covering all bypass scenarios |
-| `src/types.rs` | Added `DataKey::CooldownBypass` variant and `CooldownBypassRequest` struct |
-| `src/errors.rs` | Added 4 new error variants (143-146) |
-| `src/lib.rs` | Added `pub mod cooldown_bypass`, 5 entry point functions, test module |
-| `src/vouch.rs` | Modified `validate_vouch` to check `has_cooldown_bypass` before rejecting |
+| `src/cooldown_bypass.rs` | Implemented (Issue #1372) — was a stub returning `false`; now has request, vote, check, and clear logic |
+| `src/types.rs` | Added `CooldownBypassRequest` struct; `DataKey::CooldownBypass` variant already existed as a placeholder |
+| `src/errors.rs` | Error variants already existed (174-177, see numbering fix above) — no code change needed |
+| `src/lib.rs` | `pub mod cooldown_bypass` already existed; added 5 entry point functions (`request_cooldown_bypass`, `vote_bypass`, `has_cooldown_bypass`, `get_cooldown_bypass_request`, `clear_cooldown_bypass`) |
+| `src/vouch.rs` | `validate_vouch` already called `has_cooldown_bypass` before rejecting — no change needed, it just now returns real data |
 
 ## Testing
 
-All tests are in `src/cooldown_bypass_test.rs` and include:
+Test coverage for this mechanism is deferred to a follow-up. Historically this doc's test plan
+lived in `src/cooldown_bypass_test.rs` and covered:
 
 - `test_request_cooldown_bypass_success` — basic request creation
 - `test_request_cooldown_bypass_not_voucher_fails` — non-voucher rejected

@@ -149,3 +149,90 @@ try {
 ---
 
 For more information, see the [API Reference](../README.md#api-reference) and [Error Reference](../README.md#error-reference).
+
+---
+
+## ApiError Shape (Issue #109)
+
+All contract errors expose a structured `ApiError` type that off-chain integrators can deserialise. The shape is consistent across every error code:
+
+```json
+{
+  "code":    1,
+  "message": "InsufficientFunds",
+  "details": "Stake or amount is zero/negative; or contract balance is insufficient for disbursement."
+}
+```
+
+### Fields
+
+| Field     | Type     | Always Present | Description |
+|-----------|----------|----------------|-------------|
+| `code`    | `u32`    | ✅ Yes          | Stable numeric code. Matches the `ContractError` enum discriminant. Never changes across contract upgrades. |
+| `message` | `string` | ✅ Yes          | Short, human-readable error name. Matches the Rust enum variant name exactly. |
+| `details` | `string` | ✅ Yes          | Extended description with resolution hints. Empty string (`""`) when no additional context is available. |
+
+> [!NOTE]
+> The `details` field is **always present** but may be an empty string. Integrators should not rely on `details` containing specific wording — treat it as a hint for logging/debugging only, not as machine-parseable data.
+
+### Constructing an ApiError from Rust
+
+```rust
+use crate::errors::{ApiError, ContractError};
+
+// Convert any ContractError into a structured ApiError
+let api_err = ApiError::from_contract_error(&env, ContractError::InsufficientFunds);
+// api_err.code    == 1
+// api_err.message == "InsufficientFunds"
+// api_err.details == "Stake or amount is zero/negative; ..."
+```
+
+### JavaScript / TypeScript Integration
+
+When calling the contract via Soroban RPC, errors are returned as numeric codes in the `error.code` field. Map them to the structured shape:
+
+```typescript
+interface ApiError {
+  code: number;
+  message: string;
+  details: string;
+}
+
+const ERROR_MAP: Record<number, { message: string; details: string }> = {
+  1:  { message: "InsufficientFunds",      details: "Stake or amount is zero/negative; or contract balance is insufficient." },
+  2:  { message: "ActiveLoanExists",       details: "Borrower already has an active loan." },
+  3:  { message: "StakeOverflow",          details: "Summing vouched stakes would overflow i128." },
+  4:  { message: "ZeroAddress",            details: "Admin or token address is the zero address." },
+  5:  { message: "DuplicateVouch",         details: "Use increase_stake() instead of vouching again." },
+  6:  { message: "NoActiveLoan",           details: "No active loan found for borrower." },
+  7:  { message: "ContractPaused",         details: "Wait for admin to call unpause()." },
+  8:  { message: "LoanPastDeadline",       details: "Use slash() to mark default." },
+  13: { message: "MinStakeNotMet",         details: "Increase stake to at least get_min_stake() stroops." },
+  14: { message: "LoanExceedsMaxAmount",   details: "Request a smaller amount." },
+  15: { message: "InsufficientVouchers",   details: "Recruit more vouchers before requesting loan." },
+  16: { message: "UnauthorizedCaller",     details: "Ensure the correct address signs the transaction." },
+  17: { message: "InvalidAmount",          details: "Pass a value in the documented valid range." },
+  18: { message: "InvalidStateTransition", details: "Check loan_status() before calling function." },
+  19: { message: "AlreadyInitialized",     details: "initialize() is one-time only." },
+  20: { message: "VouchTooRecent",         details: "Wait for vouch age requirement to pass." },
+  24: { message: "Blacklisted",            details: "Contact protocol admin." },
+  30: { message: "InvalidToken",           details: "Use get_config() to retrieve allowed tokens." },
+  34: { message: "LoanBelowMinAmount",     details: "Request a larger amount." },
+  35: { message: "QuorumNotMet",           details: "Recruit more voucher votes." },
+  54: { message: "WithdrawalAlreadyQueued", details: "A withdrawal is already queued for this pair." },
+  // ... see full table above for all codes
+};
+
+function parseContractError(rawCode: number): ApiError {
+  const meta = ERROR_MAP[rawCode] ?? { message: "Unknown", details: "" };
+  return { code: rawCode, ...meta };
+}
+```
+
+### Code Stability Guarantee
+
+Error codes are **stable across contract upgrades**. Once a code is assigned to a variant, it will not be reassigned. New error variants receive new codes; deprecated variants are never reused. This allows integrators to hard-code numeric codes in error handling logic.
+
+> [!IMPORTANT]
+> **Breaking change note**: Error code `46` was previously used for _both_ `InvalidBps` (0–10000 range check) and `WithdrawalAlreadyQueued` (a duplicate discriminant bug). This bug has been corrected: `WithdrawalAlreadyQueued` is now code **54**. Integrators relying on the old code 46 mapping to `WithdrawalAlreadyQueued` must update to 54.
+

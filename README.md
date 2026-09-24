@@ -274,6 +274,12 @@ Visit the published docs at:
 
 https://ndifreke000.github.io/QuorumCredit/
 
+### Module Guides
+
+- [Loan Cart Guide](docs/loan-cart-guide.md) — batch loan staging, volume discounts, abandonment analytics
+- [Loan Priority & Waterfall](docs/loan-priority-waterfall.md) — senior/mezzanine/junior tranching and default-proceeds routing
+- [Loan Attribution Model](docs/loan-attribution-model.md) — heuristic performance attribution (40%/35%/15%/10%) and known limitations
+
 ### Deploy to Testnet
 
 ```bash
@@ -1023,3 +1029,11 @@ MIT
 - [Stellar Documentation](https://developers.stellar.org)
 - [Soroban Docs](https://soroban.stellar.org)
 - [Stellar Developer Discord](https://discord.gg/stellardev)
+
+## Handsoff notes
+
+<!-- handsoff-issue-1563 -->
+- #1563: Implement Gradual Rollout API for New Features
+
+<!-- handsoff-issue-1564 -->
+- #1564: Add API Request Fingerprinting for Fraud Detection

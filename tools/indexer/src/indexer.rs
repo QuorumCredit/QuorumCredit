@@ -327,12 +327,20 @@ fn simplify_value(value_b64: &str, category: &str, action: &str) -> String {
             .to_string()
         }
         ("loan", "request") => {
+            let loan_id = u64_from_bytes(&raw, 0);
+            let deadline = u64_from_bytes(&raw, 8);
+            let borrower = decode_address(&raw[16..48.min(raw.len())]);
+            let amount = i128_from_hex(hex_str.as_str());
+            let vouchers = decode_vouchers(&raw, 48);
             serde_json::json!({
-                "borrower": decode_address(&raw[..32.min(raw.len())]),
-                "amount_stroops": i128_from_hex(hex_str.as_str()),
+                "loan_id": loan_id,
+                "borrower": borrower,
+                "amount_stroops": amount,
+                "deadline": deadline,
                 "threshold_stroops": 0i128,
                 "loan_purpose": "decoded",
-                "token": "C".to_string()
+                "token": "C".to_string(),
+                "vouchers": vouchers
             })
             .to_string()
         }
@@ -352,6 +360,26 @@ fn simplify_value(value_b64: &str, category: &str, action: &str) -> String {
             .to_string()
         }
     }
+}
+
+fn u64_from_bytes(bytes: &[u8], offset: usize) -> u64 {
+    if offset + 8 > bytes.len() {
+        return 0;
+    }
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(&bytes[offset..offset + 8]);
+    u64::from_be_bytes(arr)
+}
+
+fn decode_vouchers(bytes: &[u8], offset: usize) -> Vec<String> {
+    const MAX_VOUCHERS: usize = 16;
+    let mut vouchers = Vec::new();
+    let mut pos = offset;
+    while pos + 32 <= bytes.len() && vouchers.len() < MAX_VOUCHERS {
+        vouchers.push(hex::encode(&bytes[pos..pos + 32]));
+        pos += 32;
+    }
+    vouchers
 }
 
 fn i128_from_hex(hex_str: &str) -> i128 {

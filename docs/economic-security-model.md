@@ -122,3 +122,16 @@ The Sybil-resistant vouching and governance upgrades successfully raise the barr
 1. **Farming Credit Score** now requires either locking significant capital or managing hundreds of active addresses, raising costs by **5.3x** and imposing a **24-hour time barrier**.
 2. **Reputation Farming** forces the attacker to pay real protocol fees and interest, turning a free attack into a **sunk financial cost** up to **4.0x** higher.
 3. **Governance Security** scales linearly with legitimate stake, raising the attack capital cost by **up to 1,000x** against large stakeholders, rendering Sybil-ring takeover economically unviable.
+
+---
+
+## 5. Loss Absorption on Default
+
+When a slash cannot make every voucher whole, the residual loss is absorbed
+through a fixed waterfall — **voucher protection bond → bond-insurance rider →
+per-vouch insurance → protocol insurance fund → residual loss borne by the
+voucher**. The uninsured residual tail is deliberate: it preserves voucher
+skin-in-the-game and bounds the protocol's socialised liability, which is what
+keeps the cost-of-attack formulations above intact. The full payout order,
+no-double-counting rule, and the expected `governance.rs` slash-execution
+sequencing are specified in [loss-waterfall.md](loss-waterfall.md).
