@@ -14,6 +14,7 @@ import {
   exportProofJson,
   importProofJson,
 } from "../credentials/proofGenerator.js";
+import { identityVerificationService } from "../credentials/identityVerificationService.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -714,6 +715,185 @@ export function handleHttpRequest(
         })),
       })
     );
+    return;
+  }
+
+  // ── Issue #1591: Document Verification & Verification Challenges ──
+
+  // POST /credentials/:credentialId/document-verification - Verify a document
+  const documentVerifyMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/document-verification$/
+  );
+  if (documentVerifyMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(documentVerifyMatch[1] as string);
+
+    readJsonBody<{
+      documentType?: string;
+      documentHash?: string;
+      expiresAt?: number;
+      metadata?: Record<string, unknown>;
+    }>(req)
+      .then((body) => {
+        const validDocumentTypes = ["passport", "driver_license", "national_id", "utility_bill", "bank_statement"];
+
+        if (!body.documentType || !validDocumentTypes.includes(body.documentType)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: `documentType must be one of: ${validDocumentTypes.join(", ")}`,
+            })
+          );
+          return;
+        }
+
+        if (!body.documentHash || typeof body.documentHash !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "documentHash (string) required" }));
+          return;
+        }
+
+        const credential = credentialStore.getCredential(credentialId);
+        if (!credential) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "credential not found" }));
+          return;
+        }
+
+        const expiresAt = body.expiresAt || credential.expiresAt;
+        const verification = identityVerificationService.verifyDocument(
+          credentialId,
+          body.documentType as "passport" | "driver_license" | "national_id" | "utility_bill" | "bank_statement",
+          body.documentHash,
+          expiresAt,
+          body.metadata
+        );
+
+        metrics.incCounter("qc_documents_verified_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(verification));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /credentials/:credentialId/documents - Get document verifications
+  const documentsMatch = url.pathname.match(/^\/credentials\/([^/]+)\/documents$/);
+  if (documentsMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(documentsMatch[1] as string);
+
+    const documents = identityVerificationService.getDocumentVerifications(
+      credentialId
+    );
+    const isValid = identityVerificationService.isDocumentValid(credentialId);
+
+    metrics.incCounter("qc_documents_queried_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ credentialId, documents, isValid }));
+    return;
+  }
+
+  // POST /credentials/:credentialId/challenges - Create a verification challenge
+  const challengeCreateMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/challenges$/
+  );
+  if (challengeCreateMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(challengeCreateMatch[1] as string);
+
+    readJsonBody<{
+      holderId?: string;
+      challengeType?: string;
+      metadata?: Record<string, unknown>;
+    }>(req)
+      .then((body) => {
+        if (!body.holderId || !body.challengeType) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "holderId and challengeType required",
+            })
+          );
+          return;
+        }
+
+        const credential = credentialStore.getCredential(credentialId);
+        if (!credential) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "credential not found" }));
+          return;
+        }
+
+        const challenge = identityVerificationService.createChallenge(
+          credentialId,
+          body.holderId,
+          body.challengeType as "face_match" | "document_liveness" | "manual_review",
+          body.metadata
+        );
+
+        metrics.incCounter("qc_verification_challenges_created_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(challenge));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // POST /credentials/:credentialId/challenges/:challengeId/complete - Complete a challenge
+  const challengeCompleteMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/challenges\/([^/]+)\/complete$/
+  );
+  if (challengeCompleteMatch && req.method === "POST") {
+    const challengeId = decodeURIComponent(challengeCompleteMatch[2] as string);
+
+    readJsonBody<{ passed?: boolean; metadata?: Record<string, unknown> }>(req)
+      .then((body) => {
+        const passed = body.passed === true;
+        const challenge = identityVerificationService.completeChallenge(
+          challengeId,
+          passed,
+          body.metadata
+        );
+
+        if (!challenge) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "challenge not found" }));
+          return;
+        }
+
+        metrics.incCounter(
+          passed
+            ? "qc_verification_challenges_passed_total"
+            : "qc_verification_challenges_failed_total"
+        );
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(challenge));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /credentials/:credentialId/verification-report - Get detailed verification report
+  const reportMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/verification-report$/
+  );
+  if (reportMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(reportMatch[1] as string);
+
+    const report = identityVerificationService.getVerificationReport(
+      credentialId
+    );
+
+    metrics.incCounter("qc_verification_reports_generated_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(report));
     return;
   }
 
