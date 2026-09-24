@@ -1028,3 +1028,6 @@ MIT
 
 <!-- handsoff-issue-1506 -->
 - #1506: Node Indexer Ignores Reorgs
+
+<!-- handsoff-issue-1507 -->
+- #1507: Node Indexer `/events` Endpoint Has Unbounded `limit`
