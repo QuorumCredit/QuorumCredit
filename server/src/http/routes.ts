@@ -8,6 +8,12 @@ import { loanCartStore } from "../cart/loanCartStore.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import type { SorobanRpcClient } from "../soroban/rpcClient.js";
 import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
+import { credentialStore } from "../credentials/credentialStore.js";
+import {
+  generateProof,
+  exportProofJson,
+  importProofJson,
+} from "../credentials/proofGenerator.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -501,6 +507,216 @@ export function handleHttpRequest(
     return;
   }
 
+  // ── Issue #1590, #1591: Credential verification proof export and identity verification ──
+
+  // GET /credentials/:credentialId/proof - Get exportable proof
+  const proofExportMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/proof$/
+  );
+  if (proofExportMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(proofExportMatch[1] as string);
+
+    const credential = credentialStore.getCredential(credentialId);
+    if (!credential) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "credential not found" }));
+      return;
+    }
+
+    const proof = generateProof(
+      ctx.authSecret,
+      credential.id,
+      credential.holderId,
+      credential.type,
+      credential.issuer,
+      credential.expiresAt,
+      credential.metadata
+    );
+
+    metrics.incCounter("qc_proofs_generated_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(proof));
+    return;
+  }
+
+  // POST /credentials/:credentialId/proof/export - Export proof in JSON format
+  const proofExportJsonMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/proof\/export$/
+  );
+  if (proofExportJsonMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(proofExportJsonMatch[1] as string);
+
+    const credential = credentialStore.getCredential(credentialId);
+    if (!credential) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "credential not found" }));
+      return;
+    }
+
+    const proof = generateProof(
+      ctx.authSecret,
+      credential.id,
+      credential.holderId,
+      credential.type,
+      credential.issuer,
+      credential.expiresAt,
+      credential.metadata
+    );
+
+    const exportedProof = exportProofJson(proof);
+
+    metrics.incCounter("qc_proofs_exported_total");
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "content-disposition": `attachment; filename="proof-${credentialId}.json"`,
+    });
+    res.end(exportedProof);
+    return;
+  }
+
+  // POST /credentials/:credentialId/proof/validate - Validate an exported proof
+  const proofValidateMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/proof\/validate$/
+  );
+  if (proofValidateMatch && req.method === "POST") {
+    readJsonBody<{ proofJson?: string }>(req)
+      .then((body) => {
+        if (!body.proofJson) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "proofJson required" }));
+          return;
+        }
+
+        const result = importProofJson(body.proofJson, ctx.authSecret);
+
+        metrics.incCounter("qc_proofs_validated_total");
+        res.writeHead(result.valid ? 200 : 400, {
+          "content-type": "application/json",
+        });
+        res.end(
+          JSON.stringify({
+            valid: result.valid,
+            reason: result.reason,
+            proof: result.payload,
+          })
+        );
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // POST /credentials/verify-identity - Start identity verification process
+  if (req.method === "POST" && url.pathname === "/credentials/verify-identity") {
+    readJsonBody<{
+      credentialId?: string;
+      holderId?: string;
+      documentType?: string;
+      metadata?: Record<string, unknown>;
+    }>(req)
+      .then((body) => {
+        if (!body.credentialId || !body.holderId || !body.documentType) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "credentialId, holderId, and documentType required",
+            })
+          );
+          return;
+        }
+
+        const credential = credentialStore.getCredential(body.credentialId);
+        if (!credential) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "credential not found" }));
+          return;
+        }
+
+        if (credential.holderId !== body.holderId) {
+          res.writeHead(403, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "holder ID does not match credential",
+            })
+          );
+          return;
+        }
+
+        const verification = credentialStore.recordVerification(
+          body.credentialId,
+          body.holderId,
+          body.documentType,
+          credential.expiresAt
+        );
+
+        metrics.incCounter("qc_identity_verifications_initiated_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            credentialId: body.credentialId,
+            status: "pending",
+            message: "identity verification initiated",
+            verificationId: body.credentialId,
+          })
+        );
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /credentials/:credentialId/verification-status - Get verification status
+  const verificationStatusMatch = url.pathname.match(
+    /^\/credentials\/([^/]+)\/verification-status$/
+  );
+  if (verificationStatusMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(verificationStatusMatch[1] as string);
+
+    const verification = credentialStore.getVerification(credentialId);
+    if (!verification) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "verification not found" }));
+      return;
+    }
+
+    metrics.incCounter("qc_verification_status_checks_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(verification));
+    return;
+  }
+
+  // GET /credentials/:holderId/verify-all - Bulk verification check
+  const verifyAllMatch = url.pathname.match(/^\/credentials\/([^/]+)\/verify-all$/);
+  if (verifyAllMatch && req.method === "GET") {
+    const holderId = decodeURIComponent(verifyAllMatch[1] as string);
+
+    const stats = credentialStore.getVerificationStats(holderId);
+    const needsReVerification = credentialStore.getCredentialsNeedingReVerification(
+      holderId
+    );
+
+    metrics.incCounter("qc_verification_stats_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        holderId,
+        stats,
+        credentialsNeedingReVerification: needsReVerification.map((c) => ({
+          id: c.id,
+          type: c.type,
+          nextVerificationRequired: credentialStore
+            .getVerification(c.id)
+            ?.nextVerificationRequired,
+        })),
+      })
+    );
+    return;
+  }
+
   // Webhook endpoints
   if (
     url.pathname.startsWith("/api/webhooks") ||
@@ -577,7 +793,7 @@ export function handleHttpRequest(
   res.end(JSON.stringify({ error: "not found" }));
 }
 
-function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+export function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk) => chunks.push(chunk));
