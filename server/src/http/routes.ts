@@ -16,6 +16,7 @@ import {
 } from "../credentials/proofGenerator.js";
 import { identityVerificationService } from "../credentials/identityVerificationService.js";
 import { analyticsService } from "../credentials/analyticsService.js";
+import { tokenExpirationMonitor } from "../auth/tokenExpirationMonitor.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -453,8 +454,14 @@ export function handleHttpRequest(
 
       if (!keyStore.isValid(body.apiKey)) {
         const blocked = await rateLimiter.recordFailure(sourceIp);
+
+        // Issue #1593: Record authentication failure
+        tokenExpirationMonitor.recordFailure("invalid_key", sourceIp, body.apiKey);
+
         metrics.incCounter("qc_auth_failures_total");
         if (blocked) {
+          // Issue #1593: Record rate limit event
+          tokenExpirationMonitor.recordFailure("rate_limited", sourceIp, body.apiKey);
           res.writeHead(429, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "too many failed attempts — try again later" }));
         } else {
@@ -465,6 +472,17 @@ export function handleHttpRequest(
       }
 
       const issued = issueToken(ctx.authSecret, body.apiKey, ctx.tokenTtlSeconds, body.borrower);
+
+      // Issue #1593: Register token with expiration monitor
+      const now = Math.floor(Date.now() / 1000);
+      const expiresAt = issued.expiresAt;
+      tokenExpirationMonitor.registerToken(
+        issued.jti,
+        expiresAt,
+        body.apiKey,
+        now * 1000
+      );
+
       metrics.incCounter("qc_auth_issued_total");
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(issued));
@@ -1054,6 +1072,103 @@ export function handleHttpRequest(
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "invalid request body" }));
       });
+    return;
+  }
+
+  // ── Issue #1593: Token Expiration Monitoring ──
+
+  // GET /auth/tokens/status - Get overall token expiration status
+  if (req.method === "GET" && url.pathname === "/auth/tokens/status") {
+    const status = tokenExpirationMonitor.getExpirationStatus();
+    metrics.incCounter("qc_token_status_checked_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(status));
+    return;
+  }
+
+  // GET /auth/tokens/:jti/info - Get info for a specific token
+  const tokenInfoMatch = url.pathname.match(/^\/auth\/tokens\/([^/]+)\/info$/);
+  if (tokenInfoMatch && req.method === "GET") {
+    const jti = decodeURIComponent(tokenInfoMatch[1] as string);
+    const tokenInfo = tokenExpirationMonitor.getTokenInfo(jti);
+
+    if (!tokenInfo) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "token not found" }));
+      return;
+    }
+
+    const expiringSoon = tokenExpirationMonitor.isExpiringsoon(jti);
+    const hasExpired = tokenExpirationMonitor.hasExpired(jti);
+
+    metrics.incCounter("qc_token_info_requested_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        ...tokenInfo,
+        expiringSoon,
+        expired: hasExpired,
+      })
+    );
+    return;
+  }
+
+  // GET /auth/tokens/:jti/warning - Get expiration warning for a token
+  const tokenWarningMatch = url.pathname.match(/^\/auth\/tokens\/([^/]+)\/warning$/);
+  if (tokenWarningMatch && req.method === "GET") {
+    const jti = decodeURIComponent(tokenWarningMatch[1] as string);
+    const warning = tokenExpirationMonitor.generateWarning(jti);
+
+    if (!warning) {
+      res.writeHead(204); // No content - token not expiring soon or already expired
+      res.end();
+      return;
+    }
+
+    metrics.incCounter("qc_token_warning_generated_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(warning));
+    return;
+  }
+
+  // GET /auth/tokens/warnings/recent - Get recent expiration warnings
+  if (req.method === "GET" && url.pathname === "/auth/tokens/warnings/recent") {
+    const limit = parseInt(url.searchParams.get("limit") || "20");
+    const warnings = tokenExpirationMonitor.getRecentWarnings(limit);
+
+    metrics.incCounter("qc_token_warnings_retrieved_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(warnings));
+    return;
+  }
+
+  // GET /auth/failures/stats - Get authentication failure statistics
+  if (req.method === "GET" && url.pathname === "/auth/failures/stats") {
+    const stats = tokenExpirationMonitor.getFailureStatistics();
+
+    metrics.incCounter("qc_auth_failure_stats_retrieved_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    return;
+  }
+
+  // GET /auth/health - Get token monitoring health metrics
+  if (req.method === "GET" && url.pathname === "/auth/health") {
+    const health = tokenExpirationMonitor.getHealthMetrics();
+
+    metrics.incCounter("qc_auth_health_checked_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(health));
+    return;
+  }
+
+  // POST /auth/tokens/cleanup - Clean up expired tokens (manual cleanup endpoint)
+  if (req.method === "POST" && url.pathname === "/auth/tokens/cleanup") {
+    const removed = tokenExpirationMonitor.cleanup();
+
+    metrics.incCounter("qc_token_cleanup_executed_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ removed, message: `Removed ${removed} expired tokens` }));
     return;
   }
 
