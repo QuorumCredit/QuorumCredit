@@ -110,6 +110,14 @@ pub mod liquidity_mining;
 pub mod webhook_retry;
 // Issue #111 — max webhook subscriptions per caller
 pub mod webhook_registry;
+// Issue #1612 — Quorum Slice Cost Optimization
+pub mod quorum_slice_cost_optimization;
+// Issue #1613 — Attestor Bankruptcy Detection
+pub mod attestor_bankruptcy_detection;
+// Issue #1614 — Quorum Slice Failover Automation
+pub mod quorum_slice_failover;
+// Issue #1615 — Attestor Conflict of Interest Detection
+pub mod attestor_conflict_detection;
 
 #[cfg(test)]
 mod governance_test;
