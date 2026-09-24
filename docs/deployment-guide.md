@@ -1,5 +1,9 @@
 # Production Deployment Guide
 
+> **Scope:** This is the **complete reference** for deploying QuorumCredit to Stellar mainnet, covering security best practices and operational procedures. For a condensed walkthrough, see the [Quick Start Deployment Guide](./production-deployment-guide.md).
+>
+> **Maintenance:** This guide and `production-deployment-guide.md` cover the same deployment workflow. When you change one, update the other (or remove the overlap) so operators never follow a stale or partial guide. See `CONTRIBUTING.md` for the documentation checklist.
+
 This guide covers deploying QuorumCredit to Stellar mainnet with security best practices and operational procedures.
 
 ## Environment Setup
