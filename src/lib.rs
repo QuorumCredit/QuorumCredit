@@ -114,6 +114,8 @@ pub mod webhook_registry;
 pub mod quorum_slice_cost_optimization;
 // Issue #1613 — Attestor Bankruptcy Detection
 pub mod attestor_bankruptcy_detection;
+// Issue #1614 — Quorum Slice Failover Automation
+pub mod quorum_slice_failover;
 
 #[cfg(test)]
 mod governance_test;
