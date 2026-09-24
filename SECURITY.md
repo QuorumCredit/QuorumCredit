@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | ✅ Yes     |
+| 0.1.x   | ✅ Yes |
 
 ---
 
@@ -76,6 +76,55 @@ failures can be detected and investigated:
 
 ---
 
+## Request Sanitization Standard
+
+All inbound user input must be sanitized before it reaches request handlers so that
+injection attacks cannot be carried through request parameters, bodies, or headers.
+
+### Sanitization Middleware
+
+A sanitization middleware runs on every inbound request, before routing and handler
+execution, and normalizes untrusted input:
+
+- Recursively sanitize query parameters, path parameters, request bodies (JSON form
+  fields and string values), and relevant headers.
+- Apply the same sanitization to nested objects and arrays so deeply nested payloads
+  cannot bypass the filter.
+- Reject requests that exceed configured size or depth limits with `400 Bad Request`.
+- Never mutate the raw body used for signature verification; sanitize a parsed copy.
+
+### XSS Prevention
+
+- Strip or escape dangerous HTML/script payloads from all string input.
+- Remove `<script>` blocks, inline event handlers (`onerror`, `onload`, etc.), and
+  `javascript:` / `data:` URIs.
+- HTML-encode the remaining `<`, `>`, `"`, `'`, and `&` characters so reflected input
+  cannot execute in a browser context.
+- Set a restrictive `Content-Security-Policy` header on responses as defense in depth.
+
+### SQL Injection Prevention
+
+- Neutralize SQL metacharacters and common injection patterns in string input
+  (e.g. `'`, `"`, `;`, `--`, `/* */`, `UNION SELECT`, `OR 1=1`).
+- Always use parameterized queries / prepared statements for database access; never
+  concatenate sanitized input directly into SQL.
+- Treat sanitization as defense in depth, not a replacement for parameterized queries.
+
+### Testing Common Injection Patterns
+
+Sanitization must be covered by tests that exercise common injection patterns:
+
+- XSS payloads: `<script>alert(1)</script>`, `<img src=x onerror=alert(1)>`,
+  `javascript:alert(1)`.
+- SQL injection payloads: `' OR '1'='1`, `1; DROP TABLE users; --`,
+  `UNION SELECT password FROM users`.
+- Nested and encoded variants (URL-encoded, double-encoded, nested JSON) to confirm
+  the middleware cannot be bypassed.
+- Assert that sanitized output contains no executable script or SQL metacharacters
+  and that legitimate input is preserved.
+
+---
+
 ## Scope
 
 The following are **in scope**:
@@ -86,6 +135,7 @@ The following are **in scope**:
 - Reentrancy or state corruption vulnerabilities
 - Denial-of-service attacks that permanently brick the contract
 - Webhook signature verification bypasses or replay attacks
+- Injection attacks (XSS, SQL injection) via unsanitized user input
 
 The following are **out of scope**:
 
@@ -103,6 +153,7 @@ The following are **out of scope**:
 - Run `cargo audit` before every deployment: `cargo install cargo-audit && cargo audit`
 - Follow the required deployment sequence: build → deploy → initialize (same keypair)
 - Rotate webhook secrets regularly and store them in a secret manager, never in source control
+- Enable the request sanitization middleware on all public endpoints and keep it updated
 
 ---
 
