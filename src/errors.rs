@@ -269,6 +269,10 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "NonceAlreadyUsed"),
             String::from_str(env, "Proof-of-work nonce has already been used and cannot be replayed. Use a new nonce."),
         ),
+        ContractError::InvalidPermission => (
+            String::from_str(env, "InvalidPermission"),
+            String::from_str(env, "Permission value is invalid (must be 0-3) or permission configuration is invalid."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown or unhandled error occurred."),
@@ -637,4 +641,6 @@ EmergencyBypassNotAuthorised = 131,
     InvalidDifficulty = 224,
     /// Proof-of-work nonce has already been used and cannot be replayed.
     NonceAlreadyUsed = 225,
+    /// Invalid permission value or configuration for field-level access control.
+    InvalidPermission = 226,
 }

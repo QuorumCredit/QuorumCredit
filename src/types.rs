@@ -1264,6 +1264,14 @@ pub enum DataKey {
     ProofOfWorkOperationCount,
     /// u64: timestamp of last difficulty adjustment
     ProofOfWorkLastAdjustment,
+
+    // ── Issue #1631: Credential Field-Level Permissions ────────────────────
+    /// (credential_id, field) → u32: permission level for a specific field (0-3)
+    FieldPermission(Address, Bytes),
+    /// credential_id → FieldPermissionMatrix: field permission configuration
+    FieldPermissionMatrix(Address),
+    /// (credential_id, field) → Vec<(u64, u32, u32)>: field permission change history
+    FieldPermissionHistory(Address, Bytes),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

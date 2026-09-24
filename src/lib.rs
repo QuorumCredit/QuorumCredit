@@ -100,6 +100,7 @@ pub mod loan_cart;
 pub mod reputation_nft;
 pub mod transparency;
 pub mod proof_of_work;
+pub mod field_permissions;
 pub mod prediction_market;
 pub mod community_treasury;
 pub mod dynamic_interest;
