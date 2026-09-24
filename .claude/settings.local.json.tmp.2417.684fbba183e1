@@ -10,7 +10,8 @@
       "Bash(git add *)",
       "Bash(git commit -m 'Issue #1599: Add credential multi-signature endorsement *)",
       "Bash(awk '/^pub enum DataKey/,/^}/' src/types.rs)",
-      "Bash(git commit -m 'Issue #1603: Add credential verification rate limiting contract methods *)"
+      "Bash(git commit -m 'Issue #1603: Add credential verification rate limiting contract methods *)",
+      "Bash(git commit -m 'Issue #1605: Add credential metadata tamper detection contract methods *)"
     ]
   }
 }
