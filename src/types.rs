@@ -1232,6 +1232,30 @@ pub enum DataKey {
     PubSubHealthy,              // bool: true when PubSub relay last checked in successfully
     RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
     WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
+
+    // ── Issue #1599-1606: Credential Features ────────────────────────────────
+    /// credential_id → Credential (multi-signed credential)
+    Credential(BytesN<32>),
+    /// holder → Vec<BytesN<32>> (credential IDs)
+    HolderCredentials(Address),
+    /// endorser → EndorserRecord (tracking endorser history)
+    EndorserRecord(Address),
+    /// holder → VerificationRateLimit (rate limit config per holder)
+    VerificationRateLimit(Address),
+    /// holder → TokenBucket (token bucket state for rate limiting)
+    TokenBucket(Address),
+    /// credential_id → VersionedMetadata (metadata with version history)
+    VersionedMetadata(BytesN<32>),
+    /// credential_id → Vec<TamperAlert> (tampering events)
+    TamperingAlerts(BytesN<32>),
+    /// slice_id → QuorumSlice (quorum slice configuration)
+    QuorumSlice(u64),
+    /// (slice_id, attestor) → Attestor (attestor state)
+    SliceAttestor(u64, Address),
+    /// slice_id → Vec<HealingEvent> (healing events for this slice)
+    SliceHealingEvents(u64),
+    /// u64: monotonically increasing slice ID counter
+    QuorumSliceCounter,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
