@@ -8,6 +8,8 @@ import { loanCartStore } from "../cart/loanCartStore.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import type { SorobanRpcClient } from "../soroban/rpcClient.js";
 import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
+import { handleSearchRequest } from "./searchRoutes.js";
+import type { FacetedSearchService } from "../search/facetedSearch.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -29,6 +31,8 @@ export interface RouteContext {
   rpcClient?: SorobanRpcClient;
   /** Issue #1362 — Persistent recurring payment store (Local or Redis-backed). */
   paymentStore?: RecurringPaymentStore;
+  /** Issue #1588 — Faceted search service for advanced event searching. */
+  searchService?: FacetedSearchService;
 }
 
 /**
@@ -97,6 +101,12 @@ export function handleHttpRequest(
   if (req.method === "GET" && url.pathname === "/metrics") {
     res.writeHead(200, { "content-type": "text/plain; version=0.0.4" });
     res.end(metrics.toPrometheusText());
+    return;
+  }
+
+  // Search endpoints (Issue #1588)
+  if (url.pathname.startsWith("/api/search") && ctx.searchService) {
+    handleSearchRequest(req, res, { searchService: ctx.searchService });
     return;
   }
 
