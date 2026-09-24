@@ -1032,8 +1032,8 @@ MIT
 
 ## Handsoff notes
 
-<!-- handsoff-issue-1506 -->
-- #1506: Node Indexer Ignores Reorgs
+<!-- handsoff-issue-1563 -->
+- #1563: Implement Gradual Rollout API for New Features
 
-<!-- handsoff-issue-1507 -->
-- #1507: Node Indexer `/events` Endpoint Has Unbounded `limit`
+<!-- handsoff-issue-1564 -->
+- #1564: Add API Request Fingerprinting for Fraud Detection
