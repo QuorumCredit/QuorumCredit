@@ -55,6 +55,18 @@ Sorting the pair before hashing makes proof verification **position-independent*
 
 Proof generation (`crate::merkle_tree::generate_proof`) needs the full leaf set and is intended to run **off-chain** — e.g. in an indexer that already tracks every `VouchRecord` for a borrower — or in tests. It is not exposed as a contract entrypoint: exposing it on-chain would require iterating the borrower's entire vouch list inside a single invocation, defeating the point of a compact proof. A proof is simply the list of sibling hashes encountered walking from a leaf to the root; anyone reproducing the leaf/node hash rules above from the same vouch data (or reading it from `src/merkle_tree.rs`) can generate one independently of the reference implementation.
 
+## Gas Bounds
+
+To prevent a borrower with an unusually large number of vouches from making root recomputation expensive enough to threaten transaction gas/CPU limits, **`MAX_VOUCH_SET_SIZE` is enforced at 1,000 vouches per borrower** (see `src/merkle_tree.rs`). This bound is applied in `compute_and_store_merkle_root` before calling the tree builder.
+
+**Rationale for the 1,000-vouch limit:**
+- At n=1,000, root computation costs approximately 5M CPU instructions
+- Proof verification (O(log n)) costs approximately 100K–200K CPU instructions for a 1,000-vouch tree
+- Both operations consume less than 5% of Soroban mainnet's 100M per-invocation instruction limit, leaving ample headroom for other contract logic in the same transaction
+- See `src/merkle_tree_test.rs::gas_benchmarks::bench_build_merkle_root_at_max_vouch_set_size()` for empirical measurement at the limit
+
+Attempting to compute a root for a borrower exceeding 1,000 vouches returns `InvalidAmount`.
+
 ## Guarantees
 
 - **Soundness**: `verify_vouch_inclusion` returns `true` only for leaves that were genuinely part of the committed set. Forging a proof requires a SHA-256 preimage or second-preimage attack.
@@ -76,6 +88,8 @@ Proof generation (`crate::merkle_tree::generate_proof`) needs the full leaf set 
 - Inclusion proofs verifying for every genuine member of a tree (including an odd-sized, 17-leaf tree, to exercise lone-node promotion).
 - Inclusion proofs failing for non-members, for proofs borrowed from a different leaf, for tampered (single-byte-flipped or truncated) proofs, and against the wrong root.
 - Proptest-based fuzzing (`fuzz` submodule) generating random vouch sets and confirming inclusion holds for members and fails for non-members and byte-tampered proofs across many randomized cases.
+- A subset/superset fuzz case confirming a proof generated for leaf A against its original leaf set never verifies against the root of a different set that also contains A plus extra, unrelated leaves — a proof commits to a specific leaf set, not merely to A's membership in some superset.
+- A large-tree fuzz case (`fuzz::large_trees`) at 1,000–1,200 random leaves, confirming every leaf's proof verifies against the computed root at sizes where the odd-node-promotion logic runs across many tree levels, not just near the root. Across the CI-run cases at this scale, no divergence has been observed: `verify_inclusion(root, leaf, generate_proof(leaves, leaf))` held for every leaf in every generated set.
 - Gas benchmarks (`gas_benchmarks` submodule) at 5/25/50/100-vouch sizes for both `build_merkle_root` and `verify_inclusion`.
 
 ## See also

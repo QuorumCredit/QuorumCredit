@@ -86,4 +86,79 @@ describe("LoanProjector", () => {
     );
     expect(full?.status).toBe("Repaid");
   });
+
+  it("uses real loan_id from decoded event when present", () => {
+    const p = new LoanProjector();
+    const loan = p.applyEvent(
+      ev({
+        id: 1,
+        category: "loan",
+        action: "request",
+        value: { borrower: "B1", amount_stroops: 5000, loan_id: 42, loan_purpose: "business" },
+      })
+    );
+    expect(loan).not.toBeNull();
+    // The projected record's id should be the real loan_id, not a synthetic hash
+    expect(loan?.id).toBe(42);
+    // get() should still find it by borrower
+    expect(p.get("B1")).not.toBeUndefined();
+    expect(p.get("B1")?.id).toBe(42);
+  });
+
+  it("tracks multiple concurrent loans per borrower", () => {
+    const p = new LoanProjector();
+    const loan1 = p.applyEvent(
+      ev({
+        id: 1,
+        category: "loan",
+        action: "request",
+        value: { borrower: "B1", amount_stroops: 1000, loan_id: 101, loan_purpose: "farming" },
+      })
+    );
+    const loan2 = p.applyEvent(
+      ev({
+        id: 2,
+        category: "loan",
+        action: "request",
+        value: { borrower: "B1", amount_stroops: 2000, loan_id: 202, loan_purpose: "equipment" },
+      })
+    );
+    expect(loan1?.id).toBe(101);
+    expect(loan2?.id).toBe(202);
+    // Both loans should be tracked separately
+    const all = p.getAll();
+    expect(all).toHaveLength(2);
+    const ids = all.map((l) => l.id).sort((a, b) => (a as number) - (b as number));
+    expect(ids).toEqual([101, 202]);
+  });
+
+  it("populates deadline from decoded event", () => {
+    const p = new LoanProjector();
+    const deadline = 1_700_000_000;
+    const loan = p.applyEvent(
+      ev({
+        id: 1,
+        category: "loan",
+        action: "request",
+        value: { borrower: "B1", amount_stroops: 5000, loan_id: 7, deadline },
+      })
+    );
+    expect(loan?.deadline).toBe(deadline);
+  });
+
+  it("populates vouchers from decoded event", () => {
+    const p = new LoanProjector();
+    const vouchers = ["aabbcc", "ddeeff"];
+    const loan = p.applyEvent(
+      ev({
+        id: 1,
+        category: "loan",
+        action: "request",
+        value: { borrower: "B1", amount_stroops: 5000, loan_id: 9, vouchers },
+      })
+    );
+    expect(loan?.vouchers).toHaveLength(2);
+    expect(loan?.vouchers[0]).toEqual({ voucher: "aabbcc", stake: 0, vouch_timestamp: 0 });
+    expect(loan?.vouchers[1]).toEqual({ voucher: "ddeeff", stake: 0, vouch_timestamp: 0 });
+  });
 });

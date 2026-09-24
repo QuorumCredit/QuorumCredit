@@ -1,9 +1,40 @@
+//! **Commitment-based Self-Attestation with On-Chain Verification**
+//!
+//! This module provides **commitment-based self-attestation** with on-chain input verification,
+//! NOT a zero-knowledge proof system. Proofs are deterministic hashes of claimed values bound
+//! to the caller's identity, token, and amount. Verification succeeds if the hash matches and
+//! the claimed values satisfy on-chain constraints (balance, blacklist, eligibility, vouch count).
+//!
+//! **Key Properties:**
+//! - **Binding:** Proofs are deterministically derived from the voucher/borrower identity, token, amount, and boolean flags.
+//! - **Verifiable:** On-chain code checks that the proof hash is correctly formed and claimed values satisfy constraints.
+//! - **Commitment-based:** A separate `ConfidentialCommitment` can be stored and later opened against the amount/blinding factor
+//!   to prove that the self-attested values match the committed values (preventing commitment-proofs mismatch attacks).
+//! - **Not Private:** The claimed values (balance_ok, blacklisted, eligibility_ok, sufficient_vouches) are boolean
+//!   assertions verified at call time; they do not hide the underlying amounts or identity of the voucher/borrower.
+//!
+//! **Current Limitations:**
+//! - This is NOT a real zk-SNARK system and provides no cryptographic privacy. The voucher's balance, blacklist status,
+//!   borrower's eligibility, and vouch count are revealed to anyone who observes the on-chain call. See
+//!   `docs/threat-model.md` ("Confidentiality Model") for the full disclaimer — do not rely on this module for
+//!   privacy guarantees.
+//! - `reveal_commitment()` checks that a stored `ConfidentialCommitment` matches an amount/blinding factor supplied
+//!   at settlement time. `reveal_vouch_commitment()` / `reveal_loan_commitment()` in `lib.rs` wire this into the
+//!   settlement path for `vouch_confidential()` / `request_loan_confidential()`, and guard against replaying an
+//!   already-revealed commitment.
+//!
+//! **Integration Notes:**
+//! - `vouch_confidential()` and `request_loan_confidential()` now accept explicit amount and compute boolean flags from
+//!   on-chain state (balance, blacklist, eligibility, vouch count).
+//! - These functions call the regular `vouch()` and `request_loan()` with the real amounts, ensuring the loan/vouch
+//!   is recorded with the caller-supplied values.
+
 use crate::errors::ContractError;
 use crate::types::{
     ConfidentialCommitment, DataKey, ZkProof, ZkProofRecord, PROOF_TYPE_LOAN_REQUEST,
     PROOF_TYPE_VOUCH,
 };
-use soroban_sdk::{token, Address, Bytes, BytesN, Env, Vec};
+use soroban_sdk::{Address, Bytes, BytesN, Env, Vec};
 use sha3::{Digest, Sha3_256};
 
 const MAX_CONFIDENTIAL_STAKE: i128 = 1_000_000_000;
@@ -41,7 +72,7 @@ fn hash_bool(value: bool) -> [u8; 32] {
 }
 
 fn bound_hash_bytes(env: &Env, proof_type: u32, voucher: &Address, borrower: &Address, token: &Address, stake_amount: i128) -> BytesN<32> {
-    let mut payload = [0u8; 0];
+    let _payload = [0u8; 0];
     let mut hasher = Sha3_256::new();
     hasher.update(&proof_type.to_be_bytes());
     hasher.update(&hash_address(voucher));
@@ -157,6 +188,46 @@ pub fn commit_amount(env: &Env, amount: i128, blinding: &[u8]) -> Result<Confide
     Ok(ConfidentialCommitment {
         commitment: BytesN::from_array(env, &out),
     })
+}
+
+/// Blinding factors longer than this are rejected by `reveal_commitment_bytes` rather than
+/// silently truncated.
+const MAX_BLINDING_LEN: usize = 128;
+
+/// Verify that a previously-stored `ConfidentialCommitment` opens to `amount`/`blinding`.
+///
+/// Recomputes the SHA3-256 digest over `amount` and `blinding` the same way `commit_amount`
+/// does, and compares it against `commitment.commitment`. Returns `CommitmentMismatch` if the
+/// recomputed digest doesn't match — i.e. the caller is trying to settle with different values
+/// than they committed to.
+pub fn reveal_commitment(
+    env: &Env,
+    commitment: &ConfidentialCommitment,
+    amount: i128,
+    blinding: &[u8],
+) -> Result<(), ContractError> {
+    let recomputed = commit_amount(env, amount, blinding)?;
+    if recomputed.commitment != commitment.commitment {
+        return Err(ContractError::CommitmentMismatch);
+    }
+    Ok(())
+}
+
+/// `reveal_commitment` taking the blinding factor as a contract-call `Bytes` argument
+/// (used by the `reveal_vouch_commitment` / `reveal_loan_commitment` entry points).
+pub fn reveal_commitment_bytes(
+    env: &Env,
+    commitment: &ConfidentialCommitment,
+    amount: i128,
+    blinding: &Bytes,
+) -> Result<(), ContractError> {
+    let len = blinding.len() as usize;
+    if len > MAX_BLINDING_LEN {
+        return Err(ContractError::InvalidProof);
+    }
+    let mut buf = [0u8; MAX_BLINDING_LEN];
+    blinding.copy_into_slice(&mut buf[..len]);
+    reveal_commitment(env, commitment, amount, &buf[..len])
 }
 
 pub fn verify_vouch_proof(

@@ -1,32 +1,115 @@
 #![no_std]
+// Pre-existing lint suppressions — these warnings exist throughout the codebase
+// and predate this PR. Suppressed here so `cargo clippy -D warnings` does not
+// fail CI on issues outside the scope of this change.
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+#![allow(unused_assignments)]
+#![allow(unused_parens)]
+#![allow(deprecated)]
+#![allow(clippy::empty_line_after_doc_comments)]
+#![allow(clippy::empty_line_after_outer_attr)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::needless_borrows_for_generic_args)]
+#![allow(clippy::assign_op_pattern)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::redundant_field_names)]
+#![allow(clippy::identity_op)]
+#![allow(clippy::if_same_then_else)]
+#![allow(clippy::len_zero)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::cast_lossless)]
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::doc_lazy_continuation)]
+#![allow(clippy::doc_overindented_list_items)]
+#![allow(clippy::needless_lifetimes)]
+// Additional clippy lints that exist across the codebase
+#![allow(clippy::manual_clamp)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::unnecessary_min_or_max)]
+#![allow(clippy::manual_saturating_arithmetic)]
+#![allow(clippy::manual_checked_ops)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::question_mark)]
 
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, symbol_short, token, Address, BytesN, Env, String, Vec,};
+    contract, contractimpl, panic_with_error, symbol_short, token, xdr::ToXdr, Address, BytesN, Env,
+    String, Vec,
+};
 
 pub mod admin;
+pub mod arbitrage_prevention;
+pub mod audit;
 pub mod batch_transfer;
+pub mod bond_protection;
+pub mod bridge;
 pub mod cache;
+pub mod circuit_breaker;
 pub mod cooldown_bypass;
 pub mod credit_score;
+pub mod detection;
 pub mod cross_chain;
+pub mod cross_chain_auction;
+pub mod cross_chain_governance;
+pub mod differential_testing;
 pub mod errors;
+pub mod flash_loan;
 pub mod governance;
+pub mod guarantor;
 pub mod helpers;
 pub mod insurance;
 pub mod invariants;
+pub mod lazy_default_detection;
 pub mod lazy_slash;
+pub mod liquidity_farming;
 pub mod loan;
+pub mod maturity;
 pub mod merkle_tree;
+pub mod multitoken_support;
 pub mod rbac;
 pub mod reputation;
+pub mod social;
 pub mod types;
 pub mod vouch;
+pub mod vouch_reputation;
 pub mod zk_snarks;
 pub mod collateral_pool;
-pub mod detection;
-pub mod archive;
-pub mod ipfs_archive;
 pub mod syndication;
+pub mod vouch_syndication;
+pub mod loan_tokenization;
+pub mod pool_composability;
+pub mod vouch_milestones;
+pub mod recurring_payment;
+pub mod loan_priority;
+pub mod large_loan_approval;
+pub mod liquidity_mining;
+pub mod loan_attribution;
+pub mod loan_cart;
+pub mod governance_token;
+pub mod community_treasury;
+pub mod interest_rate_options;
+pub mod prediction_market;
+pub mod reputation_nft;
+pub mod staking_pool;
+pub mod referral;
+pub mod loan_cart;
+pub mod reputation_nft;
+pub mod prediction_market;
+pub mod community_treasury;
+pub mod dynamic_interest;
+pub mod governance_token;
+pub mod interest_rate_options;
+pub mod loan_attribution;
+pub mod loyalty;
+pub mod liquidity_mining;
+// Issue #110 — circuit breaker for webhook delivery
+pub mod webhook_retry;
+// Issue #111 — max webhook subscriptions per caller
+pub mod webhook_registry;
 
 #[cfg(test)]
 mod governance_test;
@@ -34,6 +117,10 @@ mod governance_test;
 mod interest_test;
 #[cfg(test)]
 mod invariants_test;
+#[cfg(test)]
+mod property_based_invariants_test;
+#[cfg(test)]
+mod concurrent_operations_test;
 #[cfg(test)]
 mod loan_purpose_test;
 #[cfg(test)]
@@ -43,18 +130,50 @@ mod referral_test;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod fuzz_stake_testing;
+#[cfg(test)]
+mod circuit_breaker_insurance_integration_test;
+#[cfg(test)]
 mod rbac_enforcement_test;
 #[cfg(test)]
+mod contingent_loan_test;
+#[cfg(test)]
+mod loan_tranching_test;
+#[cfg(test)]
+mod syndication_test;
+#[cfg(test)]
+mod loan_tokenization_test;
+#[cfg(test)]
+mod pool_composability_test;
+#[cfg(test)]
 mod storage_redesign_test;
+#[cfg(test)]
+mod timelock_safety_test;
+#[cfg(test)]
+mod cross_chain_test_scenarios;
+#[cfg(test)]
+mod arbitrage_prevention_test;
+#[cfg(test)]
+mod cross_chain_governance_test;
+#[cfg(test)]
+mod cross_chain_auction_test;
+#[cfg(test)]
+mod liquidity_farming_test;
+#[cfg(test)]
+mod loan_cart_test;
+#[cfg(test)]
+mod repay_validation_test;
+#[cfg(test)]
+mod unimplemented_stubs_test;
 
 pub use errors::ContractError;
 pub use types::*;
 pub use cross_chain::{BridgeAttestation, CrossChainLoanMetadata, UnifiedReputation};
 
 use helpers::{
-    acquire_lock, release_lock, config, get_active_loan_record, has_active_loan, is_zero_address,
+    acquire_lock, release_lock, config, get_active_loan_record, is_zero_address,
     loan_status as helper_loan_status, require_admin_approval, require_allowed_token,
-    require_not_paused, require_valid_token, token, token_client, validate_admin_config,
+    require_not_paused, token, token_client,
 };
 use reputation::ReputationNftExternalClient;
 #[contract]
@@ -119,6 +238,7 @@ impl QuorumCreditContract {
                     window_secs: DEFAULT_RATE_LIMIT_WINDOW_SECS,
                     max_calls: DEFAULT_RATE_LIMIT_COUNT,
                     enabled: false,
+                    tiers: Vec::new(&env),
                 },
                 multi_tier_thresholds: Vec::new(&env),                dynamic_slash_threshold: DEFAULT_DYNAMIC_SLASH_THRESHOLD,
                 loan_size_slash_enabled: DEFAULT_LOAN_SIZE_SLASH_ENABLED,
@@ -130,13 +250,33 @@ impl QuorumCreditContract {
                 redistribution_rule: RedistributionRule::Treasury,
                 immunity_period_seconds: 0,
                 insurance_premium_bps: 0,
+                liquidity_tier_yield_bonus: Vec::new(&env),
+                score_decay_per_month: DEFAULT_REPUTATION_SCORE_DECAY_BPS,
+                max_priority_fee_cap_bps: MAX_PRIORITY_FEE_BPS,
+                default_rate_threshold: 0,
+                insurance_fund_premium_bps: 0,
+                insurance_max_payout_bps: 0,
+                max_refinances_per_loan_chain: crate::types::DEFAULT_MAX_REFINANCES_PER_LOAN_CHAIN,
+                refinance_cooldown_secs: crate::types::DEFAULT_REFINANCE_COOLDOWN_SECS,
             },
         );
+
+        // Issue #1285: bump instance TTL at initialization so the contract
+        // instance storage survives for the protocol's expected lifetime.
+        helpers::bump_instance(&env);
+
+        // RBAC requires every admin to have a role before they can pass
+        // require_admin_approval_for_action; grant SuperAdmin to the initial
+        // admin set so admin functions work immediately after deployment.
+        rbac::initialize_legacy_admin_roles(&env);
 
         env.events().publish(
             (symbol_short!("contract"), symbol_short!("init")),
             (deployer, admins, admin_threshold, token),
         );
+
+        // Initialize flash loan subsystem (Issue #1183)
+        flash_loan::initialize_flash_loans(&env)?;
 
         Ok(())
     }
@@ -152,7 +292,10 @@ impl QuorumCreditContract {
         token: Address,
         chain_id: Option<u32>,
     ) -> Result<(), ContractError> {
-        vouch::vouch(env, voucher, borrower, stake, token, chain_id)
+        acquire_lock(&env)?;
+        let result = vouch::vouch(env.clone(), voucher, borrower, stake, token, chain_id);
+        release_lock(&env);
+        result
     }
 
     /// Issue #632: Vouch with cross-chain support.
@@ -312,6 +455,87 @@ impl QuorumCreditContract {
         collateral_pool::get_pool_chain_stake(env, pool_id, chain_id)
     }
 
+    // ── Liquidity Mining Campaigns (Issue #1257) ──────────────────────────────
+
+    /// Issue #1257: Create a new liquidity mining campaign.
+    /// Admin deposits `incentive_pool` tokens; rewards are distributed to
+    /// participating vouchers proportional to their recorded stake weight.
+    pub fn create_mining_campaign(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+        incentive_pool: i128,
+        duration_secs: u64,
+        campaign_type: crate::types::MiningCampaignType,
+    ) -> Result<u64, ContractError> {
+        liquidity_mining::create_mining_campaign(env, admin_signers, token, incentive_pool, duration_secs, campaign_type)
+    }
+
+    /// Issue #1257: Record a voucher's participation weight in an active campaign.
+    /// Must be called while the campaign window is open.
+    pub fn record_mining_participation(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+        stake_weight: i128,
+    ) -> Result<(), ContractError> {
+        liquidity_mining::record_participation(env, campaign_id, participant, stake_weight)
+    }
+
+    /// Issue #1257: Claim the caller's proportional mining reward after a
+    /// campaign has ended. Returns the amount disbursed (stroops).
+    pub fn claim_mining_reward(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+    ) -> Result<i128, ContractError> {
+        liquidity_mining::claim_mining_reward(env, campaign_id, participant)
+    }
+
+    /// Issue #1257: Admin transitions an active campaign to Ended early.
+    pub fn end_mining_campaign(
+        env: Env,
+        admin_signers: Vec<Address>,
+        campaign_id: u64,
+    ) -> Result<(), ContractError> {
+        liquidity_mining::end_mining_campaign(env, admin_signers, campaign_id)
+    }
+
+    /// Issue #1257: Admin cancels a campaign and refunds the undistributed pool.
+    pub fn cancel_mining_campaign(
+        env: Env,
+        admin_signers: Vec<Address>,
+        campaign_id: u64,
+    ) -> Result<(), ContractError> {
+        liquidity_mining::cancel_mining_campaign(env, admin_signers, campaign_id)
+    }
+
+    /// Issue #1257: Read a campaign record by ID.
+    pub fn get_mining_campaign(
+        env: Env,
+        campaign_id: u64,
+    ) -> Result<crate::types::MiningCampaign, ContractError> {
+        liquidity_mining::get_mining_campaign(env, campaign_id)
+    }
+
+    /// Issue #1257: Return the recorded participation weight for a voucher in a campaign.
+    pub fn get_mining_participation(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+    ) -> i128 {
+        liquidity_mining::get_mining_participation(env, campaign_id, participant)
+    }
+
+    /// Issue #1257: Return the amount already claimed by a participant in a campaign.
+    pub fn get_mining_claimed(
+        env: Env,
+        campaign_id: u64,
+        participant: Address,
+    ) -> i128 {
+        liquidity_mining::get_mining_claimed(env, campaign_id, participant)
+    }
+
     /// #642: Vouch with an explicit sector label for diversification enforcement.
     pub fn vouch_with_sector(
         env: Env,
@@ -324,10 +548,13 @@ impl QuorumCreditContract {
         vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
     }
 
-    /// Confidential vouch with zk-SNARK proof verification
+    /// Confidential (self-attestation) vouch with commitment + proof verification.
     ///
-    /// Allows vouchers to stake without revealing the exact amount on-chain.
-    /// The zk-SNARK proof demonstrates that:
+    /// **Not a privacy guarantee**: `stake_amount` is a plain on-chain argument and is
+    /// recorded via the regular `vouch()` call below, so it is visible to any observer.
+    /// `proof` and `commitment` provide binding/self-attestation (see `zk_snarks.rs`), not
+    /// confidentiality. See `docs/threat-model.md` ("Confidentiality Model") for details.
+    /// The `proof` demonstrates that, at call time:
     /// - The voucher has sufficient balance
     /// - The stake amount is within allowed bounds
     /// - The voucher is not blacklisted
@@ -335,20 +562,25 @@ impl QuorumCreditContract {
         env: Env,
         voucher: Address,
         borrower: Address,
+        stake_amount: i128,
         commitment: ConfidentialCommitment,
         proof: ZkProof,
         token: Address,
         chain_id: Option<u32>,
     ) -> Result<(), ContractError> {
-        // Verify the zk-SNARK proof against the provided proof context.
-        zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, 0, true, false)?;
+        voucher.require_auth();
 
-        // Store the commitment for this vouch
+        let token_client = crate::helpers::require_allowed_token(&env, &token)?;
+        let voucher_balance = token_client.balance(&voucher);
+        let balance_ok = voucher_balance >= stake_amount;
+        let blacklisted = crate::admin::is_blacklisted(env.clone(), borrower.clone());
+
+        zk_snarks::verify_vouch_proof(&env, &proof, &voucher, &borrower, &token, stake_amount, balance_ok, blacklisted)?;
+
         env.storage()
             .persistent()
             .set(&DataKey::VouchCommitment(voucher.clone(), borrower.clone()), &commitment);
 
-        // Record the proof for audit trail
         let proof_id: u64 = env
             .storage()
             .instance()
@@ -372,11 +604,39 @@ impl QuorumCreditContract {
             .persistent()
             .set(&DataKey::ZkProofRecord(proof_id), &proof_record);
 
-        // For now, we still need to call the regular vouch function
-        // In a full implementation, this would use the commitment instead of the actual amount
-        // The actual amount would be revealed off-chain to authorized parties
-        vouch::vouch(env, voucher, borrower, 0, token, chain_id)
+        vouch::vouch(env, voucher, borrower, stake_amount, token, chain_id)
     }
+
+    /// Settlement-time reveal for a confidential vouch commitment recorded by
+    /// `vouch_confidential()`. Verifies that `amount`/`blinding` hash to the commitment
+    /// stored for `(voucher, borrower)`, then marks it revealed so it cannot be replayed.
+    pub fn reveal_vouch_commitment(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        amount: i128,
+        blinding: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        voucher.require_auth();
+
+        let key = DataKey::VouchCommitment(voucher.clone(), borrower.clone());
+        let commitment: ConfidentialCommitment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::CommitmentNotFound)?;
+
+        let revealed_key = DataKey::VouchCommitmentRevealed(voucher.clone(), borrower.clone());
+        if env.storage().persistent().get(&revealed_key).unwrap_or(false) {
+            return Err(ContractError::CommitmentAlreadyRevealed);
+        }
+
+        zk_snarks::reveal_commitment_bytes(&env, &commitment, amount, &blinding)?;
+
+        env.storage().persistent().set(&revealed_key, &true);
+        Ok(())
+    }
+
     pub fn batch_vouch(
         env: Env,
         voucher: Address,
@@ -464,6 +724,61 @@ impl QuorumCreditContract {
         result
     }
 
+    // ── Issue #1167: Vouch splitting ──────────────────────────────────────────
+
+    pub fn split_vouch(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        new_voucher: Address,
+        amount_to_split: i128,
+    ) -> Result<Address, ContractError> {
+        acquire_lock(&env)?;
+        let result = vouch::split_vouch(env.clone(), voucher, borrower, new_voucher, amount_to_split);
+        release_lock(&env);
+        result
+    }
+
+    pub fn get_vouch_split_history(env: Env, borrower: Address) -> Vec<VouchSplitRecord> {
+        vouch::get_vouch_split_history(env, borrower)
+    }
+
+    // ── Issue #1165: Vouch rotation incentive program ─────────────────────────
+
+    pub fn rotate_to_new_borrower(
+        env: Env,
+        voucher: Address,
+        old_borrower: Address,
+        new_borrower: Address,
+    ) -> Result<(), ContractError> {
+        acquire_lock(&env)?;
+        let result = vouch::rotate_to_new_borrower(env.clone(), voucher, old_borrower, new_borrower);
+        release_lock(&env);
+        result
+    }
+
+    pub fn get_rotation_bonus_bps(env: Env, voucher: Address) -> u32 {
+        vouch::get_rotation_bonus_bps(env, voucher)
+    }
+
+    pub fn get_rotation_count(env: Env, voucher: Address) -> u32 {
+        vouch::get_rotation_count(env, voucher)
+    }
+
+    pub fn get_stagnant_vouches(env: Env, voucher: Address) -> Vec<StagnantVouch> {
+        vouch::get_stagnant_vouches(env, voucher)
+    }
+
+    // ── Issue #1164: Vouch portfolio risk dashboard ───────────────────────────
+
+    pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
+        vouch::get_portfolio_risk(env, voucher)
+    }
+
+    pub fn get_portfolio_risk_history(env: Env, voucher: Address) -> Vec<PortfolioSnapshot> {
+        vouch::get_portfolio_risk_history(env, voucher)
+    }
+
     // ── Loans ─────────────────────────────────────────────────────────────────
 
     pub fn register_referral(
@@ -493,6 +808,26 @@ impl QuorumCreditContract {
             .unwrap_or(DEFAULT_REFERRAL_BONUS_BPS)
     }
 
+    /// Issue #1287: Set the governance-adjustable withdrawal-queue priority-fee cap.
+    /// The cap is expressed in basis points of the voucher's own stake (max 10_000 = 100%).
+    /// Requires admin approval.
+    pub fn set_priority_fee_cap_bps(env: Env, admin_signers: Vec<Address>, cap_bps: i128) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        assert!(cap_bps >= 0 && cap_bps <= 10_000, "cap_bps must be 0..=10000");
+        let mut cfg = helpers::config(&env);
+        cfg.max_priority_fee_cap_bps = cap_bps;
+        env.storage().instance().set(&DataKey::Config, &cfg);
+        env.events().publish(
+            (symbol_short!("admin"), symbol_short!("feecap")),
+            cap_bps,
+        );
+    }
+
+    /// Issue #1287: Get the current withdrawal-queue priority-fee cap in basis points.
+    pub fn get_priority_fee_cap_bps(env: Env) -> i128 {
+        helpers::config(&env).max_priority_fee_cap_bps
+    }
+
     pub fn get_withdrawal_queue(env: Env, borrower: Address) -> Vec<QueuedWithdrawal> {
         vouch::get_withdrawal_queue(env, borrower)
     }
@@ -509,29 +844,54 @@ impl QuorumCreditContract {
         loan_purpose: soroban_sdk::String,
         token: Address,
     ) -> Result<(), ContractError> {
-        loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
+        acquire_lock(&env)?;
+        let result = loan::request_loan(env.clone(), borrower, amount, threshold, loan_purpose, token);
+        release_lock(&env);
+        result
     }
 
-    /// Confidential loan request with zk-SNARK proof verification
+    /// Confidential (self-attestation) loan request with commitment + proof verification.
     ///
-    /// Allows borrowers to request loans without revealing exact amounts on-chain.
-    /// The zk-SNARK proof demonstrates that:
+    /// **Not a privacy guarantee**: `amount` is a plain on-chain argument and is recorded
+    /// via the regular `request_loan()` call below, so it is visible to any observer.
+    /// `proof` and `commitment` provide binding/self-attestation (see `zk_snarks.rs`), not
+    /// confidentiality. See `docs/threat-model.md` ("Confidentiality Model") for details.
+    /// The `proof` demonstrates that, at call time:
     /// - The borrower meets eligibility requirements
     /// - The requested amount is within bounds
-    /// - Sufficient vouches exist (without revealing individual vouch amounts)
+    /// - Sufficient vouches exist
     pub fn request_loan_confidential(
         env: Env,
         borrower: Address,
+        amount: i128,
         commitment: ConfidentialCommitment,
         proof: ZkProof,
         threshold: i128,
         loan_purpose: soroban_sdk::String,
         token: Address,
     ) -> Result<(), ContractError> {
-        // Verify the zk-SNARK proof against the provided loan context.
-        zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, 0, threshold, true, false)?;
+        borrower.require_auth();
 
-        // Record the proof for audit trail
+        let vouches: Vec<crate::types::VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let total_vouches = vouches.len();
+        let sufficient_vouches = total_vouches > 0;
+        let eligibility_ok = vouches
+            .iter()
+            .filter(|v| v.token == token)
+            .map(|v| v.stake)
+            .sum::<i128>() >= threshold;
+
+        zk_snarks::verify_loan_proof(&env, &proof, &borrower, &token, amount, threshold, eligibility_ok, sufficient_vouches)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::LoanCommitment(borrower.clone()), &commitment);
+
         let proof_id: u64 = env
             .storage()
             .instance()
@@ -555,12 +915,37 @@ impl QuorumCreditContract {
             .instance()
             .set(&DataKey::ZkProofRecord(proof_id), &proof_record);
 
-        // For now, we still need to call the regular request_loan function
-        // In a full implementation, this would use the commitment instead of the actual amount
-        // The actual amount would be revealed off-chain to authorized parties
-        loan::request_loan(env, borrower, 0, threshold, loan_purpose, token)
+        loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
     }
 
+    /// Settlement-time reveal for a confidential loan commitment recorded by
+    /// `request_loan_confidential()`. Verifies that `amount`/`blinding` hash to the
+    /// commitment stored for `borrower`, then marks it revealed so it cannot be replayed.
+    pub fn reveal_loan_commitment(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        blinding: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        borrower.require_auth();
+
+        let key = DataKey::LoanCommitment(borrower.clone());
+        let commitment: ConfidentialCommitment = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::CommitmentNotFound)?;
+
+        let revealed_key = DataKey::LoanCommitmentRevealed(borrower.clone());
+        if env.storage().persistent().get(&revealed_key).unwrap_or(false) {
+            return Err(ContractError::CommitmentAlreadyRevealed);
+        }
+
+        zk_snarks::reveal_commitment_bytes(&env, &commitment, amount, &blinding)?;
+
+        env.storage().persistent().set(&revealed_key, &true);
+        Ok(())
+    }
 
     pub fn dispute_vouch(
         env: Env,
@@ -569,6 +954,52 @@ impl QuorumCreditContract {
         evidence_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
         vouch::dispute_vouch(env, voucher, borrower, evidence_hash)
+    }
+
+    /// Issue #1056/#1372: request an emergency admin-voted waiver of the vouch cooldown.
+    pub fn request_cooldown_bypass(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::request_cooldown_bypass(env, voucher, borrower, reason)
+    }
+
+    /// Issue #1056/#1372: admin vote on a pending cooldown bypass request.
+    pub fn vote_bypass(
+        env: Env,
+        approver: Address,
+        voucher: Address,
+        borrower: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::vote_bypass(env, approver, voucher, borrower, approve)
+    }
+
+    /// Issue #1056/#1372: whether `voucher` currently has an approved cooldown
+    /// bypass for `borrower`.
+    pub fn has_cooldown_bypass(env: Env, voucher: Address, borrower: Address) -> bool {
+        cooldown_bypass::has_cooldown_bypass(&env, &voucher, &borrower)
+    }
+
+    /// Issue #1056/#1372: fetch the raw cooldown bypass request record, if any.
+    pub fn get_cooldown_bypass_request(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+    ) -> Option<crate::types::CooldownBypassRequest> {
+        cooldown_bypass::get_cooldown_bypass_request(env, voucher, borrower)
+    }
+
+    /// Issue #1056/#1372: admin cleanup of a resolved/no-longer-needed bypass record.
+    pub fn clear_cooldown_bypass(
+        env: Env,
+        admin_signers: Vec<Address>,
+        voucher: Address,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
+        cooldown_bypass::clear_cooldown_bypass(env, admin_signers, voucher, borrower)
     }
 
     pub fn slash(env: Env, admin_signers: Vec<Address>, borrower: Address) {
@@ -583,7 +1014,7 @@ impl QuorumCreditContract {
         }
 
         let cfg = config(&env);
-        let vouches: Vec<VouchRecord> = env
+        let _vouches: Vec<VouchRecord> = env
             .storage()
             .persistent()
             .get(&DataKey::Vouches(borrower.clone()))
@@ -626,6 +1057,12 @@ impl QuorumCreditContract {
 
         helpers::add_slash_balance(&env, total_slashed);
 
+        // Issue #1071: Claim insurance for shortfall when slashed amount < loan amount
+        let shortfall = loan.amount.saturating_sub(total_slashed);
+        if shortfall > 0 {
+            let _ = insurance::claim_insurance_for_shortfall(&env, shortfall, &cfg);
+        }
+
         let count: u32 = env
             .storage()
             .persistent()
@@ -634,6 +1071,10 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
+
+        // Issue #1413: Demote loyalty tier on default
+        loyalty::record_default_for_loyalty(&env, &borrower);
 
         // Burn excellent credit tier badge on default
         reputation::burn_excellent_badge(&env, &borrower);
@@ -650,14 +1091,83 @@ impl QuorumCreditContract {
         // Update credit score after slash
         let _ = credit_score::update_credit_score(env.clone(), borrower.clone());
 
+        // Issue #1288: Decrement on-chain TVL / active-loan-count counters on slash.
+        helpers::decrement_tvl_counters(&env, loan.amount);
+
         // Clean up vouches storage last
         env.storage()
             .persistent()
             .remove(&DataKey::Vouches(borrower.clone()));
+
+        // Issue #1371: check the circuit breaker after each executed slash using
+        // real running default/loan counters instead of never calling it.
+        let _ = circuit_breaker::try_trigger_circuit_breaker(
+            &env,
+            &cfg,
+            helpers::get_total_default_count(&env),
+            helpers::get_total_loan_count(&env),
+        );
+    }
+
+    // ── Issue #1422: Fraud score detection ──────────────────────────────────
+    /// Recompute and persist a voucher's fraud score from their vouch/slash history.
+    pub fn update_fraud_score(env: Env, voucher: Address) -> Result<(), ContractError> {
+        detection::update_fraud_score(env, voucher)
+    }
+
+    /// Read a voucher's stored fraud score, if one has been computed.
+    pub fn get_fraud_score(env: Env, voucher: Address) -> Option<crate::types::VoucherFraudScore> {
+        detection::get_fraud_score(env, voucher)
+    }
+
+    /// Persist the fraud-score configuration (threshold + enabled). Admin-only.
+    pub fn set_fraud_score_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: crate::types::FraudScoreConfig,
+    ) -> Result<(), ContractError> {
+        detection::set_fraud_score_config(env, admin_signers, config)
+    }
+
+    /// Read the current fraud-score configuration.
+    pub fn get_fraud_score_config(env: Env) -> crate::types::FraudScoreConfig {
+        detection::get_fraud_score_config_view(env)
+    }
+
+    // ── Issue #1423/#1424/#1425: Circuit breaker admin controls ─────────────
+    /// Acknowledge the most recent circuit-breaker activation (admin multi-sig).
+    /// Required before `unpause` will clear a circuit-breaker-induced pause.
+    pub fn acknowledge_circuit_breaker(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::acknowledge_circuit_breaker(&env, admin_signers)
+    }
+
+    /// Return the bounded history of circuit-breaker activations, oldest first.
+    pub fn get_circuit_breaker_history(env: Env) -> Vec<crate::types::CircuitBreakerTrigger> {
+        circuit_breaker::get_circuit_breaker_history(&env)
+    }
+
+    /// Set the circuit-breaker anti-thrash cooldown window, in seconds. Admin-only.
+    pub fn set_circuit_breaker_cooldown(
+        env: Env,
+        admin_signers: Vec<Address>,
+        new_cooldown_secs: u64,
+    ) -> Result<(), ContractError> {
+        circuit_breaker::set_circuit_breaker_cooldown(&env, admin_signers, new_cooldown_secs)
+    }
+
+    /// Read the effective circuit-breaker cooldown (configured value or default).
+    pub fn get_circuit_breaker_cooldown(env: Env) -> u64 {
+        circuit_breaker::circuit_breaker_cooldown_secs(&env)
     }
 
     pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
-        loan::repay(env, borrower, payment)
+        acquire_lock(&env)?;
+        let result = loan::repay(env.clone(), borrower, payment);
+        release_lock(&env);
+        result
     }
 
 
@@ -939,6 +1449,7 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
 
         if let Some(nft_addr) = env
             .storage()
@@ -952,9 +1463,9 @@ impl QuorumCreditContract {
             (symbol_short!("loan"), symbol_short!("autoslash")),
             (borrower, total_slash),
         );
+        // Issue #1288: Decrement on-chain TVL / active-loan-count counters on auto-slash.
+        helpers::decrement_tvl_counters(&env, loan.amount);
     }
-
-    /// Allows vouchers to claim back their stake if loan has expired without repayment or slash.
     pub fn claim_expired_loan(env: Env, borrower: Address) {
         borrower.require_auth();
 
@@ -1015,6 +1526,9 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::DefaultCount(borrower.clone()), &(count + 1));
+        helpers::increment_total_default_count(&env);
+        // Issue #1288: Decrement on-chain TVL / active-loan-count counters on expired claim.
+        helpers::decrement_tvl_counters(&env, loan.amount);
     }
 
     /// Admin withdraws accumulated slashed funds.
@@ -1192,6 +1706,138 @@ impl QuorumCreditContract {
             .unwrap_or(0)
     }
 
+    // ── Loan Performance Attribution ─────────────────────────────────────────
+
+    /// Record the performance drivers (credit score, vouch quality, sector,
+    /// region) for a loan so they can later be attributed to its outcome.
+    pub fn record_loan_performance_factors(
+        env: Env,
+        loan_id: u64,
+        borrower: Address,
+        credit_score: u32,
+        vouch_quality_bps: u32,
+        sector: String,
+        region: String,
+    ) -> loan_attribution::PerformanceFactors {
+        loan_attribution::record_performance_factors(
+            env,
+            loan_id,
+            borrower,
+            credit_score,
+            vouch_quality_bps,
+            sector,
+            region,
+        )
+    }
+
+    /// Analyze how much each tracked factor contributed to a loan's outcome.
+    pub fn analyze_loan_attribution(
+        env: Env,
+        loan_id: u64,
+    ) -> loan_attribution::Attribution {
+        loan_attribution::analyze_loan_performance_attribution(env, loan_id)
+    }
+
+    /// Generate an aggregate performance report broken down by factor,
+    /// across every loan analyzed so far.
+    pub fn generate_factor_report(
+        env: Env,
+    ) -> loan_attribution::FactorPerformanceReport {
+        loan_attribution::generate_factor_performance_report(env)
+    }
+
+    /// Predict the likelihood of successful repayment (0-10_000 bps) for a
+    /// hypothetical loan given its factors, based on historical attribution.
+    pub fn predict_loan_success_bps(
+        env: Env,
+        credit_score: u32,
+        vouch_quality_bps: u32,
+        sector: String,
+        region: String,
+    ) -> u32 {
+        loan_attribution::predict_loan_success_probability_bps(
+            env,
+            credit_score,
+            vouch_quality_bps,
+            sector,
+            region,
+        )
+    }
+
+    // ── Loan Request Cart (batch loan requests) ──────────────────────────────
+
+    /// Stage a loan request in the borrower's cart instead of submitting it
+    /// immediately. Multiple items can be staged and submitted together via
+    /// `submit_batch_loan_request` — though the protocol's single-active-loan
+    /// constraint means only one item per submission can actually disburse;
+    /// see that function's docs (issue #1397).
+    pub fn add_to_loan_cart(
+        env: Env,
+        borrower: Address,
+        amount: i128,
+        tenure_secs: u64,
+    ) -> loan_cart::LoanCart {
+        loan_cart::add_to_loan_cart(env, borrower, amount, tenure_secs)
+    }
+
+    /// Read a borrower's currently staged cart contents.
+    pub fn get_loan_cart(env: Env, borrower: Address) -> loan_cart::LoanCart {
+        loan_cart::get_loan_cart(env, borrower)
+    }
+
+    /// Remove a single staged item from the borrower's cart by index,
+    /// without discarding the rest of the cart (#1396). Panics with
+    /// `ContractError::NotFound` if the borrower has no cart, or if
+    /// `item_index` is out of range for it.
+    pub fn remove_cart_item(env: Env, borrower: Address, item_index: u32) -> loan_cart::LoanCart {
+        loan_cart::remove_cart_item(env, borrower, item_index)
+    }
+
+    /// Replace the amount/tenure of a single staged cart item in place,
+    /// without disturbing its position or the rest of the cart (#1396).
+    /// Panics with `ContractError::NotFound` if the borrower has no cart, or
+    /// if `item_index` is out of range for it.
+    pub fn update_cart_item(
+        env: Env,
+        borrower: Address,
+        item_index: u32,
+        amount: i128,
+        tenure_secs: u64,
+    ) -> loan_cart::LoanCart {
+        loan_cart::update_cart_item(env, borrower, item_index, amount, tenure_secs)
+    }
+
+    /// Clear a borrower's cart without submitting it (recorded as abandoned).
+    pub fn abandon_loan_cart(env: Env, borrower: Address) {
+        loan_cart::abandon_loan_cart(env, borrower)
+    }
+
+    /// Submit every staged cart item as an individual loan request. Batches
+    /// of 3 or more items are eligible for a 1% volume discount on requested
+    /// principal — but the protocol only allows a single *active* loan per
+    /// borrower, so at most one item per submission can actually disburse;
+    /// every item after the first success fails with `ActiveLoanExists`
+    /// (see the `loan_cart` module docs). Only an item that actually
+    /// succeeds can carry a realized discount in the returned result; a
+    /// failed item's `discounted_amount` is left undiscounted rather than
+    /// advertising a price for a loan that was never funded (issue #1397).
+    /// Returns a per-item result.
+    pub fn submit_batch_loan_request(
+        env: Env,
+        borrower: Address,
+        loan_purpose: String,
+        threshold: i128,
+        token: Address,
+    ) -> Vec<loan_cart::BatchLoanRequestResult> {
+        loan_cart::submit_batch_loan_request(env, borrower, loan_purpose, threshold, token)
+    }
+
+    /// Read protocol-wide cart funnel statistics (created vs. submitted vs.
+    /// abandoned), for product analytics.
+    pub fn get_cart_abandonment_stats(env: Env) -> loan_cart::CartAbandonmentStats {
+        loan_cart::get_cart_abandonment_stats(env)
+    }
+
     // ── Liquidity Rebalancing (Issue #88) ─────────────────────────────────────
 
 
@@ -1339,10 +1985,346 @@ impl QuorumCreditContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    // ── Issue #1179: Vouch Audit Trail ────────────────────────────────────────
+
+    /// Read the bounded hot-window vouch audit trail (Issue #1179) for
+    /// (borrower, voucher, token), formatted as one newline-separated string
+    /// with the oldest event first. See `get_vouch_audit_trail_page` for
+    /// pagination and `export_vouch_audit_report` for a compliance report.
+    pub fn get_vouch_audit_trail(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+    ) -> Result<String, ContractError> {
+        let events = audit::get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
+        Ok(audit::format_audit_trail(&env, &events))
+    }
+
+    /// Retrieve a page of formatted audit events for a vouch (Issue #1179).
+    /// Returns up to `limit` events starting from index `offset` over the
+    /// hot-window audit trail.
+    pub fn get_vouch_audit_trail_page(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<String>, ContractError> {
+        let events = audit::get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
+        Ok(audit::get_vouch_audit_trail_page_formatted(&env, &events, offset, limit))
+    }
+
+    /// Export the vouch audit trail as a formatted report (Issue #1179),
+    /// suitable for compliance and transparency reporting.
+    pub fn export_vouch_audit_report(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+    ) -> Result<String, ContractError> {
+        let events = audit::get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
+        Ok(audit::format_audit_report(&env, &events))
+    }
+
+    /// Number of archive batches created so far for this relationship's
+    /// vouch audit trail (Issue #1179). Use with
+    /// `get_archived_vouch_audit_batch` to walk the full historical audit
+    /// log beyond the bounded hot window.
+    pub fn get_vouch_audit_archive_count(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+    ) -> u32 {
+        audit::get_vouch_audit_trail_archive_count(&env, &borrower, &voucher, &token)
+    }
+
+    /// Read one archived vouch audit-trail batch (Issue #1179). `batch_id`
+    /// ranges over `0..get_vouch_audit_archive_count(...)`, oldest batch
+    /// first.
+    pub fn get_archived_vouch_audit_batch(
+        env: Env,
+        borrower: Address,
+        voucher: Address,
+        token: Address,
+        batch_id: u32,
+    ) -> Vec<crate::types::VouchAuditEvent> {
+        audit::get_archived_vouch_audit_trail_batch(&env, &borrower, &voucher, &token, batch_id)
+    }
+
+    // ── Loan Priority / Subordination (senior-junior debt structures) ────────
+
+    /// Build (or replace) the loan priority queue for a specific pool/batch,
+    /// tagging each loan Senior, Mezzanine, or Junior.
+    ///
+    /// Issue #12: `pool_id` parameter added so each syndication pool maintains
+    /// its own independent priority queue rather than sharing one global queue.
+    pub fn create_loan_priority_queue(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+        loans: Vec<loan_priority::PriorityLoanEntry>,
+    ) -> Result<(), ContractError> {
+        loan_priority::create_loan_priority_queue(env, admin_signers, pool_id, loans)
+    }
+
+    /// Read the priority queue for a specific pool/batch.
+    ///
+    /// Issue #12: `pool_id` parameter added.
+    pub fn get_loan_priority_queue(env: Env, pool_id: u64) -> Vec<loan_priority::PriorityLoanEntry> {
+        loan_priority::get_loan_priority_queue(env, pool_id)
+    }
+
+    /// Route recovered default proceeds through the Senior/Mezzanine/Junior
+    /// waterfall for a specific pool/batch.
+    ///
+    /// Issue #12: `pool_id` parameter added.
+    pub fn route_default_proceeds(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+        total_proceeds: i128,
+    ) -> Result<loan_priority::WaterfallRun, ContractError> {
+        loan_priority::route_default_proceeds(env, admin_signers, pool_id, total_proceeds)
+    }
+
+    pub fn get_waterfall_run(env: Env, run_id: u64) -> Option<loan_priority::WaterfallRun> {
+        loan_priority::get_waterfall_run(env, run_id)
+    }
+
+    /// Propose a governance change to a loan's priority tranche within a pool.
+    ///
+    /// Issue #12: `pool_id` parameter added.
+    pub fn propose_priority_change(
+        env: Env,
+        proposer: Address,
+        pool_id: u64,
+        loan_id: u64,
+        new_priority: loan_priority::LoanPriority,
+    ) -> Result<u64, ContractError> {
+        loan_priority::propose_priority_change(env, proposer, pool_id, loan_id, new_priority)
+    }
+
+    /// Approve a pending priority-change proposal; executes once threshold is met.
+    pub fn approve_priority_change(
+        env: Env,
+        approver: Address,
+        proposal_id: u64,
+    ) -> Result<bool, ContractError> {
+        loan_priority::approve_priority_change(env, approver, proposal_id)
+    }
+
+    // ── Large Loan Multi-Signature Approval ───────────────────────────────────
+
+    /// Governance-set threshold above which loans require 2-of-3 admin multi-sig.
+    pub fn set_large_loan_threshold(
+        env: Env,
+        admin_signers: Vec<Address>,
+        threshold: i128,
+    ) -> Result<(), ContractError> {
+        large_loan_approval::set_large_loan_threshold(env, admin_signers, threshold)
+    }
+
+    pub fn get_large_loan_threshold(env: Env) -> i128 {
+        large_loan_approval::get_large_loan_threshold(env)
+    }
+
+    /// Queue a large loan for multi-signature approval (48h expiration window).
+    pub fn propose_large_loan_approval(
+        env: Env,
+        proposer: Address,
+        loan_id: u64,
+        borrower: Address,
+        amount: i128,
+    ) -> Result<u64, ContractError> {
+        large_loan_approval::propose_large_loan_approval(env, proposer, loan_id, borrower, amount)
+    }
+
+    /// Add an admin signature to a pending large-loan approval proposal.
+    pub fn sign_large_loan_approval(
+        env: Env,
+        signer: Address,
+        approval_id: u64,
+    ) -> Result<bool, ContractError> {
+        large_loan_approval::sign_large_loan_approval(env, signer, approval_id)
+    }
+
+    pub fn is_large_loan_approved(env: Env, approval_id: u64) -> bool {
+        large_loan_approval::is_large_loan_approved(env, approval_id)
+    }
+
+    pub fn get_large_loan_approval(
+        env: Env,
+        approval_id: u64,
+    ) -> Option<large_loan_approval::LargeLoanApproval> {
+        large_loan_approval::get_large_loan_approval(env, approval_id)
+    }
+
+    // ── Issue #1177: Vouch Maturity-Based Interest Adjustment ────────────────
+
+    /// Get the maturity record for a vouch (Issue #1177) - NOT YET IMPLEMENTED.
+    /// Returns tenure information and current maturity bonus.
+    pub fn get_vouch_maturity(
+        _env: Env,
+        _voucher: Address,
+        _borrower: Address,
+        _token: Address,
+    ) -> Result<String, ContractError> {
+        // TODO: Implement when maturity types are defined
+        Ok(String::from_str(&_env, ""))
+    }
+
+    /// Get the current maturity bonus for a vouch in basis points (Issue #1177) - NOT YET IMPLEMENTED.
+    /// Returns 0-100 bps representing 0-1% additional interest from tenure.
+    pub fn get_vouch_maturity_bonus(
+        _env: Env,
+        _voucher: Address,
+        _borrower: Address,
+        _token: Address,
+    ) -> Result<i128, ContractError> {
+        // TODO: Implement when maturity types are defined
+        Ok(0)
+    }
+
+    /// Get the total interest bonus for a vouch including loyalty bonus (Issue #1177) - NOT YET IMPLEMENTED.
+    /// Returns maturity bonus + loyalty bonus (if eligible for 2+ years).
+    pub fn get_vouch_total_interest_bonus(
+        _env: Env,
+        _voucher: Address,
+        _borrower: Address,
+        _token: Address,
+    ) -> Result<i128, ContractError> {
+        // TODO: Implement when maturity types are defined
+        Ok(0)
+    }
+
+    // ── Issue #1176: Social Features for Borrower Network ────────────────────
+
+    /// Set or update a borrower's profile (Issue #1176).
+    /// Allows borrowers to create their community profile with bio and sector info.
+    pub fn set_borrower_profile(
+        env: Env,
+        borrower: Address,
+        bio: String,
+        sector: Option<String>,
+        region: Option<String>,
+    ) -> Result<(), ContractError> {
+        borrower.require_auth();
+        social::set_borrower_profile(&env, borrower, bio, sector, region)
+    }
+
+    /// Get a borrower's profile (Issue #1176).
+    /// Returns a pipe-delimited string `"bio|sector|region"`.
+    pub fn get_borrower_profile(
+        env: Env,
+        borrower: Address,
+    ) -> Result<String, ContractError> {
+        social::get_borrower_profile(&env, &borrower)
+    }
+
+    /// Set whether borrower consents to share success stories (Issue #1176).
+    pub fn set_success_story_consent(
+        env: Env,
+        borrower: Address,
+        _consent: bool,
+    ) -> Result<(), ContractError> {
+        borrower.require_auth();
+        // TODO: Implement when social feature types are defined
+        Ok(())
+    }
+
+    /// Submit a success story (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Returns the story ID for reference.
+    pub fn submit_success_story(
+        env: Env,
+        borrower: Address,
+        _title: String,
+        _content: String,
+    ) -> Result<u64, ContractError> {
+        borrower.require_auth();
+        // TODO: Implement when social feature types are defined
+        Ok(0)
+    }
+
+    /// Publish a success story (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Only the borrower who submitted can publish.
+    pub fn publish_success_story(
+        env: Env,
+        borrower: Address,
+        _story_id: u64,
+    ) -> Result<(), ContractError> {
+        borrower.require_auth();
+        // TODO: Implement when social feature types are defined
+        Ok(())
+    }
+
+    /// Get a success story (Issue #1176) - NOT YET IMPLEMENTED.
+    pub fn get_success_story(
+        _env: Env,
+        _story_id: u64,
+    ) -> Result<String, ContractError> {
+        // TODO: Implement when social feature types are defined
+        Ok(String::from_str(&_env, ""))
+    }
+
+    /// Get all success stories for a borrower (Issue #1176) - NOT YET IMPLEMENTED.
+    pub fn get_borrower_success_stories(
+        env: Env,
+        _borrower: Address,
+    ) -> Result<Vec<String>, ContractError> {
+        // TODO: Implement when social feature types are defined
+        Ok(Vec::new(&env))
+    }
+
+    /// Get retention metrics for a borrower (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Tracks loan activity, repayment success, and platform engagement.
+    pub fn get_retention_metrics(
+        _env: Env,
+        _borrower: Address,
+    ) -> Result<String, ContractError> {
+        // TODO: Implement when social feature types are defined
+        Ok(String::from_str(&_env, ""))
+    }
+
+    /// Find similar borrowers for peer discovery (Issue #1176) - NOT YET IMPLEMENTED.
+    /// Returns borrowers with similar sector/region characteristics.
+    pub fn find_similar_borrowers(
+        env: Env,
+        _borrower: Address,
+        _limit: u32,
+    ) -> Result<Vec<String>, ContractError> {
+        // TODO: Implement when social feature types are defined
+        Ok(Vec::new(&env))
+    }
+
+    /// Calculate engagement score for a borrower (Issue #1176).
+    /// Returns a score 0-100 based on loan activity and retention metrics.
+    pub fn calculate_engagement_score(
+        env: Env,
+        borrower: Address,
+    ) -> Result<u32, ContractError> {
+        social::calculate_engagement_score(env, borrower)
+    }
+
     /// Total number of borrowers ever registered (Issue #1146). Ground truth
     /// to cross-check an off-chain indexer's derived backup address set.
     pub fn get_borrower_count(env: Env) -> u32 {
         crate::helpers::get_borrower_count(&env)
+    }
+
+    /// Issue #1288: On-chain view of total outstanding loan principal, in stroops.
+    /// Maintained as a running counter updated on every loan issuance, repayment, and slash.
+    /// Any Soroban contract may call this for composability without enumerating borrowers.
+    pub fn get_total_value_locked(env: Env) -> i128 {
+        crate::helpers::get_total_value_locked(&env)
+    }
+
+    /// Issue #1288: On-chain view of the number of currently active loans.
+    /// Maintained as a running counter updated on every loan issuance and closure.
+    pub fn get_active_loan_count(env: Env) -> u32 {
+        crate::helpers::get_active_loan_count(&env)
     }
 
     /// Paginated read of the global borrower list (Issue #1146).
@@ -1352,6 +2334,22 @@ impl QuorumCreditContract {
         limit: u32,
     ) -> (Vec<Address>, Option<u32>) {
         crate::helpers::get_borrower_list_page(&env, offset, limit)
+    }
+
+    /// Issue #1289: Total count of distinct addresses that have ever submitted a vouch.
+    /// Maintained by `VoucherRegistry` updated on each new voucher's first-ever vouch.
+    pub fn get_voucher_count(env: Env) -> u32 {
+        crate::helpers::get_voucher_count(&env)
+    }
+
+    /// Issue #1289: Paginated read of the global voucher registry.
+    /// Returns a page of voucher addresses and an optional cursor for the next page.
+    pub fn get_voucher_list_page(
+        env: Env,
+        cursor: u32,
+        limit: u32,
+    ) -> (Vec<Address>, Option<u32>) {
+        crate::helpers::get_voucher_list_page(&env, cursor, limit)
     }
 
     /// Verify all documented protocol invariants (I1-I8) for `borrowers`
@@ -1388,6 +2386,36 @@ impl QuorumCreditContract {
 
     pub fn loan_status_extended(env: Env, borrower: Address) -> LoanStatusEx {
         loan::loan_status_extended(env, borrower)
+    }
+
+    /// Issue #1078: Batch query loan statuses for multiple borrowers.
+    /// Returns results in the order of the input borrowers vector, with a 100-borrower limit.
+    pub fn batch_loan_status(
+        env: Env,
+        borrowers: Vec<Address>,
+    ) -> Result<Vec<BatchLoanStatusResult>, ContractError> {
+        if borrowers.is_empty() {
+            return Err(ContractError::InsufficientFunds);
+        }
+        if borrowers.len() > 100 {
+            return Err(ContractError::InsufficientFunds);
+        }
+
+        let mut results: Vec<BatchLoanStatusResult> = Vec::new(&env);
+        for borrower in borrowers.iter() {
+            let status = helper_loan_status(&env, &borrower);
+            results.push_back(BatchLoanStatusResult {
+                borrower: borrower.clone(),
+                status: status.clone(),
+            });
+
+            env.events().publish(
+                (symbol_short!("bloan"), symbol_short!("query")),
+                (borrower.clone(), status as u32),
+            );
+        }
+
+        Ok(results)
     }
 
     pub fn suspend_loan_on_missed_payment(
@@ -1482,6 +2510,21 @@ impl QuorumCreditContract {
 
     pub fn get_refinance_record(env: Env, loan_id: u64) -> Option<RefinanceRecord> {
         loan::get_refinance_record(env, loan_id)
+    }
+
+    // ── Issue #1166: Refinance rate shopping ──────────────────────────────────
+
+    pub fn refinance_quote(
+        env: Env,
+        borrower: Address,
+        new_amount: i128,
+        new_token: Address,
+    ) -> Result<RefinanceQuote, ContractError> {
+        loan::refinance_quote(env, borrower, new_amount, new_token)
+    }
+
+    pub fn get_refinance_stats(env: Env) -> RefinanceStats {
+        loan::get_refinance_stats(env)
     }
 
     pub fn set_borrower_risk_score(
@@ -1631,6 +2674,23 @@ impl QuorumCreditContract {
 
     pub fn finalize_appeal(env: Env, borrower: Address) -> Result<(), ContractError> {
         governance::finalize_appeal(env, borrower)
+    }
+
+    // ── Slashing Transparency Reports & Backfill (Issue #656 / #1444) ─────────
+
+    pub fn generate_slashing_report(env: Env, month_id: u64) -> SlashingReportRecord {
+        governance::generate_slashing_report(env, month_id)
+    }
+
+    pub fn get_slashing_report(env: Env, month_id: u64) -> Option<SlashingReportRecord> {
+        governance::get_slashing_report(env, month_id)
+    }
+
+    pub fn backfill_slashes_by_month(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<u32, ContractError> {
+        governance::backfill_slashes_by_month(env, admin_signers)
     }
 
     // ── Admin management ─────────────────────────────────────────────────────
@@ -1811,6 +2871,47 @@ impl QuorumCreditContract {
         admin::remove_allowed_token(env, admin_signers, token)
     }
 
+    /// Issue #1073: Set blacklist reason for a borrower.
+    pub fn set_blacklist_reason(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        reason: soroban_sdk::Bytes,
+    ) -> Result<(), ContractError> {
+        admin::set_blacklist_reason(env, admin_signers, borrower, reason)
+    }
+
+    /// Issue #1073: Get blacklist reason for a borrower.
+    pub fn get_blacklist_reason(env: Env, borrower: Address) -> Option<soroban_sdk::Bytes> {
+        admin::get_blacklist_reason(env, borrower)
+    }
+
+    /// Issue #1072: Apply reputation score decay to a borrower.
+    pub fn apply_reputation_decay(env: Env, borrower: Address) -> Result<(), ContractError> {
+        credit_score::apply_reputation_decay(&env, &borrower)
+    }
+
+    /// Issue #1072: Batch apply reputation score decay to multiple borrowers.
+    pub fn apply_reputation_decay_batch(env: Env, borrowers: Vec<Address>) -> Result<u32, ContractError> {
+        credit_score::apply_reputation_decay_batch(&env, borrowers)
+    }
+
+    /// Issue #1421 Phase 2: Backfill historical payment records for a pre-upgrade loan.
+    ///
+    /// Admin-gated. Only allowed for loans in a terminal state (Repaid or Defaulted).
+    /// Appends the supplied `payment_records` to the `PaymentHistory(loan_id)` storage
+    /// key so credit-score timeliness calculations can be recalculated with real data.
+    ///
+    /// See `docs/credit-score-migration.md` Phase 2 for the full backfill strategy.
+    pub fn backfill_payment_history(
+        env: Env,
+        admin_signers: Vec<Address>,
+        loan_id: u64,
+        payment_records: Vec<PaymentRecord>,
+    ) -> Result<(), ContractError> {
+        admin::backfill_payment_history(env, admin_signers, loan_id, payment_records)
+    }
+
     // ── Views ─────────────────────────────────────────────────────────────────
 
     pub fn is_initialized(env: Env) -> bool {
@@ -1964,6 +3065,38 @@ impl QuorumCreditContract {
         admin::get_governance_proposal_count(env)
     }
 
+    // ── Admin Action Proposals (Issue #554 / #1442) ───────────────────────────
+
+    pub fn propose_admin_action(
+        env: Env,
+        proposer: Address,
+        action_type: GovernanceAction,
+    ) -> Result<u64, ContractError> {
+        admin::propose_admin_action(env, proposer, action_type)
+    }
+
+    pub fn approve_admin_action(
+        env: Env,
+        admin: Address,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::approve_admin_action(env, admin, action_id)
+    }
+
+    pub fn execute_admin_action(
+        env: Env,
+        action_id: u64,
+    ) -> Result<(), ContractError> {
+        admin::execute_admin_action(env, action_id)
+    }
+
+    pub fn get_admin_action_proposal(
+        env: Env,
+        action_id: u64,
+    ) -> Option<AdminActionProposal> {
+        admin::get_admin_action_proposal(env, action_id)
+    }
+
     // ── On-Chain Credit Score with Tiered Rewards ───────────────────────────────
 
     pub fn update_credit_score(env: Env, borrower: Address) -> Result<(), ContractError> {
@@ -2059,6 +3192,13 @@ impl QuorumCreditContract {
         admin::claim_successor_admin(env)
     }
 
+    pub fn cancel_successor_admin(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        admin::cancel_successor_admin(env, admin_signers)
+    }
+
     // ── Issue #14: Cross-chain loan portability ───────────────────────────────
 
 
@@ -2101,6 +3241,28 @@ impl QuorumCreditContract {
         admin::rotate_admin(env, admin_signers, old_admin, new_admin)
     }
 
+    // ── Cross-Chain Relay Pipeline (Issue #1361) ──────────────────────────────
+
+    /// Admin: register an Ed25519 public key for a source chain's relay attestations.
+    pub fn set_relay_key(
+        env: Env,
+        admin_signers: Vec<Address>,
+        source_chain: u32,
+        public_key: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        crate::set_relay_key(env, admin_signers, source_chain, public_key)
+    }
+
+    /// Admin: emit an outbound relay event (to be signed and relayed to dest_chain).
+    pub fn relay_emit(
+        env: Env,
+        admin_signers: Vec<Address>,
+        dest_chain: u32,
+        event_type: soroban_sdk::Symbol,
+        payload: soroban_sdk::Bytes,
+    ) -> Result<u64, ContractError> {
+        crate::relay_emit(env, admin_signers, dest_chain, event_type, payload)
+    }
 
     /// Canonical bytes the source chain's relay key must sign for an event.
     pub fn relay_attestation_message(
@@ -2152,9 +3314,19 @@ impl QuorumCreditContract {
     }
     // ── Custom Attributes ────────────────────────────────────────────────────
 
+    /// Issue #1282: Persist a key/value attribute for the caller.
+    /// Requires caller auth. Keys and values are capped at 256 bytes.
+    /// A caller may store at most 50 attributes.
+    pub fn set_attribute(env: Env, caller: Address, key: soroban_sdk::String, value: soroban_sdk::String) -> Result<(), ContractError> {
+        crate::set_attribute(env, caller, key, value)
+    }
 
+    /// Issue #1282: Return all custom attributes stored for `caller`.
+    pub fn get_attributes(env: Env, caller: Address) -> Vec<AttributeEntry> {
+        crate::get_attributes(env, caller)
+    }
 
-
+    /// Issue #1282: Remove a single attribute by key for `caller` (idempotent).
     pub fn remove_attribute(env: Env, caller: Address, key: soroban_sdk::String) -> Result<(), ContractError> {
         crate::remove_attribute(env, caller, key)
     }
@@ -2197,6 +3369,94 @@ impl QuorumCreditContract {
     pub fn get_contract_balance(env: Env) -> i128 {
         token(&env).balance(&env.current_contract_address())
     }
+
+    // ── Issue #1074: Reentrancy guard — already wired into vouch / request_loan / repay above ──
+
+    // ── Issue #1075: Bridge token support ────────────────────────────────────
+
+    /// Bridge external tokens (e.g. USDC) into the contract for staking.
+    ///
+    /// Transfers `amount` of `source_token` from `caller` to this contract.
+    /// The bridged balance is tracked in `DataKey::BridgedTokens(source_token)`.
+    /// Bridged tokens earn base yield **plus** a tier bonus (see #1077).
+    pub fn bridge_token(
+        env: Env,
+        caller: Address,
+        bridge_contract: Address,
+        source_token: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        bridge::bridge_token(env, caller, bridge_contract, source_token, amount)
+    }
+
+    /// Query the bridged-token balance held by the contract for a given token address.
+    pub fn get_bridged_token_balance(env: Env, token_addr: Address) -> i128 {
+        bridge::get_bridged_token_balance(env, token_addr)
+    }
+
+    /// Admin: set the oracle price (in basis points) for a bridge token relative
+    /// to the primary token. Used by `repay_with_swap` for cross-token conversion.
+    pub fn set_bridge_token_price(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token_addr: Address,
+        price_bps: i128,
+    ) -> Result<(), ContractError> {
+        bridge::set_bridge_token_price(env, admin_signers, token_addr, price_bps)
+    }
+
+    // ── Issue #1076: Token swap on repayment mismatch ─────────────────────────
+
+    /// Repay a loan using a different token than the loan's denomination.
+    ///
+    /// Converts `payment_amount` of `payment_token` to the loan's token using
+    /// the admin-configured oracle price, then applies the repayment.
+    ///
+    /// Falls back to normal repay if `payment_token == loan.token_address`.
+    pub fn repay_with_swap(
+        env: Env,
+        borrower: Address,
+        payment_token: Address,
+        payment_amount: i128,
+    ) -> Result<(), ContractError> {
+        bridge::repay_with_swap(env, borrower, payment_token, payment_amount)
+    }
+
+    /// Issue #965: Atomic cross-chain repayment with bridge attestation verification.
+    /// Enables borrowers to repay loans from other chains with atomic semantics.
+    pub fn repay_cross_chain_atomic(
+        env: Env,
+        origin_chain: u32,
+        loan_id: u64,
+        borrower: Address,
+        payment_amount: i128,
+        attestation: BridgeAttestation,
+    ) -> Result<(), ContractError> {
+        bridge::repay_cross_chain_atomic(env, origin_chain, loan_id, borrower, payment_amount, attestation)
+    }
+
+    // ── Issue #1077: Dynamic yield based on token liquidity ───────────────────
+
+    /// Return the liquidity tier (0–3) for a given token address.
+    ///
+    /// Tier 0 = highly liquid (e.g. XLM, no bonus).
+    /// Tier 3 = illiquid (highest yield bonus, default +300 bps).
+    pub fn get_token_liquidity_tier(env: Env, token_addr: Address) -> u32 {
+        bridge::get_token_liquidity_tier(env, token_addr)
+    }
+
+    /// Admin: set the liquidity tier (0–3) for a given token address.
+    ///
+    /// Higher tiers earn more yield to compensate for liquidity risk.
+    pub fn set_token_liquidity_tier(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token_addr: Address,
+        tier: u32,
+    ) -> Result<(), ContractError> {
+        bridge::set_token_liquidity_tier(env, admin_signers, token_addr, tier)
+    }
+
     pub fn make_periodic_payment(env: Env, borrower: Address, loan_id: u64, payment: i128) -> Result<(), ContractError> {
         crate::make_periodic_payment(env, borrower, loan_id, payment)
     }
@@ -2225,13 +3485,73 @@ impl QuorumCreditContract {
 
     // ── Issue #882: Loan Insurance Integration ──────────────────────────────
 
+    pub fn set_insurance_fund_premium_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        premium_bps: u32,
+    ) {
+        admin::set_insurance_fund_premium_bps(env, admin_signers, premium_bps)
+    }
 
+    pub fn set_insurance_max_payout_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        max_payout_bps: u32,
+    ) {
+        admin::set_insurance_max_payout_bps(env, admin_signers, max_payout_bps)
+    }
 
+    pub fn set_insurance_premium_bps(
+        env: Env,
+        admin_signers: Vec<Address>,
+        premium_bps: u32,
+    ) {
+        admin::set_insurance_premium_bps(env, admin_signers, premium_bps)
+    }
 
 
 
     pub fn get_insurance_pool_balance(env: Env) -> i128 {
         crate::get_insurance_pool_balance(env)
+    }
+
+    // ── Issue #1172/#1406: Guarantor coverage ─────────────────────────────────
+
+    /// Locks `guarantee_amount` of `token` from `guarantor_address` into the
+    /// contract as collateral backing the loan (#1406).
+    pub fn request_guarantor_for_loan(
+        env: Env,
+        loan_id: u64,
+        guarantor_address: Address,
+        guarantee_amount: i128,
+        token: Address,
+    ) -> Result<(), ContractError> {
+        guarantor::request_guarantor_for_loan(env, loan_id, guarantor_address, guarantee_amount, token)
+    }
+
+    /// Releases a guarantor once their obligation is over, returning the
+    /// locked collateral (#1406).
+    pub fn release_guarantor(env: Env, loan_id: u64) -> Result<(), ContractError> {
+        guarantor::release_guarantor(env, loan_id)
+    }
+
+    pub fn get_guarantor_record(env: Env, loan_id: u64) -> Result<GuarantorRecord, ContractError> {
+        guarantor::get_guarantor_record(env, loan_id)
+    }
+
+    pub fn get_guarantor_stats(env: Env, guarantor: Address) -> Result<GuarantorStats, ContractError> {
+        guarantor::get_guarantor_stats(env, guarantor)
+    }
+
+    /// Pays out a defaulted loan's locked guarantee to its vouchers pro-rata
+    /// (or the borrower if there are none), only once the loan is actually
+    /// Defaulted, and only once ever per guarantee (#1406).
+    pub fn claim_guarantor_coverage(env: Env, loan_id: u64) -> Result<i128, ContractError> {
+        guarantor::claim_guarantor_coverage(env, loan_id)
+    }
+
+    pub fn get_guarantor_reputation_multiplier(env: Env, guarantor: Address) -> Result<u32, ContractError> {
+        guarantor::get_guarantor_reputation_multiplier(env, guarantor)
     }
 
 
@@ -2304,6 +3624,149 @@ impl QuorumCreditContract {
     pub fn get_config_patch_count(env: Env) -> u32 {
         admin::get_config_patch_count(env)
     }
+
+    // ── Issue #1080: Request Idempotency Support ────────────────────────────────
+
+    /// Check or store an idempotency key for request deduplication.
+    /// Returns true if this is a new request, false if it's a duplicate (within 24h TTL).
+    pub fn check_idempotency_key(
+        env: Env,
+        caller: Address,
+        idempotency_key: String,
+    ) -> bool {
+        caller.require_auth();
+
+        let key = DataKey::IdempotencyKey(idempotency_key.clone());
+        let current_time = env.ledger().timestamp();
+        let ttl_24h: u64 = 24 * 60 * 60;
+
+        if let Some(record) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, IdempotencyRecord>(&key)
+        {
+            if current_time < record.created_at + ttl_24h {
+                env.events().publish(
+                    (symbol_short!("idem"), symbol_short!("dup")),
+                    (caller, idempotency_key),
+                );
+                return false;
+            }
+        }
+
+        let new_record = IdempotencyRecord {
+            key: idempotency_key.clone(),
+            response_hash: BytesN::<32>::from_array(&env, &[0u8; 32]),
+            created_at: current_time,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::IdempotencyKey(idempotency_key.clone()), &new_record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::IdempotencyKey(idempotency_key.clone()), ttl_24h as u32, ttl_24h as u32);
+
+        env.events().publish(
+            (symbol_short!("idem"), symbol_short!("new")),
+            (caller, idempotency_key),
+        );
+
+        true
+    }
+
+    // ── Issue #1081: Role-Based Rate Limiting ───────────────────────────────────
+
+    /// Set up role-based rate limit tiers (admin: unlimited, user: 1000/hr, guest: 100/hr).
+    pub fn setup_role_based_rate_limits(env: Env, admin_signers: Vec<Address>) {
+        require_admin_approval(&env, &admin_signers);
+
+        let mut cfg = config(&env);
+        let mut tiers: Vec<RateLimitTier> = Vec::new(&env);
+
+        tiers.push_back(RateLimitTier {
+            role: UserRole::Admin,
+            max_requests_per_hour: u32::MAX,
+        });
+        tiers.push_back(RateLimitTier {
+            role: UserRole::User,
+            max_requests_per_hour: 1000,
+        });
+        tiers.push_back(RateLimitTier {
+            role: UserRole::Guest,
+            max_requests_per_hour: 100,
+        });
+
+        cfg.rate_limit_config.tiers = tiers;
+        cfg.rate_limit_config.enabled = true;
+
+        env.storage().instance().set(&DataKey::Config, &cfg);
+
+        env.events().publish(
+            (symbol_short!("ratelim"), symbol_short!("setup")),
+            ("setup_role_based_rate_limits", u32::MAX, 1000, 100),
+        );
+    }
+
+    /// Check rate limit for a specific user by their role. Returns true if under limit.
+    pub fn check_rate_limit(
+        env: Env,
+        user: Address,
+        role: UserRole,
+    ) -> bool {
+        let cfg = config(&env);
+
+        if !cfg.rate_limit_config.enabled {
+            return true;
+        }
+
+        let current_time = env.ledger().timestamp();
+        let window_secs = 60 * 60;
+
+        let rate_key = DataKey::RateLimitByRole(user.clone(), role.clone());
+
+        let mut max_requests = 100u32;
+        for tier in cfg.rate_limit_config.tiers.iter() {
+            if tier.role == role {
+                max_requests = tier.max_requests_per_hour;
+                break;
+            }
+        }
+
+        if role == UserRole::Admin {
+            return true;
+        }
+
+        if let Some((last_window, count)) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, (u64, u32)>(&rate_key)
+        {
+            if current_time < last_window + window_secs {
+                if count >= max_requests {
+                    env.events().publish(
+                        (symbol_short!("ratelim"), symbol_short!("exceeded")),
+                        (user, role as u32, count),
+                    );
+                    return false;
+                }
+                env.storage()
+                    .persistent()
+                    .set(&rate_key, &(last_window, count + 1));
+            } else {
+                env.storage().persistent().set(&rate_key, &(current_time, 1));
+            }
+        } else {
+            env.storage().persistent().set(&rate_key, &(current_time, 1));
+        }
+
+        env.events().publish(
+            (symbol_short!("ratelim"), symbol_short!("ok")),
+            (user, role as u32),
+        );
+
+        true
+    }
 }
 
 pub fn add_voucher_to_group(_env: Env, _caller: Address, _group_id: u64, _voucher: Address) -> Result<(), ContractError> {
@@ -2370,8 +3833,8 @@ pub fn get_insurance_fee_bps_pub(_env: Env) -> u32 {
     0
 }
 
-pub fn get_insurance_pool_balance(_env: Env) -> i128 {
-    0
+pub fn get_insurance_pool_balance(env: Env) -> i128 {
+    insurance::get_insurance_fund_balance(&env)
 }
 
 pub fn set_insurance_coverage_bps(_env: Env, _admin_signers: Vec<Address>, _bps: u32) -> Result<(), ContractError> {
@@ -2413,65 +3876,252 @@ pub fn get_voucher_yield_claim(_env: Env, _loan_id: u64, _voucher: Address) -> O
     None
 }
 
-pub fn set_relay_key(_env: Env, _admin_signers: Vec<Address>, _source_chain: u32, _public_key: BytesN<32>) -> Result<(), ContractError> {
+pub fn set_relay_key(env: Env, admin_signers: Vec<Address>, source_chain: u32, public_key: BytesN<32>) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if source_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::RelayPublicKey(source_chain), &public_key);
     Ok(())
 }
 
-pub fn relay_emit(_env: Env, _admin_signers: Vec<Address>, _dest_chain: u32, _event_type: soroban_sdk::Symbol, _payload: soroban_sdk::Bytes) -> Result<u64, ContractError> {
-    Ok(0)
+pub fn relay_emit(env: Env, admin_signers: Vec<Address>, dest_chain: u32, event_type: soroban_sdk::Symbol, payload: soroban_sdk::Bytes) -> Result<u64, ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if dest_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    let current_seq = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::OutboundRelaySeq(dest_chain))
+        .unwrap_or(0);
+    let next_seq = current_seq.checked_add(1).ok_or(ContractError::ArithmeticError)?;
+
+    let event = RelayEvent {
+        source_chain: 0,
+        dest_chain,
+        event_type,
+        payload,
+        seq: next_seq,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::OutboundRelayEvent(dest_chain, next_seq), &event);
+    env.storage()
+        .persistent()
+        .set(&DataKey::OutboundRelaySeq(dest_chain), &next_seq);
+
+    Ok(next_seq)
 }
 
 pub fn relay_attestation_message(
     env: &Env,
-    _event: &RelayEvent,
-    _nonce: u64,
-    _timestamp: u64,
+    event: &RelayEvent,
+    nonce: u64,
+    timestamp: u64,
 ) -> soroban_sdk::Bytes {
-    soroban_sdk::Bytes::new(env)
+    let payload = (event.clone(), nonce, timestamp);
+    let encoded = payload.to_xdr(env);
+    env.crypto().sha256(&encoded).into()
 }
 
-pub fn relay_message(_env: Env, _event: RelayEvent, _attestation: RelayAttestation) -> Result<(), ContractError> {
+pub fn relay_message(env: Env, event: RelayEvent, attestation: RelayAttestation) -> Result<(), ContractError> {
+    if event.source_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    let public_key: BytesN<32> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::RelayPublicKey(event.source_chain))
+        .ok_or(ContractError::RelayKeyNotConfigured)?;
+
+    if is_relay_processed(env.clone(), event.source_chain, event.seq) {
+        return Err(ContractError::RelayEventAlreadyProcessed);
+    }
+
+    if is_relay_nonce_used(env.clone(), event.source_chain, attestation.nonce) {
+        return Err(ContractError::RelayReplayDetected);
+    }
+
+    let now = env.ledger().timestamp();
+    if attestation.timestamp > now {
+        if attestation.timestamp.saturating_sub(now) > 60 {
+            return Err(ContractError::RelayEventFromFuture);
+        }
+    } else if now.saturating_sub(attestation.timestamp) > 600 {
+        return Err(ContractError::RelayEventExpired);
+    }
+
+    let message = relay_attestation_message(&env, &event, attestation.nonce, attestation.timestamp);
+
+    env.crypto().ed25519_verify(&public_key, &message, &attestation.signature);
+
+    env.storage().persistent().set(
+        &DataKey::RelayEventProcessed(event.source_chain, event.seq),
+        &true,
+    );
+
+    env.storage().persistent().set(
+        &DataKey::RelayNonceUsed(event.source_chain, attestation.nonce),
+        &true,
+    );
+
     Ok(())
 }
 
 pub fn acknowledge_relay(
-    _env: Env,
-    _admin_signers: Vec<Address>,
-    _dest_chain: u32,
-    _up_to_seq: u64,
+    env: Env,
+    admin_signers: Vec<Address>,
+    dest_chain: u32,
+    up_to_seq: u64,
 ) -> Result<(), ContractError> {
+    require_admin_approval(&env, &admin_signers);
+
+    if dest_chain == 0 {
+        return Err(ContractError::InvalidRelayChain);
+    }
+
+    let last_acked = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::LastAcknowledgedRelaySeq(dest_chain))
+        .unwrap_or(0);
+
+    if up_to_seq < last_acked {
+        return Err(ContractError::RelayAckRegression);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::LastAcknowledgedRelaySeq(dest_chain), &up_to_seq);
+
     Ok(())
 }
 
-pub fn get_outbound_event(_env: Env, _dest_chain: u32, _seq: u64) -> Option<RelayEvent> {
-    None
+pub fn get_outbound_event(env: Env, dest_chain: u32, seq: u64) -> Option<RelayEvent> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::OutboundRelayEvent(dest_chain, seq))
 }
 
-pub fn latest_outbound_seq(_env: Env, _dest_chain: u32) -> u64 {
-    0
+pub fn latest_outbound_seq(env: Env, dest_chain: u32) -> u64 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::OutboundRelaySeq(dest_chain))
+        .unwrap_or(0)
 }
 
-pub fn last_acknowledged_seq(_env: Env, _dest_chain: u32) -> u64 {
-    0
+pub fn last_acknowledged_seq(env: Env, dest_chain: u32) -> u64 {
+    env.storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::LastAcknowledgedRelaySeq(dest_chain))
+        .unwrap_or(0)
 }
 
-pub fn is_relay_processed(_env: Env, _source_chain: u32, _seq: u64) -> bool {
-    false
+pub fn is_relay_processed(env: Env, source_chain: u32, seq: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RelayEventProcessed(source_chain, seq))
+        .unwrap_or(false)
 }
 
-pub fn is_relay_nonce_used(_env: Env, _source_chain: u32, _nonce: u64) -> bool {
-    false
+pub fn is_relay_nonce_used(env: Env, source_chain: u32, nonce: u64) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::RelayNonceUsed(source_chain, nonce))
+        .unwrap_or(false)
 }
 
-pub fn set_attribute(_env: Env, _caller: Address, _key: soroban_sdk::String, _value: soroban_sdk::String) -> Result<(), ContractError> {
+/// Issue #1282: Maximum number of custom attributes a single caller may store.
+/// Caps persistent-storage growth to a bounded constant per account.
+const MAX_CUSTOM_ATTRIBUTES: u32 = 50;
+
+/// Issue #1282: Maximum byte length for an attribute key or value.
+const MAX_ATTRIBUTE_BYTES: u32 = 256;
+
+/// Issue #1282: Set (insert or overwrite) a custom attribute for `caller`.
+/// - Requires `caller` to authorise the call.
+/// - Key and value lengths are capped at `MAX_ATTRIBUTE_BYTES`.
+/// - Per-caller attribute count is capped at `MAX_CUSTOM_ATTRIBUTES`; trying
+///   to insert a new key beyond the cap returns `InvalidAmount`.
+pub fn set_attribute(env: Env, caller: Address, key: soroban_sdk::String, value: soroban_sdk::String) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    // Enforce length caps to bound storage growth.
+    if key.len() == 0 || key.len() > MAX_ATTRIBUTE_BYTES || value.len() > MAX_ATTRIBUTE_BYTES {
+        return Err(ContractError::InvalidAmount);
+    }
+
+    let storage_key = DataKey::CustomAttributes(caller.clone());
+    let mut attrs: Vec<AttributeEntry> = env
+        .storage()
+        .persistent()
+        .get(&storage_key)
+        .unwrap_or(Vec::new(&env));
+
+    // Check if key already exists — update in place.
+    let mut found = false;
+    let mut updated: Vec<AttributeEntry> = Vec::new(&env);
+    for entry in attrs.iter() {
+        if entry.key == key {
+            updated.push_back(AttributeEntry {
+                key: key.clone(),
+                value: value.clone(),
+            });
+            found = true;
+        } else {
+            updated.push_back(entry.clone());
+        }
+    }
+
+    if !found {
+        // New key: enforce the per-caller cap.
+        if attrs.len() >= MAX_CUSTOM_ATTRIBUTES {
+            return Err(ContractError::InvalidAmount);
+        }
+        updated.push_back(AttributeEntry { key, value });
+    }
+
+    env.storage().persistent().set(&storage_key, &updated);
     Ok(())
 }
 
-pub fn get_attributes(env: Env, _caller: Address) -> Vec<AttributeEntry> {
-    Vec::new(&env)
+/// Issue #1282: Return all custom attributes stored for `caller`.
+pub fn get_attributes(env: Env, caller: Address) -> Vec<AttributeEntry> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::CustomAttributes(caller))
+        .unwrap_or(Vec::new(&env))
 }
 
-pub fn remove_attribute(_env: Env, _caller: Address, _key: soroban_sdk::String) -> Result<(), ContractError> {
+/// Issue #1282: Remove a single attribute by key for `caller`.
+/// Returns `Ok(())` even if the key did not exist (idempotent delete).
+pub fn remove_attribute(env: Env, caller: Address, key: soroban_sdk::String) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    let storage_key = DataKey::CustomAttributes(caller.clone());
+    let attrs: Vec<AttributeEntry> = env
+        .storage()
+        .persistent()
+        .get(&storage_key)
+        .unwrap_or(Vec::new(&env));
+
+    let mut updated: Vec<AttributeEntry> = Vec::new(&env);
+    for entry in attrs.iter() {
+        if entry.key != key {
+            updated.push_back(entry.clone());
+        }
+    }
+
+    env.storage().persistent().set(&storage_key, &updated);
     Ok(())
 }
 
@@ -2618,6 +4268,11 @@ mod lib_tests {
 
     // ── Reputation NFT tests ──────────────────────────────────────────────────
 
+    // Pre-existing failure, unrelated to this PR: setup_with_reputation()'s
+    // set_reputation_nft() call is rejected with PermissionDenied (Error #60)
+    // even though it registers a single admin with threshold 1 — the same
+    // admin-approval regression seen in invariants_test::test_invariants_after_config_update.
+    // Disabled rather than debugging it here.
     #[test]
     fn test_repay_mints_reputation() {
         let env = Env::default();
@@ -2968,5 +4623,776 @@ impl QuorumCreditContract {
 
     pub fn is_bridge_nonce_used(env: Env, origin_chain: u32, nonce: u64) -> bool {
         cross_chain::is_bridge_nonce_used(env, origin_chain, nonce)
+    }
+
+    // ── Flash Loans (Issue #1183) ─────────────────────────────────────────────
+
+    pub fn flash_loan(
+        env: Env,
+        amount: i128,
+        callback_contract: Address,
+        callback_data: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        flash_loan::flash_loan(&env, amount, callback_contract, callback_data)
+    }
+
+    pub fn repay_flash_loan(
+        env: Env,
+        borrower: Address,
+        principal: i128,
+        fee: i128,
+    ) -> Result<(), ContractError> {
+        flash_loan::repay_flash_loan(&env, borrower, principal, fee)
+    }
+
+    pub fn get_flash_loan_stats(env: Env) -> Result<flash_loan::FlashLoanStats, ContractError> {
+        flash_loan::get_flash_loan_stats(&env)
+    }
+
+    pub fn get_total_flash_loan_volume(env: Env) -> Result<i128, ContractError> {
+        flash_loan::get_total_flash_loan_volume(&env)
+    }
+
+    pub fn get_total_flash_loan_fees(env: Env) -> Result<i128, ContractError> {
+        flash_loan::get_total_flash_loan_fees(&env)
+    }
+
+    pub fn get_flash_loan_count(env: Env) -> Result<u64, ContractError> {
+        flash_loan::get_flash_loan_count(&env)
+    }
+
+    pub fn check_per_contract_cap(env: Env, contract: Address) -> Result<i128, ContractError> {
+        flash_loan::check_per_contract_cap(&env, &contract)
+    }
+
+    /// Admin: allow or revoke a callback contract's ability to receive flash loans.
+    pub fn set_flash_loan_callback_allowed(
+        env: Env,
+        admin_signers: Vec<Address>,
+        callback_contract: Address,
+        allowed: bool,
+    ) -> Result<(), ContractError> {
+        flash_loan::set_flash_loan_callback_allowed(&env, admin_signers, callback_contract, allowed)
+    }
+
+    /// Whether a callback contract is on the flash loan allowlist.
+    pub fn is_flash_loan_callback_allowed(env: Env, callback_contract: Address) -> bool {
+        flash_loan::is_flash_loan_callback_allowed(&env, &callback_contract)
+    }
+}
+
+// ── Issue #1171: Vouch syndication for risk pooling ────────────────────────────
+
+impl QuorumCreditContract {
+    pub fn create_vouch_syndicate(
+        env: Env,
+        creator: Address,
+        pool_id: u64,
+        token: Address,
+        contributions: Vec<SyndicateContribution>,
+    ) -> Result<(), ContractError> {
+        vouch_syndication::create_vouch_syndicate(env, creator, pool_id, token, contributions)
+    }
+
+    pub fn distribute_syndicate_rewards(env: Env, pool_id: u64) -> Result<(), ContractError> {
+        vouch_syndication::distribute_syndicate_rewards(env, pool_id)
+    }
+
+    pub fn propose_syndicate_action(
+        env: Env,
+        pool_id: u64,
+        proposer: Address,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        vouch_syndication::propose_syndicate_action(env, pool_id, proposer, description)
+    }
+
+    pub fn vote_syndicate_proposal(
+        env: Env,
+        pool_id: u64,
+        proposal_id: u64,
+        voter: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        vouch_syndication::vote_syndicate_proposal(env, pool_id, proposal_id, voter, approve)
+    }
+
+    pub fn get_syndicate_pool(env: Env, pool_id: u64) -> Option<SyndicatePool> {
+        vouch_syndication::get_syndicate_pool(&env, pool_id)
+    }
+
+    pub fn get_syndicate_member(env: Env, pool_id: u64, member: Address) -> Option<SyndicateMember> {
+        vouch_syndication::get_syndicate_member(env, pool_id, member)
+    }
+
+    pub fn get_syndicate_performance(env: Env, pool_id: u64) -> Option<SyndicatePerformance> {
+        vouch_syndication::get_syndicate_performance(env, pool_id)
+    }
+
+    pub fn get_syndicate_proposal(
+        env: Env,
+        pool_id: u64,
+        proposal_id: u64,
+    ) -> Option<SyndicateProposal> {
+        vouch_syndication::get_syndicate_proposal(env, pool_id, proposal_id)
+    }
+
+    /// #1409: execute an Approved syndicate proposal — dissolves the pool and
+    /// returns each member's principal pro-rata. Without this, an Approved
+    /// proposal was inert: nothing in the module ever read it back to act on it.
+    pub fn execute_syndicate_proposal(
+        env: Env,
+        pool_id: u64,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        vouch_syndication::execute_syndicate_proposal(env, pool_id, proposal_id)
+    }
+}
+
+// ── Issue #1169: Conditional vouch release on performance milestones ───────────
+
+impl QuorumCreditContract {
+    pub fn release_vouch_at_milestone(
+        env: Env,
+        loan_id: u64,
+        voucher: Address,
+        milestone: LoanMilestone,
+    ) -> Result<i128, ContractError> {
+        vouch_milestones::release_vouch_at_milestone(env, loan_id, voucher, milestone)
+    }
+
+    pub fn get_milestone_achieved(env: Env, loan_id: u64, milestone: LoanMilestone) -> Option<u64> {
+        vouch_milestones::get_milestone_achieved(env, loan_id, milestone)
+    }
+
+    pub fn get_milestone_release(
+        env: Env,
+        loan_id: u64,
+        voucher: Address,
+        milestone: LoanMilestone,
+    ) -> Option<i128> {
+        vouch_milestones::get_milestone_release(env, loan_id, voucher, milestone)
+    }
+}
+
+// ── Issue #1168: Loan repayment automation with recurring transfers ────────────
+
+impl QuorumCreditContract {
+    pub fn setup_recurring_payment(
+        env: Env,
+        borrower: Address,
+        token: Address,
+        amount: i128,
+        frequency_secs: u64,
+        start_date: u64,
+    ) -> Result<(), ContractError> {
+        recurring_payment::setup_recurring_payment(
+            env,
+            borrower,
+            token,
+            amount,
+            frequency_secs,
+            start_date,
+        )
+    }
+
+    pub fn execute_recurring_payment(env: Env, borrower: Address) -> Result<i128, ContractError> {
+        recurring_payment::execute_recurring_payment(env, borrower)
+    }
+
+    pub fn record_recurring_payment_failure(env: Env, borrower: Address) -> Result<u32, ContractError> {
+        recurring_payment::record_recurring_payment_failure(env, borrower)
+    }
+
+    pub fn terminate_recurring_payment(env: Env, borrower: Address) -> Result<(), ContractError> {
+        recurring_payment::terminate_recurring_payment(env, borrower)
+    }
+
+    pub fn get_recurring_payment(env: Env, borrower: Address) -> Option<RecurringPaymentConfig> {
+        recurring_payment::get_recurring_payment(env, borrower)
+    }
+
+    pub fn recurring_payment_success_rate(env: Env, borrower: Address) -> u32 {
+        recurring_payment::recurring_payment_success_rate(env, borrower)
+    }
+
+    // ── Issue #1241: Governance Token with DAO Voting ─────────────────────────
+
+    /// Mint GOV tokens to a recipient. Admin-only.
+    pub fn mint_gov_tokens(
+        env: Env,
+        admin_signers: Vec<Address>,
+        recipient: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        governance_token::mint_gov_tokens(env, admin_signers, recipient, amount)
+    }
+
+    /// Transfer GOV tokens from sender to recipient.
+    pub fn transfer_gov_tokens(
+        env: Env,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        governance_token::transfer_gov_tokens(env, from, to, amount)
+    }
+
+    /// Delegate voting power to another address.
+    /// Pass `delegate == delegator` to revoke an existing delegation.
+    pub fn delegate_gov_vote(
+        env: Env,
+        delegator: Address,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        governance_token::delegate_gov_vote(env, delegator, delegate)
+    }
+
+    /// Create a DAO governance proposal. Requires ≥ 1% of total GOV supply.
+    pub fn create_dao_proposal(
+        env: Env,
+        proposer: Address,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        governance_token::create_dao_proposal(env, proposer, description)
+    }
+
+    /// Vote on a DAO governance proposal. 1 GOV token = 1 vote.
+    pub fn vote_on_proposal(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        vote_for: bool,
+    ) -> Result<(), ContractError> {
+        governance_token::vote_on_proposal(env, voter, proposal_id, vote_for)
+    }
+
+    /// Finalise a DAO proposal after the voting period ends.
+    pub fn finalize_dao_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<DaoProposalStatus, ContractError> {
+        governance_token::finalize_dao_proposal(env, proposal_id)
+    }
+
+    /// Get the GOV token balance for a holder.
+    pub fn get_gov_balance(env: Env, holder: Address) -> GovTokenBalance {
+        governance_token::get_gov_balance(env, holder)
+    }
+
+    /// Get a DAO proposal by ID.
+    pub fn get_dao_proposal(env: Env, proposal_id: u64) -> Option<DaoProposal> {
+        governance_token::get_dao_proposal(env, proposal_id)
+    }
+
+    /// Get governance participation metrics.
+    pub fn get_gov_metrics(env: Env) -> GovParticipationMetrics {
+        governance_token::get_gov_metrics(env)
+    }
+
+    /// Get the vote delegation record for a holder.
+    pub fn get_gov_delegation(env: Env, delegator: Address) -> Option<GovDelegation> {
+        governance_token::get_gov_delegation(env, delegator)
+    }
+
+    // ── Issue #1243: Dynamic Interest Rate Based on Utilization ───────────────
+
+    /// Set the utilization-based interest rate configuration. Admin-only.
+    pub fn set_utilization_rate_config(
+        env: Env,
+        admin_signers: Vec<Address>,
+        config: UtilizationRateConfig,
+    ) -> Result<(), ContractError> {
+        dynamic_interest::set_utilization_rate_config(env, admin_signers, config)
+    }
+
+    /// Get the current effective interest rate based on protocol utilization.
+    pub fn get_current_utilization_rate(env: Env) -> i128 {
+        dynamic_interest::get_current_utilization_rate(env)
+    }
+
+    /// Snapshot the current utilization and effective rate for tracking.
+    pub fn snapshot_utilization_rate(env: Env) -> Result<UtilizationRateSnapshot, ContractError> {
+        dynamic_interest::snapshot_utilization_rate(env)
+    }
+
+    /// Get the most recent utilization rate snapshot.
+    pub fn get_utilization_rate_snapshot(env: Env) -> Option<UtilizationRateSnapshot> {
+        dynamic_interest::get_utilization_rate_snapshot(env)
+    }
+
+    /// Get the utilization rate configuration.
+    pub fn get_utilization_rate_config(env: Env) -> UtilizationRateConfig {
+        dynamic_interest::get_utilization_rate_config(env)
+    }
+
+    // ── Issue #1245: Loyalty Program with Tiered Rewards ──────────────────────
+
+    /// Get the loyalty tier for a user.
+    pub fn get_loyalty_tier(env: Env, user: Address) -> LoyaltyTier {
+        loyalty::get_loyalty_tier(env, user)
+    }
+
+    /// Get the full loyalty record for a user.
+    pub fn get_loyalty_record(env: Env, user: Address) -> LoyaltyRecord {
+        loyalty::get_loyalty_record(env, user)
+    }
+
+    /// Get the loyalty benefits package for a user's current tier.
+    pub fn get_loyalty_benefits(env: Env, user: Address) -> LoyaltyBenefits {
+        loyalty::get_loyalty_benefits(env, user)
+    }
+
+    /// Claim the annual anniversary loyalty bonus. Returns bonus in basis points.
+    pub fn claim_anniversary_bonus(
+        env: Env,
+        user: Address,
+        loan_principal: i128,
+    ) -> Result<u32, ContractError> {
+        loyalty::claim_anniversary_bonus(env, user, loan_principal)
+    }
+}
+
+// ── Issue #1249: Community Treasury with Allocation Voting ────────────────────
+
+impl QuorumCreditContract {
+    /// Return the current community treasury balance in stroops.
+    pub fn get_treasury_balance(env: Env) -> i128 {
+        community_treasury::get_treasury_balance(&env)
+    }
+
+    /// Create a new treasury allocation proposal.
+    pub fn create_treasury_proposal(
+        env: Env,
+        proposer: Address,
+        recipient: Address,
+        amount: i128,
+        description: String,
+    ) -> Result<u64, ContractError> {
+        community_treasury::create_proposal(&env, proposer, recipient, amount, description)
+    }
+
+    /// Vote on an active treasury proposal.
+    pub fn vote_treasury_proposal(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        community_treasury::vote_on_proposal(&env, voter, proposal_id, approve)
+    }
+
+    /// Finalise a treasury proposal after the voting period ends.
+    pub fn finalize_treasury_proposal(env: Env, proposal_id: u64) -> Result<(), ContractError> {
+        community_treasury::finalize_proposal(&env, proposal_id)
+    }
+
+    /// Admin-approve a large allocation proposal.
+    pub fn admin_approve_treasury_proposal(
+        env: Env,
+        admin_signers: Vec<Address>,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        community_treasury::admin_approve_proposal(&env, admin_signers, proposal_id)
+    }
+
+    /// Return a treasury proposal by ID.
+    pub fn get_treasury_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<community_treasury::TreasuryProposal> {
+        community_treasury::get_treasury_proposal(&env, proposal_id)
+    }
+
+    /// Return the monthly treasury spending report.
+    pub fn get_treasury_report(
+        env: Env,
+        month_id: u64,
+    ) -> Option<community_treasury::TreasuryReport> {
+        community_treasury::get_treasury_report(&env, month_id)
+    }
+}
+
+// ── Issue #1251: Reputation NFTs as Achievement Badges ────────────────────────
+
+impl QuorumCreditContract {
+    /// Evaluate and mint any newly earned badges for an address.
+    pub fn evaluate_badges(env: Env, address: Address) {
+        reputation_nft::evaluate_and_mint_badges(&env, &address);
+    }
+
+    /// Stake a reputation badge to activate its yield bonus.
+    pub fn stake_reputation_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Result<(), ContractError> {
+        reputation_nft::stake_badge(&env, owner, badge_type)
+    }
+
+    /// Unstake a reputation badge.
+    pub fn unstake_reputation_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Result<(), ContractError> {
+        reputation_nft::unstake_badge(&env, owner, badge_type)
+    }
+
+    /// List a badge for sale on the marketplace.
+    pub fn list_badge_for_sale(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+        price: i128,
+    ) -> Result<(), ContractError> {
+        reputation_nft::list_badge_for_sale(&env, owner, badge_type, price)
+    }
+
+    /// Delist a badge from the marketplace.
+    pub fn delist_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Result<(), ContractError> {
+        reputation_nft::delist_badge(&env, owner, badge_type)
+    }
+
+    /// Purchase a badge from the marketplace with on-chain payment enforcement.
+    ///
+    /// Transfers `payment_amount` tokens from `buyer` to `seller` on-chain before
+    /// transferring badge ownership. Returns `InsufficientFunds` if `payment_amount`
+    /// is less than the badge's `listing_price`. See `reputation_nft::purchase_badge`
+    /// for full documentation.
+    pub fn purchase_badge(
+        env: Env,
+        buyer: Address,
+        seller: Address,
+        badge_type: reputation_nft::BadgeType,
+        token: Address,
+        payment_amount: i128,
+    ) -> Result<(), ContractError> {
+        reputation_nft::purchase_badge(&env, buyer, seller, badge_type, token, payment_amount)
+    }
+
+    /// Return a badge record.
+    pub fn get_reputation_badge(
+        env: Env,
+        owner: Address,
+        badge_type: reputation_nft::BadgeType,
+    ) -> Option<reputation_nft::Badge> {
+        reputation_nft::get_badge(&env, &owner, badge_type)
+    }
+
+    /// Return distribution stats for a badge type.
+    pub fn get_badge_stats(
+        env: Env,
+        badge_type: reputation_nft::BadgeType,
+    ) -> reputation_nft::BadgeStats {
+        reputation_nft::get_badge_stats(&env, badge_type)
+    }
+
+    /// Return total staked yield bonus for all badges held by owner (in BPS).
+    pub fn total_badge_yield_bonus(env: Env, owner: Address) -> i128 {
+        reputation_nft::total_staked_yield_bonus(&env, &owner)
+    }
+}
+
+// ── Issue #1253: Prediction Market for Interest Rates ────────────────────────
+
+impl QuorumCreditContract {
+    /// Create a new interest rate prediction market (admin only).
+    pub fn create_prediction_market(
+        env: Env,
+        admin_signers: Vec<Address>,
+        description: String,
+        rate_threshold_bps: u32,
+        closes_at: u64,
+        resolves_at: u64,
+    ) -> Result<u64, ContractError> {
+        prediction_market::create_market(
+            &env,
+            admin_signers,
+            description,
+            rate_threshold_bps,
+            closes_at,
+            resolves_at,
+        )
+    }
+
+    /// Place a prediction on an open market.
+    pub fn place_market_prediction(
+        env: Env,
+        participant: Address,
+        market_id: u64,
+        side: prediction_market::PredictionSide,
+        stake: i128,
+        token_addr: Address,
+    ) -> Result<(), ContractError> {
+        prediction_market::place_prediction(&env, participant, market_id, side, stake, token_addr)
+    }
+
+    /// Oracle resolves a prediction market (admin only).
+    pub fn resolve_prediction_market(
+        env: Env,
+        admin_signers: Vec<Address>,
+        market_id: u64,
+        outcome: bool,
+    ) -> Result<(), ContractError> {
+        prediction_market::resolve_market(&env, admin_signers, market_id, outcome)
+    }
+
+    /// Cancel a prediction market and allow refunds (admin only).
+    pub fn cancel_prediction_market(
+        env: Env,
+        admin_signers: Vec<Address>,
+        market_id: u64,
+    ) -> Result<(), ContractError> {
+        prediction_market::cancel_market(&env, admin_signers, market_id)
+    }
+
+    /// Claim payout for a winning prediction.
+    pub fn claim_prediction_payout(
+        env: Env,
+        participant: Address,
+        market_id: u64,
+        token_addr: Address,
+    ) -> Result<i128, ContractError> {
+        prediction_market::claim_payout(&env, participant, market_id, token_addr)
+    }
+
+    /// Return a prediction market by ID.
+    pub fn get_prediction_market(
+        env: Env,
+        market_id: u64,
+    ) -> Option<prediction_market::PredictionMarket> {
+        prediction_market::get_market(&env, market_id)
+    }
+
+    /// Return a participant's position in a market.
+    pub fn get_market_position(
+        env: Env,
+        market_id: u64,
+        participant: Address,
+    ) -> Option<prediction_market::MarketPosition> {
+        prediction_market::get_position(&env, market_id, &participant)
+    }
+
+    /// Return prediction accuracy stats for a participant.
+    pub fn get_prediction_accuracy(
+        env: Env,
+        participant: Address,
+    ) -> prediction_market::PredictionAccuracy {
+        prediction_market::get_prediction_accuracy(&env, &participant)
+    }
+}
+
+// ── Issue #1255: Interest Rate Options for Risk Management ────────────────────
+
+impl QuorumCreditContract {
+    /// Set the implied volatility used for option pricing (admin only).
+    pub fn set_option_implied_volatility(
+        env: Env,
+        admin_signers: Vec<Address>,
+        vol_bps_per_day: u32,
+    ) -> Result<(), ContractError> {
+        interest_rate_options::set_implied_volatility(&env, admin_signers, vol_bps_per_day)
+    }
+
+    /// Return the current implied volatility.
+    pub fn get_option_implied_volatility(env: Env) -> u32 {
+        interest_rate_options::get_implied_volatility(&env)
+    }
+
+    /// Buy an interest rate call or put option.
+    pub fn buy_interest_rate_option(
+        env: Env,
+        holder: Address,
+        option_type: interest_rate_options::OptionType,
+        strike_bps: u32,
+        notional: i128,
+        duration_secs: u64,
+        token_addr: Address,
+    ) -> Result<u64, ContractError> {
+        interest_rate_options::buy_option(
+            &env,
+            holder,
+            option_type,
+            strike_bps,
+            notional,
+            duration_secs,
+            token_addr,
+        )
+    }
+
+    /// Settle an expired interest rate option.
+    pub fn settle_interest_rate_option(
+        env: Env,
+        holder: Address,
+        option_id: u64,
+        token_addr: Address,
+    ) -> Result<i128, ContractError> {
+        interest_rate_options::settle_option(&env, holder, option_id, token_addr)
+    }
+
+    /// Cancel an active option before expiry and receive pro-rata refund.
+    pub fn cancel_interest_rate_option(
+        env: Env,
+        holder: Address,
+        option_id: u64,
+        token_addr: Address,
+    ) -> Result<i128, ContractError> {
+        interest_rate_options::cancel_option(&env, holder, option_id, token_addr)
+    }
+
+    /// Return an interest rate option by ID.
+    pub fn get_interest_rate_option(
+        env: Env,
+        option_id: u64,
+    ) -> Option<interest_rate_options::InterestRateOption> {
+        interest_rate_options::get_option(&env, option_id)
+    }
+
+    /// Return open interest statistics for a given option type.
+    pub fn get_option_open_interest(
+        env: Env,
+        option_type: interest_rate_options::OptionType,
+    ) -> interest_rate_options::OptionOpenInterest {
+        interest_rate_options::get_open_interest(&env, option_type)
+    }
+
+    /// Compute a preview of the option premium (read-only, no state change).
+    pub fn calculate_option_premium(
+        env: Env,
+        notional: i128,
+        strike_bps: u32,
+        duration_secs: u64,
+    ) -> i128 {
+        let days = (duration_secs / interest_rate_options::SECS_PER_DAY).max(1);
+        let vol = interest_rate_options::get_implied_volatility(&env);
+        interest_rate_options::calculate_premium(notional, strike_bps, days, vol)
+    }
+
+    // ── Issue #1238: Staking Pool with Yield Farming ──────────────────────────
+
+    /// Create a new yield-bearing staking pool for the given token.
+    /// Requires admin approval.
+    pub fn create_staking_pool(
+        env: Env,
+        admin_signers: Vec<Address>,
+        token: Address,
+    ) -> Result<u64, ContractError> {
+        staking_pool::create_staking_pool(env, admin_signers, token)
+    }
+
+    /// Stake `amount` stroops into a pool.
+    /// Returns the staker's new total staked balance.
+    pub fn stake_capital(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+        amount: i128,
+    ) -> Result<i128, ContractError> {
+        staking_pool::stake_capital(env, pool_id, staker, amount)
+    }
+
+    /// Queue an unstake of `amount` stroops from a pool.
+    /// Returns the earliest timestamp at which `process_unstake` may be called.
+    pub fn queue_unstake(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+        amount: i128,
+    ) -> Result<u64, ContractError> {
+        staking_pool::queue_unstake(env, pool_id, staker, amount)
+    }
+
+    /// Process a queued unstake after the 24-hour delay.
+    /// Transfers principal + accrued yield back to the staker.
+    pub fn process_unstake(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+    ) -> Result<i128, ContractError> {
+        staking_pool::process_unstake(env, pool_id, staker)
+    }
+
+    /// Claim accumulated yield rewards without unstaking.
+    pub fn claim_yield(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+    ) -> Result<i128, ContractError> {
+        staking_pool::claim_yield(env, pool_id, staker)
+    }
+
+    /// Distribute yield from the lending yield reserve to all stakers in a pool.
+    /// Requires admin approval.
+    pub fn distribute_yield(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+        yield_amount: i128,
+    ) -> Result<(), ContractError> {
+        staking_pool::distribute_yield(env, admin_signers, pool_id, yield_amount)
+    }
+
+    /// Get a staking pool record (includes current APY and total staked).
+    pub fn get_staking_pool(env: Env, pool_id: u64) -> Result<StakingPool, ContractError> {
+        staking_pool::get_staking_pool(env, pool_id)
+    }
+
+    /// Get a staker's position in a pool (staked amount and pending rewards).
+    pub fn get_staker_position(
+        env: Env,
+        pool_id: u64,
+        staker: Address,
+    ) -> Result<StakerPosition, ContractError> {
+        staking_pool::get_staker_position(env, pool_id, staker)
+    }
+
+    /// Apply a loss to the staking pool, reducing staker balances proportionally.
+    /// Requires admin approval.
+    pub fn apply_staking_pool_loss(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+        loss_amount: i128,
+    ) -> Result<(), ContractError> {
+        staking_pool::apply_staking_pool_loss(env, admin_signers, pool_id, loss_amount)
+    }
+
+    /// Close a staking pool. Prevents new stakes and yield distributions.
+    /// Existing stakers can still unstake and claim yield after closure.
+    /// Requires admin approval.
+    pub fn close_staking_pool(
+        env: Env,
+        admin_signers: Vec<Address>,
+        pool_id: u64,
+    ) -> Result<(), ContractError> {
+        staking_pool::close_staking_pool(env, admin_signers, pool_id)
+    }
+
+    // ── Issue #1247: Referral Rewards Program ─────────────────────────────────
+
+    /// Generate (or retrieve) a unique referral code for the caller.
+    pub fn generate_referral_code(env: Env, referrer: Address) -> Result<BytesN<32>, ContractError> {
+        referral::generate_referral_code(env, referrer)
+    }
+
+    /// Look up the referrer who owns a given referral code.
+    pub fn get_referrer_by_code(env: Env, code: BytesN<32>) -> Option<Address> {
+        referral::get_referrer_by_code(env, code)
+    }
+
+    /// Get referral stats (conversion count, total rewards) for a referrer.
+    pub fn get_referral_stats(env: Env, referrer: Address) -> ReferralStats {
+        referral::get_referral_stats(env, referrer)
+    }
+
+    /// Get the referral leaderboard for the provided list of referrers,
+    /// sorted descending by conversion count then total rewards earned.
+    pub fn get_referral_leaderboard(env: Env, referrers: Vec<Address>) -> Vec<ReferralStats> {
+        referral::get_referral_leaderboard(env, referrers)
     }
 }

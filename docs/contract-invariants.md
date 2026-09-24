@@ -105,6 +105,88 @@ The configured `yield_bps` must be in `[0, 10_000]` (0%–100%).
 
 ---
 
+## I9 — TotalActiveLoans Counter Matches Live Loan State (Issue #1288)
+
+The on-chain `TotalActiveLoans` counter must equal the number of borrowers for whom
+`DataKey::ActiveLoan` exists in persistent storage.
+
+```
+get_active_loan_count() == count(borrowers where ActiveLoan(borrower) exists)
+```
+
+**Maintained by:** `increment_tvl_counters` on `request_loan`; `decrement_tvl_counters`
+on `repay` (full), `slash`, `auto_slash`, and `claim_expired_loan`.
+
+**Violation trigger:** A code path that closes a loan without calling `decrement_tvl_counters`.
+
+---
+
+## I10 — TotalValueLocked Counter Matches Sum of Active Loan Amounts (Issue #1288)
+
+The on-chain `TotalValueLocked` counter must equal the sum of `loan.amount` across all
+currently active loans.
+
+```
+get_total_value_locked() == sum(loan.amount for all loans where loan.status == Active)
+```
+
+**Maintained by:** Same hooks as I9.
+
+**Violation trigger:** A loan amount change mid-life (refinance, etc.) that does not also
+update the TVL counter.
+
+---
+
+## I11 — Circuit Breaker Auto-Pauses on High Default Rate (Issue #1070 / #1371)
+
+If the protocol-wide default rate (`TotalDefaultCount / LoanCounter` in basis points) reaches
+`config.default_rate_threshold`, the contract must auto-pause (`get_paused() == true`) without
+any admin action, subject to a one-hour cooldown between triggers.
+
+```
+get_current_default_rate() >= config.default_rate_threshold  =>  get_paused() == true
+```
+
+**Maintained by:** `circuit_breaker::try_trigger_circuit_breaker`, called from `slash` after
+each executed slash with the live `TotalDefaultCount`/`LoanCounter` figures.
+
+**Violation trigger:** A slash path that updates `DefaultCount` without also calling
+`try_trigger_circuit_breaker`, or a default path that doesn't update `TotalDefaultCount`.
+
+---
+
+## I12 — Monthly Slash Index Consistency (Issue #1444)
+
+Every executed slash record with ID `slash_id` executed at timestamp `t` must be indexed in
+`DataKey::SlashesByMonth(t / MONTHLY_PERIOD_SECS)`.
+
+```
+forall slash_id in 1..=SlashRecordCounter:
+  record = SlashRecord(slash_id)
+  slash_id in SlashesByMonth(record.slash_timestamp / MONTHLY_PERIOD_SECS)
+```
+
+**Maintained by:** `governance::execute_slash` at slash execution time, and `governance::backfill_slashes_by_month`
+for one-time migration of historical slash records. Enables $O(\text{slashes-in-month})$ performance for `generate_slashing_report`.
+
+**Violation trigger:** A slash path that creates a `SlashRecord` without pushing `slash_id` into `SlashesByMonth`.
+
+---
+
+## On-Chain Aggregate View Functions (Issue #1288)
+
+Two new read-only entrypoints expose the TVL and active-loan counters for composability:
+
+| Function | Return Type | Description |
+|---|---|---|
+| `get_total_value_locked()` | `i128` | Sum of all active loan principal, in stroops |
+| `get_active_loan_count()` | `u32` | Number of currently active (undischarged) loans |
+
+These replace the off-chain aggregation in `server/src/bridge/metricsAggregator.ts` and
+allow other Soroban contracts to read QuorumCredit's protocol-wide TVL in a single call.
+
+---
+
 ## Testing
 
 All invariants are checked by `verify_invariants(env, client, token, borrowers)` in
