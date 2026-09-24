@@ -15,6 +15,7 @@ import {
   importProofJson,
 } from "../credentials/proofGenerator.js";
 import { identityVerificationService } from "../credentials/identityVerificationService.js";
+import { analyticsService } from "../credentials/analyticsService.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -894,6 +895,120 @@ export function handleHttpRequest(
     metrics.incCounter("qc_verification_reports_generated_total");
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(report));
+    return;
+  }
+
+  // ── Issue #1592: Credential Holder Analytics Dashboard ──
+
+  // GET /analytics/credentials/:holderId - Get analytics dashboard for a holder
+  const analyticsDashboardMatch = url.pathname.match(
+    /^\/analytics\/credentials\/([^/]+)$/
+  );
+  if (analyticsDashboardMatch && req.method === "GET") {
+    const holderId = decodeURIComponent(analyticsDashboardMatch[1] as string);
+
+    const dashboardData = analyticsService.generateDashboardData(holderId);
+
+    metrics.incCounter("qc_analytics_dashboard_generated_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(dashboardData));
+    return;
+  }
+
+  // GET /analytics/credentials/:holderId/stats - Get credential statistics
+  const analyticsStatsMatch = url.pathname.match(
+    /^\/analytics\/credentials\/([^/]+)\/stats$/
+  );
+  if (analyticsStatsMatch && req.method === "GET") {
+    const holderId = decodeURIComponent(analyticsStatsMatch[1] as string);
+
+    const stats = {
+      credentialStats: analyticsService.getCredentialStats(holderId),
+      verificationStats: analyticsService.getVerificationStats(holderId),
+      topTypes: analyticsService.getTopCredentialTypes(holderId),
+      healthScore: analyticsService.calculateHealthScore(holderId),
+    };
+
+    metrics.incCounter("qc_analytics_stats_retrieved_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    return;
+  }
+
+  // GET /analytics/credentials/:holderId/trends - Get trend data
+  const analyticsTrendsMatch = url.pathname.match(
+    /^\/analytics\/credentials\/([^/]+)\/trends$/
+  );
+  if (analyticsTrendsMatch && req.method === "GET") {
+    const holderId = decodeURIComponent(analyticsTrendsMatch[1] as string);
+    const days = parseInt(url.searchParams.get("days") || "30");
+
+    const trends = analyticsService.getTrendData(holderId, days);
+
+    metrics.incCounter("qc_analytics_trends_retrieved_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ holderId, days, trends }));
+    return;
+  }
+
+  // POST /analytics/credentials/:holderId/record-trend - Record trend data
+  const analyticsRecordMatch = url.pathname.match(
+    /^\/analytics\/credentials\/([^/]+)\/record-trend$/
+  );
+  if (analyticsRecordMatch && req.method === "POST") {
+    const holderId = decodeURIComponent(analyticsRecordMatch[1] as string);
+
+    readJsonBody<{
+      credentials?: number;
+      verified?: number;
+      pending?: number;
+      avgVerificationScore?: number;
+    }>(req)
+      .then((body) => {
+        if (
+          typeof body.credentials !== "number" ||
+          typeof body.verified !== "number" ||
+          typeof body.pending !== "number"
+        ) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: "credentials, verified, pending (numbers) required",
+            })
+          );
+          return;
+        }
+
+        analyticsService.recordTrend(holderId, {
+          credentials: body.credentials,
+          verified: body.verified,
+          pending: body.pending,
+          avgVerificationScore: body.avgVerificationScore || 0,
+        });
+
+        metrics.incCounter("qc_analytics_trend_recorded_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            holderId,
+            message: "trend recorded successfully",
+          })
+        );
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /analytics/metrics - Get system-wide analytics metrics
+  if (req.method === "GET" && url.pathname === "/analytics/metrics") {
+    const metrics_data = analyticsService.getUsageMetrics();
+
+    metrics.incCounter("qc_analytics_metrics_retrieved_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(metrics_data));
     return;
   }
 
