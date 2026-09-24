@@ -1,0 +1,215 @@
+name: Dependency Security Scanning
+
+# Issue #1579: Comprehensive dependency vulnerability scanning
+# Identifies, reports, and tracks security vulnerabilities in dependencies
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'yarn.lock'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/dependency-security-scan.yml'
+  push:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'package.json'
+      - 'package-lock.json'
+
+jobs:
+  cargo-audit:
+    name: Rust Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run Cargo Audit
+        id: audit
+        continue-on-error: true
+        run: |
+          chmod +x ./scripts/security-scan-cargo.sh
+          ./scripts/security-scan-cargo.sh
+
+      - name: Upload Cargo Audit Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargo-audit-report
+          path: security/reports/cargo-audit.json
+          retention-days: 30
+
+  npm-audit:
+    name: npm Dependencies Audit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        id: npm-audit
+        continue-on-error: true
+        run: |
+          chmod +x ./scripts/security-scan-npm.sh
+          ./scripts/security-scan-npm.sh
+
+      - name: Upload npm Audit Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report-node-${{ matrix.node-version }}
+          path: security/reports/npm-audit.json
+          retention-days: 30
+
+  snyk-scan:
+    name: Snyk Vulnerability Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Snyk scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high --json-file-output=snyk-results.json
+
+      - name: Upload Snyk Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-report
+          path: snyk-results.json
+          retention-days: 30
+
+  trivy-scan:
+    name: Container Image Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  osv-scanner:
+    name: OSV Dependency Scanner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run OSV Scanner
+        uses: google/osv-scanner-action@v1
+        with:
+          path: '.'
+          sarif: true
+          output: 'osv-results.sarif'
+
+      - name: Upload OSV Results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'osv-results.sarif'
+
+  generate-sbom:
+    name: Generate Software Bill of Materials
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CycloneDX
+        run: npm install -g @cyclonedx/npm
+
+      - name: Generate Cargo SBOM
+        run: |
+          chmod +x ./scripts/generate-sbom-cargo.sh
+          ./scripts/generate-sbom-cargo.sh
+
+      - name: Generate npm SBOM
+        run: |
+          chmod +x ./scripts/generate-sbom-npm.sh
+          ./scripts/generate-sbom-npm.sh
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-reports
+          path: security/sbom/
+          retention-days: 90
+
+  aggregate-results:
+    name: Aggregate Security Scan Results
+    runs-on: ubuntu-latest
+    needs: [cargo-audit, npm-audit, snyk-scan, trivy-scan, osv-scanner]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all scan results
+        uses: actions/download-artifact@v4
+        with:
+          path: security/reports/
+
+      - name: Generate comprehensive security report
+        run: |
+          chmod +x ./scripts/aggregate-security-report.sh
+          ./scripts/aggregate-security-report.sh
+
+      - name: Generate vulnerability trend chart
+        run: |
+          chmod +x ./scripts/generate-vulnerability-trends.sh
+          ./scripts/generate-vulnerability-trends.sh
+
+      - name: Upload comprehensive report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-scan-summary
+          path: security/reports/summary/
+          retention-days: 90
+
+      - name: Comment on PR with scan results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('security/reports/summary/README.md', 'utf-8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+      - name: Fail if critical vulnerabilities found
+        run: |
+          if [ -f security/reports/summary/CRITICAL_FOUND ]; then
+            echo "::error::Critical vulnerabilities detected in dependencies"
+            exit 1
+          fi
