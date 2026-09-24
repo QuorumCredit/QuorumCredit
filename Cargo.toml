@@ -23,6 +23,10 @@ proptest = { version = "1.4", default-features = false, features = ["std"] }
 name = "api_integration"
 path = "tests/api_integration.rs"
 
+[[test]]
+name = "compliance_validation"
+path = "tests/compliance_validation.rs"
+
 [profile.coverage]
 inherits = "test"
 
