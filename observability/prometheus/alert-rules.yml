@@ -1,0 +1,169 @@
+# Issue #1578: Prometheus Alert Rules
+# Alerting configuration for critical system metrics
+
+groups:
+  - name: backend_alerts
+    interval: 30s
+    rules:
+      # High Error Rate
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "High error rate detected on {{ $labels.instance }}"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      # High Latency
+      - alert: HighLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "High latency detected on {{ $labels.instance }}"
+          description: "P95 latency is {{ $value | humanizeDuration }} (threshold: 500ms)"
+
+      # Database Connection Pool Exhaustion
+      - alert: DatabaseConnectionPoolExhausted
+        expr: (db_connection_pool_size - db_connection_pool_available) / db_connection_pool_size > 0.9
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool exhausted on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} of connections in use"
+
+      # Memory Usage High
+      - alert: HighMemoryUsage
+        expr: (process_resident_memory_bytes / process_virtual_memory_max_bytes) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: "Memory usage is {{ $value | humanizePercentage }}"
+
+      # CPU Usage High
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total[5m]) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is {{ $value | humanizePercentage }}"
+
+  - name: indexer_alerts
+    interval: 30s
+    rules:
+      # Indexer Sync Lag
+      - alert: IndexerSyncLag
+        expr: (indexer_current_ledger_height - indexer_synced_ledger_height) > 100
+        for: 10m
+        labels:
+          severity: critical
+          component: indexer
+        annotations:
+          summary: "Indexer sync lag detected on {{ $labels.instance }}"
+          description: "Ledger sync lag is {{ $value }} blocks"
+
+      # Indexer Processing Error Rate
+      - alert: IndexerProcessingErrors
+        expr: rate(indexer_processing_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: indexer
+        annotations:
+          summary: "High error rate in indexer on {{ $labels.instance }}"
+          description: "Error rate is {{ $value | humanizePercentage }}"
+
+      # Blockchain RPC Connection Failed
+      - alert: BlockchainRPCConnectionFailed
+        expr: up{job="indexer-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: blockchain
+        annotations:
+          summary: "Blockchain RPC connection failed on {{ $labels.instance }}"
+          description: "Cannot connect to blockchain RPC endpoint"
+
+  - name: infrastructure_alerts
+    interval: 30s
+    rules:
+      # Instance Down
+      - alert: InstanceDown
+        expr: up{job!~"alertmanager|prometheus"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Instance down: {{ $labels.job }} on {{ $labels.instance }}"
+          description: "{{ $labels.instance }} has been down for more than 2 minutes"
+
+      # Disk Space Low
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Low disk space on {{ $labels.instance }}"
+          description: "Only {{ $value | humanizePercentage }} of disk space remaining"
+
+      # Node Memory Low
+      - alert: NodeMemoryLow
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Low memory on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} of memory in use"
+
+  - name: service_alerts
+    interval: 30s
+    rules:
+      # Elasticsearch Cluster Unhealthy
+      - alert: ElasticsearchUnhealthy
+        expr: elasticsearch_cluster_health_status != 1
+        for: 2m
+        labels:
+          severity: critical
+          component: elasticsearch
+        annotations:
+          summary: "Elasticsearch cluster unhealthy"
+          description: "Cluster status is not green"
+
+      # Elasticsearch Disk Usage High
+      - alert: ElasticsearchDiskHigh
+        expr: (elasticsearch_fs_data_size_bytes - elasticsearch_fs_data_free_bytes) / elasticsearch_fs_data_size_bytes > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          component: elasticsearch
+        annotations:
+          summary: "Elasticsearch disk usage high"
+          description: "Disk usage is {{ $value | humanizePercentage }}"
+
+      # Elasticsearch Pending Tasks
+      - alert: ElasticsearchPendingTasks
+        expr: elasticsearch_cluster_task_max_waiting_in_queue_millis > 30000
+        for: 5m
+        labels:
+          severity: warning
+          component: elasticsearch
+        annotations:
+          summary: "Elasticsearch has pending tasks"
+          description: "Tasks pending for {{ $value | humanizeDuration }}"
