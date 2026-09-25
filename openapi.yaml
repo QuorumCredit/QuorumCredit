@@ -550,6 +550,9 @@ components:
       properties:
         error:
           type: string
+          description: Error message describing what went wrong
+      example:
+        error: "Invalid API key"
 
     HealthResponse:
       type: object
@@ -557,7 +560,10 @@ components:
       properties:
         status:
           type: string
-          example: ok
+          enum: [ok]
+          description: Server health status
+      example:
+        status: ok
 
     TokenRequest:
       type: object
@@ -565,9 +571,13 @@ components:
       properties:
         apiKey:
           type: string
+          description: API key for authentication
         borrower:
           type: string
           description: Optional borrower address to embed in the JWT
+      example:
+        apiKey: "sk_test_1234567890abcdef"
+        borrower: "GBXYZ..."
 
     TokenResponse:
       type: object
@@ -575,7 +585,9 @@ components:
       properties:
         token:
           type: string
-          description: Signed JWT
+          description: Signed JWT token for subsequent API requests
+      example:
+        token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
     ExpenseRequest:
       type: object
@@ -595,26 +607,51 @@ components:
 
     Expense:
       type: object
+      required: [id, loanId, category, amount, createdAt]
       properties:
         id:
           type: string
+          description: Unique expense identifier
         loanId:
           type: string
+          description: Associated loan identifier
         category:
           type: string
+          enum: [business, education, healthcare, other]
+          description: Expense category
         amount:
           type: number
+          description: Amount in stroops
+          minimum: 0
+          exclusiveMinimum: true
         description:
           type: string
+          description: Optional expense description
+        declaredPurpose:
+          type: string
+          description: Optional declared purpose of expense
         createdAt:
           type: integer
           format: int64
+          description: Creation timestamp (Unix epoch milliseconds)
+      example:
+        id: "exp_123456"
+        loanId: "loan_789"
+        category: "education"
+        amount: 50000
+        description: "Tuition payment"
+        createdAt: 1696156800000
 
     ExpenseBreakdown:
       type: object
       additionalProperties:
         type: number
       description: Map of category → total amount
+      example:
+        business: 150000
+        education: 500000
+        healthcare: 75000
+        other: 25000
 
     RecurringPaymentRequest:
       type: object
@@ -635,21 +672,34 @@ components:
 
     RecurringPaymentSchedule:
       type: object
+      required: [loanId, amount, frequencySeconds, startDate, active]
       properties:
         loanId:
           type: string
+          description: Associated loan identifier
         amount:
           type: number
+          description: Payment amount in stroops
         frequencySeconds:
           type: number
+          description: Payment frequency in seconds
         startDate:
           type: integer
           format: int64
+          description: Schedule start date (Unix epoch milliseconds)
         active:
           type: boolean
+          description: Whether schedule is currently active
         successRateBps:
           type: integer
           description: Success rate in basis points (0–10000)
+      example:
+        loanId: "loan_123"
+        amount: 100000
+        frequencySeconds: 2592000
+        startDate: 1696156800000
+        active: true
+        successRateBps: 9500
 
     TerminateResponse:
       type: object
@@ -657,9 +707,14 @@ components:
       properties:
         loanId:
           type: string
+          description: Loan identifier
         active:
           type: boolean
+          description: Whether loan is still active after termination
           example: false
+      example:
+        loanId: "loan_123"
+        active: false
 
     RecurringPaymentResult:
       type: object
@@ -706,43 +761,80 @@ components:
 
     WebhookRegistration:
       type: object
+      required: [id, url, events, secret]
       properties:
         id:
           type: string
+          description: Webhook registration identifier
         url:
           type: string
+          format: uri
+          description: Webhook endpoint URL
         events:
           type: array
           items:
             type: string
+            enum:
+              - loan.requested
+              - loan.disbursed
+              - loan.repaid
+              - loan.defaulted
+              - vouch.created
+              - vouch.withdrawn
+              - slash.executed
+              - config.updated
+          description: Events to subscribe to
         secret:
           type: string
-          description: Signing secret — only returned at registration time
+          description: Signing secret — only returned at registration time, used for HMAC validation
         message:
           type: string
+          description: Optional message from server
+      example:
+        id: "wh_abc123def456"
+        url: "https://example.com/webhook"
+        events: ["loan.disbursed", "loan.repaid"]
+        secret: "whsec_1234567890abcdef"
 
     WebhookSummary:
       type: object
+      required: [id, url, events, enabled, createdAt]
       properties:
         id:
           type: string
+          description: Webhook registration identifier
         url:
           type: string
+          format: uri
+          description: Webhook endpoint URL
         events:
           type: array
           items:
             type: string
+          description: Subscribed events
         enabled:
           type: boolean
+          description: Whether webhook is currently enabled
         createdAt:
           type: integer
           format: int64
+          description: Registration creation timestamp (Unix epoch milliseconds)
+      example:
+        id: "wh_abc123def456"
+        url: "https://example.com/webhook"
+        events: ["loan.disbursed", "loan.repaid"]
+        enabled: true
+        createdAt: 1696156800000
 
     DeletedResponse:
       type: object
+      required: [deleted]
       properties:
         deleted:
           type: boolean
+          description: Whether resource was successfully deleted
+      example:
+        deleted: true
 
     TestWebhookRequest:
       type: object
@@ -756,92 +848,166 @@ components:
 
     TestWebhookResponse:
       type: object
+      required: [success, statusCode]
       properties:
         success:
           type: boolean
+          description: Whether webhook delivery was successful
         statusCode:
           type: integer
+          description: HTTP status code received from webhook endpoint
+      example:
+        success: true
+        statusCode: 200
 
     WebhookReceiveResponse:
       type: object
+      required: [received]
       properties:
         received:
           type: boolean
+          description: Whether webhook event was received and processed
+      example:
+        received: true
 
     WebhookDeliveryAttempt:
       type: object
+      required: [webhookId, event, attemptedAt, statusCode, ok]
       properties:
         webhookId:
           type: string
+          description: Webhook registration identifier
         event:
           type: string
+          description: Event type that triggered delivery
         attemptedAt:
           type: integer
           format: int64
+          description: Delivery attempt timestamp (Unix epoch milliseconds)
         statusCode:
           type: integer
+          description: HTTP status code returned by webhook endpoint
         ok:
           type: boolean
+          description: Whether delivery succeeded
         error:
           type: string
+          description: Error message if delivery failed
+      example:
+        webhookId: "wh_abc123def456"
+        event: "loan.disbursed"
+        attemptedAt: 1696243200000
+        statusCode: 200
+        ok: true
+        error: null
 
     WebhookDeliveryStats:
       type: object
+      required: [webhookId, totalAttempts, successCount, failureCount, successRateBps]
       properties:
         webhookId:
           type: string
+          description: Webhook registration identifier
         totalAttempts:
           type: integer
+          description: Total delivery attempts
         successCount:
           type: integer
+          description: Number of successful deliveries
         failureCount:
           type: integer
+          description: Number of failed deliveries
         successRateBps:
           type: integer
           description: Success rate in basis points (0–10000)
+      example:
+        webhookId: "wh_abc123def456"
+        totalAttempts: 150
+        successCount: 147
+        failureCount: 3
+        successRateBps: 9800
 
     ForecastPayment:
       type: object
+      required: [paymentNumber, dueDate, principalComponent, interestComponent, totalPayment, remainingBalance]
       properties:
         paymentNumber:
           type: integer
+          description: Sequential payment number
         dueDate:
           type: integer
           format: int64
-          description: Unix epoch milliseconds
+          description: Due date (Unix epoch milliseconds)
         principalComponent:
           type: number
+          description: Principal portion of this payment
         interestComponent:
           type: number
+          description: Interest portion of this payment
         totalPayment:
           type: number
+          description: Total payment amount (principal + interest)
         remainingBalance:
           type: number
+          description: Outstanding loan balance after this payment
+      example:
+        paymentNumber: 1
+        dueDate: 1698748800000
+        principalComponent: 83000
+        interestComponent: 4167
+        totalPayment: 87167
+        remainingBalance: 917000
 
     LoanForecastResponse:
       type: object
+      required: [loanId, principal, interestRateBps, termDays, totalPayments, schedule]
       properties:
         loanId:
           type: string
+          description: Loan identifier
         principal:
           type: number
+          description: Loan principal in stroops
         interestRateBps:
           type: number
+          description: Interest rate in basis points
         termDays:
           type: number
+          description: Loan term in days
         totalPayments:
           type: integer
+          description: Total number of scheduled payments
         schedule:
           type: array
           items:
             $ref: "#/components/schemas/ForecastPayment"
+          description: Payment schedule details
         accuracy:
           type: object
           properties:
             meanErrorBps:
               type: number
+              description: Mean forecasting error in basis points
             sampleCount:
               type: integer
+              description: Number of historical samples
+          description: Historical forecast accuracy metrics
+      example:
+        loanId: "loan_456"
+        principal: 1000000
+        interestRateBps: 500
+        termDays: 365
+        totalPayments: 12
+        schedule:
+          - paymentNumber: 1
+            dueDate: 1698748800000
+            principalComponent: 83000
+            interestComponent: 4167
+            totalPayment: 87167
+            remainingBalance: 917000
+        accuracy:
+          meanErrorBps: 50
+          sampleCount: 5
 
     RecordForecastAccuracyRequest:
       type: object
@@ -850,19 +1016,34 @@ components:
         paymentNumber:
           type: integer
           minimum: 1
+          description: Payment number to record accuracy for
         forecastedAmount:
           type: number
           minimum: 0
+          description: Forecasted payment amount in stroops
         actualAmount:
           type: number
           minimum: 0
+          description: Actual payment amount in stroops
+      example:
+        paymentNumber: 1
+        forecastedAmount: 87167
+        actualAmount: 87200
 
     ForecastAccuracyResponse:
       type: object
+      required: [loanId, meanErrorBps, sampleCount]
       properties:
         loanId:
           type: string
+          description: Loan identifier
         meanErrorBps:
           type: number
+          description: Updated mean forecasting error in basis points
         sampleCount:
           type: integer
+          description: Total number of accuracy samples
+      example:
+        loanId: "loan_456"
+        meanErrorBps: 45
+        sampleCount: 6

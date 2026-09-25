@@ -101,6 +101,48 @@ The workflow `.github/workflows/gas-benchmarks.yml` runs on every commit to `mai
 - Comments on PRs with complexity summary
 - Fails if any operation regresses (>33% cost increase at any size)
 
+## Gas Regression Gate
+
+The CI workflow enforces a hard gate on gas cost regressions. The gate runs the
+gas regression test suite (`gas_cost_regression`) and fails the build when any
+tracked operation reports `regression_detected == true` with a
+`regression_percentage_bps` above the agreed threshold of **500 bps (5%)**.
+
+### Baseline Persistence
+
+Regressions are measured against the **last merged baseline**, not a fresh
+measurement taken on each run. Baselines are persisted in two complementary ways:
+
+1. **Committed baseline** — `docs/benchmarks.json` is checked into the repository
+   and updated whenever a baseline is intentionally bumped. This is the source of
+   truth the gate compares against.
+2. **CI artifact** — each workflow run uploads the freshly measured baseline as a
+   `gas-baseline` artifact so reviewers can diff the current run against the
+   committed baseline and against prior runs.
+
+Because the committed baseline is the comparison point, a regression is only
+"reset" by merging a PR that updates `docs/benchmarks.json`.
+
+### Override Process (Intentional Gas Increase)
+
+When a gas increase is intentional (e.g. a new feature or a correctness fix that
+legitimately costs more), do **not** disable the gate. Instead:
+
+1. Run the benchmarks locally and confirm the new measurements are expected:
+   ```bash
+   cargo test --lib gas_benchmark -- --nocapture
+   ```
+2. Update `docs/benchmarks.json` with the new `size_variants` and a `notes` entry
+   explaining the intentional increase (e.g. "Added per-voucher audit trail").
+3. Update the corresponding budget constants in `src/lib.rs` using
+   `budget = max_measured_cpu × 1.5`.
+4. Include the baseline bump in the same PR as the change that caused it, and call
+   it out in the PR description so reviewers can approve the intentional increase.
+
+Once the baseline bump is merged, subsequent runs compare against the new
+baseline and the gate passes. Any regression above 500 bps that is **not**
+accompanied by a baseline bump fails CI.
+
 ## Measured Operations & Complexity Classes
 
 | Operation | Sizes Tested | Expected Class | Pass Criteria |
@@ -182,41 +224,8 @@ Not every change that increases cost by 1-2% is a regression:
 
 ```
 repay @ n=1:   5,000,000 → 5,050,000 (+1%)     ← normal variance
-repay @ n=50:  15,000,000 → 15,300,000 (+2%)   ← passes (< 33% threshold)
-repay @ n=100: 25,000,000 → 25,500,000 (+2%)   ← passes
+repay @ n=50:  15,000,000 → 15,300,000 (+2%)   ← normal variance
 ```
 
-The complexity fitter still returns O(n), and no regression is flagged.
-
-## Regression Detection Thresholds
-
-- **Regression threshold**: >33% cost increase at any tested size
-  - Tuned to catch genuine algorithmic regressions
-  - Absorbs ~10% normal variance and ~20% SDK version drift
-- **Complexity mismatch**: Detected class ≠ expected class
-  - High confidence indicator of wrong algorithm
-- **Negative control**: `test_negative_control_quadratic_detection()` proves the system catches O(n²) operations
-
-## Files & Tools
-
-| File | Purpose |
-|---|---|
-| `src/gas_benchmark_test.rs` | Parameterized benchmark tests (sizes 1–100) |
-| `docs/benchmarks.json` | Historical measurements and regression thresholds |
-| `tools/benchmark_analyzer.py` | Complexity fitting and HTML report generation |
-| `.github/workflows/gas-benchmarks.yml` | CI workflow: runs benchmarks, generates reports, detects regressions |
-| `docs/benchmark_report.html` | Generated HTML dashboard (artifacts in CI runs) |
-
-## Negative Control Test
-
-The test `test_negative_control_quadratic_detection()` proves the benchmarking system works:
-```rust
-#[test]
-fn test_negative_control_quadratic_detection() {
-    // Deliberately run an O(n²) nested-loop operation
-    // Verify complexity fitter returns "O(n²)" ← must pass!
-    assert_eq!(fitted_complexity, "O(n²)");
-}
-```
-
-This test **must** pass on every commit. If it fails, the complexity-fitting algorithm is broken and should be fixed before merging.
+These fall below the 500 bps (5%) gate threshold and pass CI. Only changes that
+exceed the threshold — or that change the fitted complexity class — fail the gate.

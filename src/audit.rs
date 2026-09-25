@@ -16,15 +16,22 @@ extern crate alloc;
 
 use soroban_sdk::{Address, Env, String as SorobanString, Vec};
 
-use soroban_sdk::{Address, Env, String as SorobanString, Vec};
-use crate::errors::ContractError;
-use crate::types::VouchAuditEvent;
 use crate::errors::ContractError;
 use crate::helpers::paginate_vec;
 use crate::types::{
     DataKey, VouchAuditEvent, VouchAuditEventType, MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES,
     VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES,
 };
+
+// Issue #1482: guard the archival batch sizing arithmetic. `log_vouch_audit_event`
+// computes `trail.len() - MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES` once the hot window
+// reaches `VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES`. If a future config change
+// ever made the hot-window cap >= the archive trigger, that subtraction would
+// underflow and panic. Fail the build instead of shipping that misconfiguration.
+const _: () = assert!(
+    MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES < VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES,
+    "MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES must be strictly less than VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES"
+);
 
 /// Append a new audit event to the (borrower, voucher, token) hot window,
 /// cutting the oldest entries over into an archive batch once the window
@@ -49,7 +56,12 @@ pub fn log_vouch_audit_event(
     });
 
     if trail.len() >= VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES {
-        let overflow = trail.len() - MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES;
+        // Issue #1482: saturating_sub keeps this panic-free even if the
+        // compile-time invariant above is ever relaxed; the const assertion
+        // guarantees the normal path still archives a non-empty batch.
+        let overflow = trail
+            .len()
+            .saturating_sub(MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES);
         let mut archived_batch: Vec<VouchAuditEvent> = Vec::new(env);
         for _ in 0..overflow {
             archived_batch.push_back(trail.get(0).unwrap());
@@ -84,6 +96,8 @@ pub fn get_vouch_audit_trail(
     // TODO: Implement when audit trail types are defined
     // For now, return empty vector
     Vec::new(&_env)
+}
+
 /// Read the bounded "hot" audit-trail window for (borrower, voucher, token).
 pub fn get_vouch_audit_trail_events(
     env: &Env,
@@ -228,14 +242,17 @@ mod tests {
         let admins = Vec::from_array(env, [admin.clone()]);
         let token_id = env.register_stellar_asset_contract_v2(admin.clone());
         let contract_id = env.register_contract(None, QuorumCreditContract);
-        StellarAssetClient::new(env, &token_id.address()).mint(&contract_id, &10_000_000);
         let client = QuorumCreditContractClient::new(env, &contract_id);
         client.initialize(&deployer, &admins, &1, &token_id.address());
         contract_id
     }
 
+    /// Issue #1482: the archival batch sizing must not underflow when the hot
+    /// window is exactly at the archive trigger. This exercises the boundary
+    /// `trail.len() == VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES` and asserts
+    /// the call completes without panicking.
     #[test]
-    fn append_and_read_hot_window() {
+    fn test_log_vouch_audit_event_at_archive_trigger_boundary_does_not_panic() {
         let env = Env::default();
         let contract_id = setup_contract(&env);
         let borrower = Address::generate(&env);
@@ -243,21 +260,43 @@ mod tests {
         let token = Address::generate(&env);
 
         env.as_contract(&contract_id, || {
+            let key = DataKey::VouchAuditTrail(
+                borrower.clone(),
+                voucher.clone(),
+                token.clone(),
+            );
+
+            // Pre-fill the hot window to one below the trigger so the next
+            // append lands exactly on the boundary.
+            let mut trail: Vec<VouchAuditEvent> = Vec::new(&env);
+            for i in 0..(VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES - 1) {
+                trail.push_back(VouchAuditEvent {
+                    event_type: VouchAuditEventType::Created,
+                    timestamp: i as u64,
+                    amount: 1,
+                    resulting_stake: 1,
+                });
+            }
+            env.storage().persistent().set(&key, &trail);
+
+            // Boundary append: trail.len() == VOUCH_AUDIT_TRAIL_ARCHIVE_TRIGGER_ENTRIES.
             log_vouch_audit_event(
                 &env,
                 &borrower,
                 &voucher,
                 &token,
-                VouchAuditEventType::Created,
-                1_000,
-                1_000,
+                VouchAuditEventType::StakeIncreased,
+                1,
+                2,
             )
-            .unwrap();
+            .expect("boundary append must not panic");
 
-            let events = get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
-            assert_eq!(events.len(), 1);
-            assert_eq!(events.get(0).unwrap().event_type, VouchAuditEventType::Created);
+            let hot = get_vouch_audit_trail_events(&env, &borrower, &voucher, &token);
+            assert_eq!(hot.len(), MAX_HOT_VOUCH_AUDIT_TRAIL_ENTRIES);
+            assert_eq!(
+                get_vouch_audit_trail_archive_count(&env, &borrower, &voucher, &token),
+                1
+            );
         });
     }
 }
-
