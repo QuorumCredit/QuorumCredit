@@ -110,6 +110,14 @@ pub mod liquidity_mining;
 pub mod webhook_retry;
 // Issue #111 — max webhook subscriptions per caller
 pub mod webhook_registry;
+// Issue #1717 — Attestor Specialization Tracking
+pub mod attestor_specialization;
+// Issue #1716 — Quorum Slice Dynamic Rebalancing
+pub mod quorum_slice_rebalancing;
+// Issue #1714 — Attestor Performance Contracts
+pub mod attestor_performance_contracts;
+// Issue #1713 — Quorum Slice Migration Path
+pub mod quorum_slice_migration;
 
 #[cfg(test)]
 mod governance_test;
@@ -165,6 +173,14 @@ mod loan_cart_test;
 mod repay_validation_test;
 #[cfg(test)]
 mod unimplemented_stubs_test;
+#[cfg(test)]
+mod attestor_specialization_test;
+#[cfg(test)]
+mod quorum_slice_rebalancing_test;
+#[cfg(test)]
+mod attestor_performance_contracts_test;
+#[cfg(test)]
+mod quorum_slice_migration_test;
 
 pub use errors::ContractError;
 pub use types::*;
