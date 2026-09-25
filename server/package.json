@@ -14,7 +14,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:multi-instance": "vitest run test/multi-instance --config vitest.multi-instance.config.ts",
-    "loadtest": "tsx scripts/loadtest.ts"
+    "loadtest": "tsx scripts/loadtest.ts",
+    "generate-clients": "tsx ../scripts/generate-clients.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.3.0",

@@ -111,6 +111,12 @@ export function handleHttpRequest(
     return;
   }
 
+  // Search endpoints (Issue #1588)
+  if (url.pathname.startsWith("/api/search") && ctx.searchService) {
+    handleSearchRequest(req, res, { searchService: ctx.searchService });
+    return;
+  }
+
   const expensesMatch = url.pathname.match(/^\/loans\/([^/]+)\/expenses$/);
   if (expensesMatch) {
     const loanId = decodeURIComponent(expensesMatch[1] as string);
