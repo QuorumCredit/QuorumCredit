@@ -261,33 +261,53 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "ProposalAlreadyFinalized"),
             String::from_str(env, "Governance proposal has already been finalized."),
         ),
-        ContractError::InvalidDifficulty => (
-            String::from_str(env, "InvalidDifficulty"),
-            String::from_str(env, "Proof-of-work difficulty level is invalid or out of range (min 1, max 20)."),
+        ContractError::InvalidThreshold => (
+            String::from_str(env, "InvalidThreshold"),
+            String::from_str(env, "Invalid credential multi-signature threshold. Must be > 0 and <= number of signers."),
         ),
-        ContractError::NonceAlreadyUsed => (
-            String::from_str(env, "NonceAlreadyUsed"),
-            String::from_str(env, "Proof-of-work nonce has already been used and cannot be replayed. Use a new nonce."),
+        ContractError::InsufficientSignatures => (
+            String::from_str(env, "InsufficientSignatures"),
+            String::from_str(env, "Insufficient signatures for multi-signature verification."),
         ),
-        ContractError::InvalidPermission => (
-            String::from_str(env, "InvalidPermission"),
-            String::from_str(env, "Permission value is invalid (must be 0-3) or permission configuration is invalid."),
+        ContractError::UnauthorizedSigner => (
+            String::from_str(env, "UnauthorizedSigner"),
+            String::from_str(env, "Signer is not authorized to sign this credential."),
         ),
-        ContractError::NoEventsToCompress => (
-            String::from_str(env, "NoEventsToCompress"),
-            String::from_str(env, "No events available to compress for the given credential. Ensure there are old events to archive."),
+        ContractError::SignatureError => (
+            String::from_str(env, "SignatureError"),
+            String::from_str(env, "Signature verification failed."),
         ),
-        ContractError::ArchiveNotFound => (
-            String::from_str(env, "ArchiveNotFound"),
-            String::from_str(env, "Compressed archive not found for the given credential and archive ID."),
+        ContractError::CredentialRateLimitExceeded => (
+            String::from_str(env, "CredentialRateLimitExceeded"),
+            String::from_str(env, "Credential verification rate limit exceeded for this holder."),
         ),
-        ContractError::InvalidRetentionPeriod => (
-            String::from_str(env, "InvalidRetentionPeriod"),
-            String::from_str(env, "Retention period is invalid (min 7 days, max 5 years). Provide a valid period."),
+        ContractError::InvalidRateLimit => (
+            String::from_str(env, "InvalidRateLimit"),
+            String::from_str(env, "Invalid rate limit configuration. Limit must be positive."),
+        ),
+        ContractError::MetadataTamperDetected => (
+            String::from_str(env, "MetadataTamperDetected"),
+            String::from_str(env, "Credential metadata tampering detected. Metadata hash mismatch."),
+        ),
+        ContractError::MetadataHashMismatch => (
+            String::from_str(env, "MetadataHashMismatch"),
+            String::from_str(env, "Credential metadata hash does not match. Metadata may have been modified."),
+        ),
+        ContractError::QuorumSliceNotFound => (
+            String::from_str(env, "QuorumSliceNotFound"),
+            String::from_str(env, "Quorum slice not found."),
+        ),
+        ContractError::SelfHealingDisabled => (
+            String::from_str(env, "SelfHealingDisabled"),
+            String::from_str(env, "Self-healing is not enabled for this slice."),
+        ),
+        ContractError::InsufficientQuorum => (
+            String::from_str(env, "InsufficientQuorum"),
+            String::from_str(env, "Insufficient quorum to perform self-healing."),
         ),
         _ => (
             String::from_str(env, "UnknownError"),
-            String::from_str(env, "An unknown or unhandled error occurred."),
+            String::from_str(env, "An unknown error occurred."),
         ),
     }
 }
@@ -649,16 +669,26 @@ EmergencyBypassNotAuthorised = 131,
     /// (same logic used by `refinance_quote`) determined the borrower is not
     /// eligible for a beneficial refinance at this time.
     RefinanceNotEligible = 223,
-    /// Proof-of-work difficulty level is invalid or out of range.
-    InvalidDifficulty = 224,
-    /// Proof-of-work nonce has already been used and cannot be replayed.
-    NonceAlreadyUsed = 225,
-    /// Invalid permission value or configuration for field-level access control.
-    InvalidPermission = 226,
-    /// No events available to compress for the given credential.
-    NoEventsToCompress = 227,
-    /// Archive not found for the given credential and archive ID.
-    ArchiveNotFound = 228,
-    /// Audit trail retention period is invalid or out of range.
-    InvalidRetentionPeriod = 229,
+    /// Issue #1599: Invalid credential multi-signature threshold.
+    InvalidThreshold = 224,
+    /// Issue #1599: Insufficient signatures for multi-signature verification.
+    InsufficientSignatures = 225,
+    /// Issue #1599: Signer is not authorized to sign this credential.
+    UnauthorizedSigner = 226,
+    /// Issue #1599: Signature verification failed.
+    SignatureError = 227,
+    /// Issue #1603: Credential verification rate limit exceeded.
+    CredentialRateLimitExceeded = 228,
+    /// Issue #1603: Invalid rate limit configuration.
+    InvalidRateLimit = 229,
+    /// Issue #1605: Credential metadata tampering detected.
+    MetadataTamperDetected = 230,
+    /// Issue #1605: Credential metadata hash mismatch.
+    MetadataHashMismatch = 231,
+    /// Issue #1606: Quorum slice not found.
+    QuorumSliceNotFound = 232,
+    /// Issue #1606: Self-healing is not enabled for this slice.
+    SelfHealingDisabled = 233,
+    /// Issue #1606: Insufficient quorum to perform self-healing.
+    InsufficientQuorum = 234,
 }
