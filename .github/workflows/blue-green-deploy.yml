@@ -1,0 +1,126 @@
+name: Blue-Green Deployment
+
+# Issue #1577: Implements blue-green deployment strategy for zero-downtime deployments.
+# This workflow manages dual environment deployments with automated traffic switching
+# and rollback capabilities.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (staging, production)'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      version:
+        description: 'Version/image tag to deploy'
+        required: true
+      auto_promote:
+        description: 'Automatically promote green to blue after health checks'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  blue-green-deployment:
+    name: Blue-Green Deployment (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [backend, indexer, dashboard]
+      max-parallel: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Deploy to Green Environment (${{ matrix.component }})
+        id: deploy-green
+        run: |
+          chmod +x ./scripts/blue-green-deploy.sh
+          ./scripts/blue-green-deploy.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }} \
+            --version ${{ github.event.inputs.version }} \
+            --target-slot green
+
+      - name: Run Health Checks on Green
+        id: health-check
+        run: |
+          chmod +x ./scripts/health-check.sh
+          ./scripts/health-check.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }} \
+            --slot green \
+            --max-retries 30 \
+            --retry-delay 10
+
+      - name: Run Smoke Tests
+        if: steps.health-check.outcome == 'success'
+        id: smoke-tests
+        run: |
+          chmod +x ./scripts/smoke-tests.sh
+          ./scripts/smoke-tests.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }} \
+            --slot green
+
+      - name: Promote Green to Blue
+        if: success() && github.event.inputs.auto_promote == 'true'
+        id: promote
+        run: |
+          chmod +x ./scripts/traffic-switch.sh
+          ./scripts/traffic-switch.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }} \
+            --from-slot green \
+            --to-slot blue
+
+      - name: Monitor Deployment Metrics
+        if: success() && steps.promote.outcome == 'success'
+        run: |
+          chmod +x ./scripts/monitor-deployment.sh
+          ./scripts/monitor-deployment.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }} \
+            --duration-seconds 300 \
+            --alert-threshold-error-rate 5 \
+            --alert-threshold-latency-ms 500
+
+      - name: Automatic Rollback on Failure
+        if: failure() && (steps.promote.outcome == 'success' || steps.health-check.outcome == 'failure')
+        id: rollback
+        run: |
+          chmod +x ./scripts/traffic-switch.sh
+          ./scripts/traffic-switch.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }} \
+            --from-slot blue \
+            --to-slot green
+          echo "::error::Deployment failed. Rolled back ${{ matrix.component }} to previous version."
+          exit 1
+
+      - name: Upload Deployment Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-report-${{ matrix.component }}-${{ github.run_id }}
+          path: deploy/reports/
+          retention-days: 30
+
+      - name: Notify Deployment Status
+        if: always()
+        run: |
+          STATUS=$([[ "${{ job.status }}" == "success" ]] && echo "✅ SUCCESS" || echo "❌ FAILED")
+          echo "Deployment $STATUS for ${{ matrix.component }} to ${{ github.event.inputs.environment }}"
+          # Add Slack/Email notification integration here

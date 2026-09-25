@@ -1,0 +1,187 @@
+# Issue #1578: AlertManager Configuration
+# Alert routing and notification configuration
+
+global:
+  resolve_timeout: 5m
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+# Templates for alert messages
+templates:
+  - 'alert-templates.tmpl'
+
+# Root route with all parameters (can be overwritten for any sub-route)
+route:
+  receiver: 'null'
+  group_by: ['alertname', 'cluster', 'service', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 10s
+      group_interval: 2m
+      repeat_interval: 1h
+      continue: true
+
+    # Warning alerts - standard notification
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+      group_wait: 1m
+      group_interval: 5m
+      repeat_interval: 4h
+      continue: true
+
+    # Info alerts - digest
+    - match:
+        severity: info
+      receiver: 'info-alerts'
+      group_wait: 5m
+      group_interval: 1h
+      repeat_interval: 24h
+
+    # Infrastructure alerts
+    - match:
+        component: infrastructure
+      receiver: 'infrastructure-alerts'
+      group_wait: 30s
+      group_interval: 5m
+
+    # Indexer alerts
+    - match:
+        component: indexer
+      receiver: 'indexer-alerts'
+      group_wait: 30s
+      group_interval: 5m
+
+    # Database alerts
+    - match:
+        component: database
+      receiver: 'database-alerts'
+      group_wait: 30s
+      group_interval: 5m
+
+# Receivers define notification endpoints
+receivers:
+  # Null receiver - silences notifications
+  - name: 'null'
+
+  # Critical alerts - send to Slack, PagerDuty, and email
+  - name: 'critical-alerts'
+    slack_configs:
+      - channel: '#critical-alerts'
+        title: 'Critical Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        color: 'danger'
+        actions:
+          - type: button
+            text: 'Runbook'
+            url: '{{ (index .Alerts 0).Annotations.runbook_url }}'
+          - type: button
+            text: 'Dashboard'
+            url: '{{ (index .Alerts 0).Annotations.dashboard_url }}'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        description: '{{ .GroupLabels.alertname }}'
+        details:
+          firing: '{{ template "pagerduty.default.instances" .Alerts.Firing }}'
+    email_configs:
+      - to: 'oncall@quorumcredit.io'
+        from: 'alertmanager@quorumcredit.io'
+        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+        auth_username: '${SMTP_USERNAME}'
+        auth_password: '${SMTP_PASSWORD}'
+        headers:
+          Subject: '[CRITICAL] {{ .GroupLabels.alertname }}'
+
+  # Warning alerts - Slack and email
+  - name: 'warning-alerts'
+    slack_configs:
+      - channel: '#alerts'
+        title: 'Warning: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        color: 'warning'
+    email_configs:
+      - to: 'devops@quorumcredit.io'
+        from: 'alertmanager@quorumcredit.io'
+        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+        auth_username: '${SMTP_USERNAME}'
+        auth_password: '${SMTP_PASSWORD}'
+        headers:
+          Subject: '[WARNING] {{ .GroupLabels.alertname }}'
+
+  # Info alerts - Slack digest
+  - name: 'info-alerts'
+    slack_configs:
+      - channel: '#ops-info'
+        title: 'Info: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        color: 'good'
+
+  # Infrastructure alerts
+  - name: 'infrastructure-alerts'
+    slack_configs:
+      - channel: '#infra-alerts'
+        title: 'Infrastructure Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        color: 'danger'
+    email_configs:
+      - to: 'infrastructure@quorumcredit.io'
+        from: 'alertmanager@quorumcredit.io'
+        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+        auth_username: '${SMTP_USERNAME}'
+        auth_password: '${SMTP_PASSWORD}'
+
+  # Indexer alerts
+  - name: 'indexer-alerts'
+    slack_configs:
+      - channel: '#indexer-alerts'
+        title: 'Indexer Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        color: 'danger'
+    email_configs:
+      - to: 'indexer-team@quorumcredit.io'
+        from: 'alertmanager@quorumcredit.io'
+        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+        auth_username: '${SMTP_USERNAME}'
+        auth_password: '${SMTP_PASSWORD}'
+
+  # Database alerts
+  - name: 'database-alerts'
+    slack_configs:
+      - channel: '#database-alerts'
+        title: 'Database Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        color: 'danger'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_DB_SERVICE_KEY}'
+        description: '{{ .GroupLabels.alertname }}'
+
+# Inhibition rules prevent notifications under certain conditions
+inhibit_rules:
+  # Suppress all alerts if there's a critical database alert
+  - source_match:
+      severity: 'critical'
+      component: 'database'
+    target_match_re:
+      severity: 'warning|info'
+    equal: ['cluster', 'service']
+
+  # Suppress warning alerts if there's a critical alert for the same component
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'instance', 'component']
+
+  # Suppress info alerts if there are warning or critical alerts
+  - source_match:
+      severity: 'warning'
+    target_match:
+      severity: 'info'
+    equal: ['alertname', 'instance']
