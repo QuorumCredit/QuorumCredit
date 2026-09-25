@@ -1,0 +1,52 @@
+name: Generate API Clients
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "openapi.yaml"
+      - "scripts/generate-clients.ts"
+      - ".github/workflows/generate-clients.yml"
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: "server/package-lock.json"
+
+      - name: Install dependencies
+        run: cd server && npm ci
+
+      - name: Generate clients
+        run: cd server && npm run generate-clients
+
+      - name: Check for changes
+        id: verify
+        run: |
+          if git diff --quiet generated/; then
+            echo "no-changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "no-changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Pull Request
+        if: steps.verify.outputs.no-changes == 'false'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: "chore: regenerate API clients"
+          title: "chore: regenerate API clients from OpenAPI spec"
+          body: |
+            This PR regenerates the API clients based on changes to the OpenAPI specification.
+
+            Please review the generated code for any breaking changes before merging.
+          branch: chore/regenerate-clients
+          delete-branch: true

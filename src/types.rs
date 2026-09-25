@@ -1233,55 +1233,23 @@ pub enum DataKey {
     RevocationStoreHealthy,     // bool: true when RevocationStore proxy last checked in
     WebhookRegistryHealthy,     // bool: true when WebhookRegistry proxy last checked in
 
-    // ── Issue #1617: Quorum Slice Transparency Index ────────────────────────
-    /// slice_id → u32: transparency score for the slice (0-100)
-    SliceTransparencyScore(Address),
-    /// slice_id → u32: number of validators in the slice
-    SliceValidatorCount(Address),
-    /// slice_id → u32: number of distinct domains in the slice
-    SliceDistinctDomains(Address),
-    /// slice_id → bool: whether the slice is public
-    SlicePublic(Address),
-    /// slice_id → bool: whether the slice is configurable
-    SliceConfigurable(Address),
-    /// slice_id → Vec<(u64, u32, u32)>: transparency change history (timestamp, prev_score, new_score)
-    TransparencyChangeHistory(Address),
-    /// slice_id → u32: previous transparency score before recalculation
-    PreviousSliceTransparencyScore(Address),
-    /// slice_id → u32: last published transparency score
-    LastPublishedTransparencyScore(Address),
-    /// slice_id → u64: timestamp of last transparency publication
-    LastTransparencyPublishTime(Address),
-
-    // ── Issue #1628: Proof-of-Work for DDoS Mitigation ─────────────────────
-    /// u32: current proof-of-work difficulty level (number of leading zeros)
-    ProofOfWorkDifficulty,
-    /// (holder, nonce) → bool: whether this nonce has been used by this holder
-    ProofOfWorkNonceUsed(Address, u64),
-    /// Vec<(u64, u32, u32)>: difficulty adjustment history (timestamp, old_difficulty, new_difficulty)
-    ProofOfWorkDifficultyHistory,
-    /// u32: operation counter for difficulty adjustment
-    ProofOfWorkOperationCount,
-    /// u64: timestamp of last difficulty adjustment
-    ProofOfWorkLastAdjustment,
-
-    // ── Issue #1631: Credential Field-Level Permissions ────────────────────
-    /// (credential_id, field) → u32: permission level for a specific field (0-3)
-    FieldPermission(Address, Bytes),
-    /// credential_id → FieldPermissionMatrix: field permission configuration
-    FieldPermissionMatrix(Address),
-    /// (credential_id, field) → Vec<(u64, u32, u32)>: field permission change history
-    FieldPermissionHistory(Address, Bytes),
-
-    // ── Issue #1633: Audit Trail Compression ───────────────────────────────
-    /// credential_id → Vec<(u64, String)>: current audit trail events
-    CredentialAuditTrail(Address),
-    /// (credential_id, archive_id) → CompressedAuditArchive: compressed archive record
-    CompressedAuditArchive(Address, u32),
-    /// credential_id → RetentionConfig: audit trail retention configuration
-    AuditTrailCompressionConfig(Address),
-    /// credential_id → Vec<(u64, u32, u32)>: compression history (timestamp, archive_id, event_count)
-    AuditTrailCompressionLog(Address),
+    // ── Issue #1607-1611: Attestor Analytics and Quorum Slice Monitoring ───────
+    /// slice_id → Vec<Address> members of this quorum slice
+    AttestorSliceMembers(u64),
+    /// (attestor_a, attestor_b) → ConcordanceRecord for collusion detection
+    AttestorConcordance(Address, Address),
+    /// (attestor_a, attestor_b, timestamp) → (concordance_score, ledger) collusion alert
+    CollusionAlert(Address, Address, u64),
+    /// Last ledger at which collusion checks were performed
+    LastCollusionCheckLedger,
+    /// attestor → AttestorAvailability tracking record
+    AttestorAvailability(Address),
+    /// (attestor, timestamp) → availability_percentage low-availability alert
+    AvailabilityAlert(Address, u64),
+    /// slice_id → Vec<SlicePerformanceRecord> historical performance data
+    SlicePerformanceHistory(u64),
+    /// attestor → AttestorLocation geographic metadata
+    AttestorLocation(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

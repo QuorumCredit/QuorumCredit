@@ -44,6 +44,7 @@ use soroban_sdk::{
 pub mod admin;
 pub mod arbitrage_prevention;
 pub mod audit;
+pub mod audit_verification;
 pub mod batch_transfer;
 pub mod bond_protection;
 pub mod bridge;
@@ -69,6 +70,7 @@ pub mod liquidity_farming;
 pub mod loan;
 pub mod maturity;
 pub mod merkle_tree;
+pub mod metadata_encryption;
 pub mod multitoken_support;
 pub mod rbac;
 pub mod reputation;
@@ -96,12 +98,6 @@ pub mod prediction_market;
 pub mod reputation_nft;
 pub mod staking_pool;
 pub mod referral;
-pub mod loan_cart;
-pub mod reputation_nft;
-pub mod transparency;
-pub mod proof_of_work;
-pub mod field_permissions;
-pub mod audit_trail_compression;
 pub mod prediction_market;
 pub mod community_treasury;
 pub mod dynamic_interest;
@@ -114,6 +110,8 @@ pub mod liquidity_mining;
 pub mod webhook_retry;
 // Issue #111 — max webhook subscriptions per caller
 pub mod webhook_registry;
+// Issues #1607, #1609, #1610, #1611 — attestor analytics and quorum slice monitoring
+pub mod attestor_analytics;
 
 #[cfg(test)]
 mod governance_test;
@@ -169,6 +167,8 @@ mod loan_cart_test;
 mod repay_validation_test;
 #[cfg(test)]
 mod unimplemented_stubs_test;
+#[cfg(test)]
+mod attestor_analytics_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -5398,5 +5398,149 @@ impl QuorumCreditContract {
     /// sorted descending by conversion count then total rewards earned.
     pub fn get_referral_leaderboard(env: Env, referrers: Vec<Address>) -> Vec<ReferralStats> {
         referral::get_referral_leaderboard(env, referrers)
+    }
+
+    // ── Issue #1607-1611: Attestor Analytics and Quorum Slice Monitoring ────────
+
+    /// Issue #1607: Detects collusion among attestors in a quorum slice.
+    ///
+    /// Analyzes voting/attestation patterns and returns pairs of attestors with
+    /// suspiciously high agreement rates. High-concordance pairs indicate potential
+    /// collusion and require review.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// Vec of (Attestor A, Attestor B, Concordance Score) tuples for suspicious pairs
+    pub fn detect_attestor_collusion(
+        env: Env,
+        slice_id: u64,
+    ) -> Result<Vec<attestor_analytics::AttestorPair>, ContractError> {
+        attestor_analytics::detect_attestor_collusion(&env, slice_id)
+    }
+
+    /// Issue #1609: Tracks availability of a given attestor.
+    ///
+    /// Records periodic availability checks and computes uptime percentage.
+    /// Triggers notifications when availability falls below thresholds.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `attestor` – the attestor address to track
+    /// * `is_available` – whether the attestor responded to health check
+    ///
+    /// # Returns
+    /// Updated `AttestorAvailability` record
+    pub fn track_attestor_availability(
+        env: Env,
+        attestor: Address,
+        is_available: bool,
+    ) -> Result<attestor_analytics::AttestorAvailability, ContractError> {
+        attestor_analytics::track_attestor_availability(&env, &attestor, is_available)
+    }
+
+    /// Issue #1610: Predicts future performance of a quorum slice.
+    ///
+    /// Analyzes past consensus times and success rates to forecast reliability.
+    /// Provides confidence metrics to indicate prediction reliability.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// `PerformancePrediction` with consensus time and reliability estimates
+    pub fn predict_slice_performance(
+        env: Env,
+        slice_id: u64,
+    ) -> Result<attestor_analytics::PerformancePrediction, ContractError> {
+        attestor_analytics::predict_slice_performance(&env, slice_id)
+    }
+
+    /// Records a performance observation for a quorum slice.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    /// * `consensus_time_secs` – consensus duration in seconds
+    /// * `consensus_success` – whether consensus was successful
+    pub fn record_slice_performance(
+        env: Env,
+        admin_signers: Vec<Address>,
+        slice_id: u64,
+        consensus_time_secs: u32,
+        consensus_success: bool,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        attestor_analytics::record_slice_performance(&env, slice_id, consensus_time_secs, consensus_success)
+    }
+
+    /// Issue #1611: Validates that a quorum slice has geographically diverse attestors.
+    ///
+    /// Ensures that attestors are distributed across multiple countries and regions
+    /// to reduce correlated failure risk. Returns false if diversity requirements not met.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// Boolean indicating whether slice meets geographic diversity requirements
+    pub fn validate_geographic_diversity(
+        env: Env,
+        slice_id: u64,
+    ) -> Result<bool, ContractError> {
+        attestor_analytics::validate_geographic_diversity(&env, slice_id)
+    }
+
+    /// Calculates detailed geographic diversity metrics for a slice.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// `DiversityScore` with detailed diversity metrics
+    pub fn calculate_geographic_diversity(
+        env: Env,
+        slice_id: u64,
+    ) -> Result<attestor_analytics::DiversityScore, ContractError> {
+        attestor_analytics::calculate_geographic_diversity(&env, slice_id)
+    }
+
+    /// Sets geographic metadata for an attestor.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `admin_signers` – admin addresses for approval
+    /// * `attestor` – the attestor address
+    /// * `country_code` – ISO 3166-1 alpha-2 country code (e.g., "US", "CN")
+    /// * `region` – geographical region (e.g., "North America", "Asia")
+    pub fn set_attestor_location(
+        env: Env,
+        admin_signers: Vec<Address>,
+        attestor: Address,
+        country_code: String,
+        region: String,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        attestor_analytics::set_attestor_location(&env, &attestor, country_code, region)
+    }
+
+    /// Retrieves geographic metadata for an attestor.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `attestor` – the attestor address
+    ///
+    /// # Returns
+    /// `AttestorLocation` if metadata exists, None otherwise
+    pub fn get_attestor_location(
+        env: Env,
+        attestor: Address,
+    ) -> Option<attestor_analytics::AttestorLocation> {
+        attestor_analytics::get_attestor_location(&env, &attestor)
     }
 }
