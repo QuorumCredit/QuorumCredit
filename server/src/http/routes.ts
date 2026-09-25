@@ -8,15 +8,11 @@ import { loanCartStore } from "../cart/loanCartStore.js";
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import type { SorobanRpcClient } from "../soroban/rpcClient.js";
 import type { RecurringPaymentStore } from "../recurring/recurringPaymentStore.js";
-import { credentialStore } from "../credentials/credentialStore.js";
-import {
-  generateProof,
-  exportProofJson,
-  importProofJson,
-} from "../credentials/proofGenerator.js";
-import { identityVerificationService } from "../credentials/identityVerificationService.js";
-import { analyticsService } from "../credentials/analyticsService.js";
-import { tokenExpirationMonitor } from "../auth/tokenExpirationMonitor.js";
+import { CostOptimizer } from "../costs/costOptimizer.js";
+import { notificationStore } from "../notifications/notificationStore.js";
+import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
+import { exportStore } from "../exports/exportStore.js";
+import { ComplexityScorer } from "../verification/complexityScorer.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -38,6 +34,12 @@ export interface RouteContext {
   rpcClient?: SorobanRpcClient;
   /** Issue #1362 — Persistent recurring payment store (Local or Redis-backed). */
   paymentStore?: RecurringPaymentStore;
+  /** Issue #1581 — Cost optimization analyzer for resource utilization analysis. */
+  costOptimizer?: CostOptimizer;
+  /** Issue #1583 — Notification delivery service for email and push notifications. */
+  notificationDelivery?: NotificationDelivery;
+  /** Issue #1585 — Credential verification complexity scoring and analysis. */
+  complexityScorer?: ComplexityScorer;
 }
 
 /**
@@ -512,6 +514,21 @@ export function handleHttpRequest(
     }
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(ctx.costAllocator.generateMonthlyReports()));
+    return;
+  }
+
+  // Issue #1581: Cost optimization analysis and recommendations
+  if (req.method === "GET" && url.pathname === "/costs/optimization") {
+    if (!ctx.costAllocator || !ctx.costOptimizer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "cost optimization is not configured on this instance" }));
+      return;
+    }
+    const latestReport = ctx.costAllocator.currentReport();
+    const analysis = ctx.costOptimizer.analyzeCosts(latestReport);
+    metrics.incCounter("qc_cost_optimization_analysis_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(analysis));
     return;
   }
 
@@ -1195,6 +1212,322 @@ export function handleHttpRequest(
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "invalid request body" }));
       });
+    return;
+  }
+
+  // ── Issue #1583: Credential holder notification system ────────────────────
+
+  // GET /notifications/preferences/:credentialId
+  const notifPrefMatch = url.pathname.match(/^\/notifications\/preferences\/([^/]+)$/);
+  if (notifPrefMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(notifPrefMatch[1] as string);
+    const prefs = notificationStore.getPreferences(credentialId);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(
+      JSON.stringify({
+        credentialId: prefs.credentialId,
+        email: prefs.email,
+        enabledChannels: prefs.enabledChannels,
+        enabledTypes: Array.from(prefs.enabledTypes),
+      })
+    );
+    metrics.incCounter("qc_notification_preferences_retrieved_total");
+    return;
+  }
+
+  // POST /notifications/preferences/:credentialId
+  if (notifPrefMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(notifPrefMatch[1] as string);
+    readJsonBody<{
+      email?: string;
+      pushToken?: string;
+      phoneNumber?: string;
+      enabledChannels?: string[];
+      enabledTypes?: string[];
+    }>(req)
+      .then((body) => {
+        const updated = notificationStore.updatePreferences(credentialId, {
+          email: body.email,
+          pushToken: body.pushToken,
+          phoneNumber: body.phoneNumber,
+          enabledChannels: (body.enabledChannels as any) || [],
+          enabledTypes: new Set(body.enabledTypes || []) as any,
+        });
+        metrics.incCounter("qc_notification_preferences_updated_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            credentialId: updated.credentialId,
+            email: updated.email,
+            enabledChannels: updated.enabledChannels,
+            enabledTypes: Array.from(updated.enabledTypes),
+          })
+        );
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // POST /notifications/unsubscribe/:credentialId
+  const notifUnsubMatch = url.pathname.match(/^\/notifications\/unsubscribe\/([^/]+)$/);
+  if (notifUnsubMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(notifUnsubMatch[1] as string);
+    notificationStore.unsubscribe(credentialId);
+    metrics.incCounter("qc_notification_unsubscriptions_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ unsubscribed: true, credentialId }));
+    return;
+  }
+
+  // GET /notifications/history/:credentialId
+  const notifHistMatch = url.pathname.match(/^\/notifications\/history\/([^/]+)$/);
+  if (notifHistMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(notifHistMatch[1] as string);
+    const limit = url.searchParams.get("limit")
+      ? parseInt(url.searchParams.get("limit") as string, 10)
+      : 50;
+    const history = notificationStore.getNotificationHistory(credentialId, limit);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(history));
+    metrics.incCounter("qc_notification_history_retrieved_total");
+    return;
+  }
+
+  // GET /notifications/stats
+  if (req.method === "GET" && url.pathname === "/notifications/stats") {
+    const stats = notificationStore.getStatistics();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    metrics.incCounter("qc_notification_stats_retrieved_total");
+    return;
+  }
+
+  // ── Issue #1584: Credential holder export functionality ──────────────────
+
+  // POST /exports/:credentialId — Create export request
+  const exportCreateMatch = url.pathname.match(/^\/exports\/([^/]+)$/);
+  if (exportCreateMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(exportCreateMatch[1] as string);
+    readJsonBody<{ format?: string; metadata?: Record<string, unknown> }>(req)
+      .then((body) => {
+        const format = body.format || "json";
+        if (!["json", "csv", "pdf"].includes(format)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid format. Supported: json, csv, pdf" }));
+          return;
+        }
+
+        const exportRequest = exportStore.createExportRequest(
+          credentialId,
+          format as any,
+          body.metadata
+        );
+        metrics.incCounter("qc_exports_created_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(exportRequest));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /exports/:credentialId — Get exports for credential
+  if (exportCreateMatch && req.method === "GET") {
+    const credentialId = decodeURIComponent(exportCreateMatch[1] as string);
+    const limit = url.searchParams.get("limit")
+      ? parseInt(url.searchParams.get("limit") as string, 10)
+      : 50;
+    const exports = exportStore.getCredentialExports(credentialId, limit);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(exports));
+    metrics.incCounter("qc_exports_listed_total");
+    return;
+  }
+
+  // GET /exports/:credentialId/:exportId — Get export status
+  const exportStatusMatch = url.pathname.match(
+    /^\/exports\/([^/]+)\/([^/]+)$/
+  );
+  if (exportStatusMatch && req.method === "GET") {
+    const exportId = decodeURIComponent(exportStatusMatch[2] as string);
+    const exportRequest = exportStore.getExport(exportId);
+    if (!exportRequest) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "export not found" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(exportRequest));
+    metrics.incCounter("qc_exports_retrieved_total");
+    return;
+  }
+
+  // POST /exports/:credentialId/:exportId/schedule — Schedule recurring exports
+  const exportScheduleMatch = url.pathname.match(
+    /^\/exports\/([^/]+)\/schedule$/
+  );
+  if (exportScheduleMatch && req.method === "POST") {
+    const credentialId = decodeURIComponent(exportScheduleMatch[1] as string);
+    readJsonBody<{
+      format?: string;
+      frequency?: string;
+      startDate?: number;
+    }>(req)
+      .then((body) => {
+        const format = body.format || "json";
+        const frequency = body.frequency || "weekly";
+
+        if (!["json", "csv", "pdf"].includes(format)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid format" }));
+          return;
+        }
+
+        if (!["daily", "weekly", "monthly"].includes(frequency)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "Invalid frequency" }));
+          return;
+        }
+
+        const scheduled = exportStore.createScheduledExport(
+          credentialId,
+          format as any,
+          frequency as any,
+          body.startDate
+        );
+        metrics.incCounter("qc_scheduled_exports_created_total");
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify(scheduled));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /exports/stats — Get export statistics
+  if (req.method === "GET" && url.pathname === "/exports/stats") {
+    const stats = exportStore.getStatistics();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    metrics.incCounter("qc_exports_stats_retrieved_total");
+    return;
+  }
+
+  // ── Issue #1585: Credential verification complexity scoring ───────────────
+
+  // POST /verification/score — Score verification complexity
+  if (req.method === "POST" && url.pathname === "/verification/score") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    readJsonBody<{
+      credentialId?: string;
+      method?: string;
+      dataFields?: number;
+      requiresBiometric?: boolean;
+      requiresManualReview?: boolean;
+      documentCount?: number;
+    }>(req)
+      .then((body) => {
+        if (!body.credentialId || !body.method) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "credentialId and method required" }));
+          return;
+        }
+
+        const score = ctx.complexityScorer!.scoreVerification({
+          credentialId: body.credentialId,
+          method: body.method,
+          dataFields: body.dataFields || 0,
+          requiresBiometric: body.requiresBiometric || false,
+          requiresManualReview: body.requiresManualReview || false,
+          documentCount: body.documentCount || 0,
+          createdAt: Date.now(),
+        });
+
+        metrics.incCounter("qc_verification_scores_computed_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(score));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /verification/score/:credentialId — Get complexity score for credential
+  const verifScoreMatch = url.pathname.match(/^\/verification\/score\/([^/]+)$/);
+  if (verifScoreMatch && req.method === "GET") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const credentialId = decodeURIComponent(verifScoreMatch[1] as string);
+    const score = ctx.complexityScorer.getScore(credentialId);
+    if (!score) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "no complexity score for this credential" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(score));
+    metrics.incCounter("qc_verification_scores_retrieved_total");
+    return;
+  }
+
+  // GET /verification/trends — Get complexity trends
+  if (req.method === "GET" && url.pathname === "/verification/trends") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const trends = ctx.complexityScorer.getTrends();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(trends));
+    metrics.incCounter("qc_verification_trends_retrieved_total");
+    return;
+  }
+
+  // GET /verification/optimizations — Get optimization recommendations
+  if (req.method === "GET" && url.pathname === "/verification/optimizations") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const threshold = url.searchParams.get("threshold")
+      ? parseFloat(url.searchParams.get("threshold") as string)
+      : 7;
+    const optimizations = ctx.complexityScorer.getOptimizations(threshold);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(optimizations));
+    metrics.incCounter("qc_verification_optimizations_retrieved_total");
+    return;
+  }
+
+  // GET /verification/stats — Get verification statistics
+  if (req.method === "GET" && url.pathname === "/verification/stats") {
+    if (!ctx.complexityScorer) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "complexity scoring is not configured on this instance" }));
+      return;
+    }
+    const stats = ctx.complexityScorer.getStatistics();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    metrics.incCounter("qc_verification_stats_retrieved_total");
     return;
   }
 
