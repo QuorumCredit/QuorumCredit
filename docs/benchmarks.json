@@ -151,5 +151,21 @@
     "description": "Multiplier applied to baseline for pass/fail gates. Budgets set at measured_baseline × 1.5 to absorb minor variance while catching >33% increases.",
     "baseline_multiplier": 1.5,
     "regression_detection_threshold": 0.33
+  },
+  "ci_gate": {
+    "description": "CI gate enforcing gas cost regression thresholds. The gas-benchmarks workflow runs the gas regression suite and fails the build when any tracked operation's regression_percentage_bps exceeds max_regression_bps.",
+    "enabled": true,
+    "max_regression_bps": 500,
+    "baseline_source": "docs/benchmarks.json",
+    "baseline_ref": "main",
+    "override": {
+      "description": "Intentional gas increases must bump the committed baseline in docs/benchmarks.json within the same PR. The gate compares against the last merged baseline on main, so a merged baseline bump is the only sanctioned override.",
+      "process": [
+        "Re-run the gas benchmarks locally and capture the new measurements.",
+        "Update the affected operation's measurements in docs/benchmarks.json with the new timestamp and commit.",
+        "Explain the intentional increase in the PR description and reference the baseline bump.",
+        "The CI gate passes once the committed baseline reflects the accepted cost."
+      ]
+    }
   }
 }
