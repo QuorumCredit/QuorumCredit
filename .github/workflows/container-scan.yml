@@ -1,0 +1,292 @@
+name: Container Image Scanning
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'server/Dockerfile'
+      - 'services/indexer/Dockerfile'
+      - 'server/package.json'
+      - 'services/indexer/package.json'
+  pull_request:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'server/Dockerfile'
+      - 'services/indexer/Dockerfile'
+      - 'server/package.json'
+      - 'services/indexer/package.json'
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly scan on Sunday at 2 AM UTC
+
+env:
+  REGISTRY: ghcr.io
+  SCAN_SEVERITY: MEDIUM
+
+jobs:
+  scan-server:
+    name: Scan Server Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build server image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          file: ./server/Dockerfile
+          push: false
+          load: true
+          tags: quorum-credit-server:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: 'quorum-credit-server:${{ github.sha }}'
+          format: 'sarif'
+          output: 'server-trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'server-trivy-results.sarif'
+          category: 'trivy-server'
+
+      - name: Scan image with Grype
+        uses: anchore/scan-action@v3
+        with:
+          path: 'quorum-credit-server:${{ github.sha }}'
+          fail-build: false
+          severity-cutoff: medium
+
+      - name: Upload Grype results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: 'grype-server'
+
+      - name: Generate vulnerability report
+        if: always()
+        run: |
+          mkdir -p reports
+          docker run --rm -v $PWD:/workspace \
+            aquasec/trivy:latest image \
+            --format json \
+            --output /workspace/reports/server-vulnerabilities.json \
+            quorum-credit-server:${{ github.sha }} || true
+
+          # Convert JSON to human-readable report
+          python3 scripts/parse-vulnerabilities.py \
+            reports/server-vulnerabilities.json \
+            > reports/server-report.txt
+
+      - name: Comment PR with vulnerability summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'reports/server-vulnerabilities.json';
+
+            if (fs.existsSync(reportPath)) {
+              const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+
+              let summary = '## Server Image Scan Results\n\n';
+
+              if (report.Results && report.Results.length > 0) {
+                let criticalCount = 0;
+                let highCount = 0;
+                let mediumCount = 0;
+
+                report.Results.forEach(result => {
+                  if (result.Misconfigurations) {
+                    result.Misconfigurations.forEach(config => {
+                      if (config.Severity === 'CRITICAL') criticalCount++;
+                      else if (config.Severity === 'HIGH') highCount++;
+                      else if (config.Severity === 'MEDIUM') mediumCount++;
+                    });
+                  }
+                  if (result.Vulnerabilities) {
+                    result.Vulnerabilities.forEach(vuln => {
+                      if (vuln.Severity === 'CRITICAL') criticalCount++;
+                      else if (vuln.Severity === 'HIGH') highCount++;
+                      else if (vuln.Severity === 'MEDIUM') mediumCount++;
+                    });
+                  }
+                });
+
+                summary += `| Severity | Count |\n`;
+                summary += `|----------|-------|\n`;
+                summary += `| 🔴 CRITICAL | ${criticalCount} |\n`;
+                summary += `| 🟠 HIGH | ${highCount} |\n`;
+                summary += `| 🟡 MEDIUM | ${mediumCount} |\n`;
+              } else {
+                summary += '✅ No vulnerabilities found!\n';
+              }
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: summary
+              });
+            }
+
+      - name: Fail on critical vulnerabilities
+        if: failure()
+        run: exit 1
+
+  scan-indexer:
+    name: Scan Indexer Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build indexer image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/indexer
+          file: ./services/indexer/Dockerfile
+          push: false
+          load: true
+          tags: quorum-credit-indexer:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: 'quorum-credit-indexer:${{ github.sha }}'
+          format: 'sarif'
+          output: 'indexer-trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'indexer-trivy-results.sarif'
+          category: 'trivy-indexer'
+
+      - name: Scan image with Grype
+        uses: anchore/scan-action@v3
+        with:
+          path: 'quorum-credit-indexer:${{ github.sha }}'
+          fail-build: false
+          severity-cutoff: medium
+
+      - name: Generate vulnerability report
+        if: always()
+        run: |
+          mkdir -p reports
+          docker run --rm -v $PWD:/workspace \
+            aquasec/trivy:latest image \
+            --format json \
+            --output /workspace/reports/indexer-vulnerabilities.json \
+            quorum-credit-indexer:${{ github.sha }} || true
+
+      - name: Comment PR with vulnerability summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'reports/indexer-vulnerabilities.json';
+
+            if (fs.existsSync(reportPath)) {
+              const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+
+              let summary = '## Indexer Image Scan Results\n\n';
+
+              if (report.Results && report.Results.length > 0) {
+                let criticalCount = 0;
+                let highCount = 0;
+                let mediumCount = 0;
+
+                report.Results.forEach(result => {
+                  if (result.Vulnerabilities) {
+                    result.Vulnerabilities.forEach(vuln => {
+                      if (vuln.Severity === 'CRITICAL') criticalCount++;
+                      else if (vuln.Severity === 'HIGH') highCount++;
+                      else if (vuln.Severity === 'MEDIUM') mediumCount++;
+                    });
+                  }
+                });
+
+                summary += `| Severity | Count |\n`;
+                summary += `|----------|-------|\n`;
+                summary += `| 🔴 CRITICAL | ${criticalCount} |\n`;
+                summary += `| 🟠 HIGH | ${highCount} |\n`;
+                summary += `| 🟡 MEDIUM | ${mediumCount} |\n`;
+              } else {
+                summary += '✅ No vulnerabilities found!\n';
+              }
+
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: summary
+              });
+            }
+
+  vulnerability-check:
+    name: Check Vulnerability Thresholds
+    runs-on: ubuntu-latest
+    needs: [scan-server, scan-indexer]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for critical vulnerabilities
+        run: |
+          if [ -f "reports/server-vulnerabilities.json" ]; then
+            CRITICAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' reports/server-vulnerabilities.json)
+            if [ "$CRITICAL_COUNT" -gt 0 ]; then
+              echo "❌ Found $CRITICAL_COUNT CRITICAL vulnerabilities in server image"
+              exit 1
+            fi
+          fi
+
+          if [ -f "reports/indexer-vulnerabilities.json" ]; then
+            CRITICAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' reports/indexer-vulnerabilities.json)
+            if [ "$CRITICAL_COUNT" -gt 0 ]; then
+              echo "❌ Found $CRITICAL_COUNT CRITICAL vulnerabilities in indexer image"
+              exit 1
+            fi
+          fi
+
+          echo "✅ No critical vulnerabilities found"
+
+      - name: Upload vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: vulnerability-reports
+          path: reports/
+          retention-days: 30

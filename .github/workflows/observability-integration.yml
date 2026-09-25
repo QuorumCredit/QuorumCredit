@@ -1,0 +1,108 @@
+name: Observability Stack Integration
+
+# Issue #1578: Integrates observability stack for comprehensive monitoring
+# Sets up logging, metrics, tracing, and alerting infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+  push:
+    paths:
+      - 'observability/**'
+      - 'prometheus/**'
+      - 'docker-compose.observability.yml'
+      - '.github/workflows/observability-integration.yml'
+
+jobs:
+  setup-observability:
+    name: Setup Observability Stack
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [prometheus, grafana, jaeger, elasticsearch, logstash, kibana, alertmanager]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Deploy ${{ matrix.component }}
+        id: deploy
+        run: |
+          chmod +x ./scripts/deploy-observability-component.sh
+          ./scripts/deploy-observability-component.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }} \
+            --version latest
+
+      - name: Verify ${{ matrix.component }} Health
+        run: |
+          chmod +x ./scripts/verify-observability-health.sh
+          ./scripts/verify-observability-health.sh \
+            --component ${{ matrix.component }} \
+            --environment ${{ github.event.inputs.environment }}
+
+      - name: Upload Configuration
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: observability-config-${{ matrix.component }}
+          path: observability/configs/${{ matrix.component }}/
+          retention-days: 30
+
+  verify-integration:
+    name: Verify Observability Integration
+    runs-on: ubuntu-latest
+    needs: setup-observability
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test Metrics Collection
+        run: |
+          chmod +x ./scripts/test-metrics-collection.sh
+          ./scripts/test-metrics-collection.sh \
+            --environment ${{ github.event.inputs.environment }}
+
+      - name: Test Log Aggregation
+        run: |
+          chmod +x ./scripts/test-log-aggregation.sh
+          ./scripts/test-log-aggregation.sh \
+            --environment ${{ github.event.inputs.environment }}
+
+      - name: Test Distributed Tracing
+        run: |
+          chmod +x ./scripts/test-distributed-tracing.sh
+          ./scripts/test-distributed-tracing.sh \
+            --environment ${{ github.event.inputs.environment }}
+
+      - name: Test Alerting
+        run: |
+          chmod +x ./scripts/test-alerting.sh
+          ./scripts/test-alerting.sh \
+            --environment ${{ github.event.inputs.environment }}
+
+      - name: Generate Observability Report
+        if: always()
+        run: |
+          chmod +x ./scripts/generate-observability-report.sh
+          ./scripts/generate-observability-report.sh \
+            --environment ${{ github.event.inputs.environment }}
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: observability-test-results
+          path: observability/reports/
+          retention-days: 30

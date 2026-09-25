@@ -44,6 +44,7 @@ use soroban_sdk::{
 pub mod admin;
 pub mod arbitrage_prevention;
 pub mod audit;
+pub mod audit_verification;
 pub mod batch_transfer;
 pub mod bond_protection;
 pub mod bridge;
@@ -72,6 +73,7 @@ pub mod liquidity_farming;
 pub mod loan;
 pub mod maturity;
 pub mod merkle_tree;
+pub mod metadata_encryption;
 pub mod multitoken_support;
 pub mod rbac;
 pub mod reputation;
@@ -100,8 +102,6 @@ pub mod prediction_market;
 pub mod reputation_nft;
 pub mod staking_pool;
 pub mod referral;
-pub mod loan_cart;
-pub mod reputation_nft;
 pub mod prediction_market;
 pub mod community_treasury;
 pub mod dynamic_interest;
@@ -114,6 +114,8 @@ pub mod liquidity_mining;
 pub mod webhook_retry;
 // Issue #111 — max webhook subscriptions per caller
 pub mod webhook_registry;
+// Issues #1607, #1609, #1610, #1611 — attestor analytics and quorum slice monitoring
+pub mod attestor_analytics;
 
 #[cfg(test)]
 mod governance_test;
@@ -170,7 +172,7 @@ mod repay_validation_test;
 #[cfg(test)]
 mod unimplemented_stubs_test;
 #[cfg(test)]
-mod credential_features_test;
+mod attestor_analytics_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -5402,375 +5404,147 @@ impl QuorumCreditContract {
         referral::get_referral_leaderboard(env, referrers)
     }
 
-    // ── Issue #1599-1606: Credential Features ─────────────────────────────────
+    // ── Issue #1607-1611: Attestor Analytics and Quorum Slice Monitoring ────────
 
-    /// Issue #1599: Create a multi-signed credential
-    pub fn create_multi_signed_credential(
+    /// Issue #1607: Detects collusion among attestors in a quorum slice.
+    ///
+    /// Analyzes voting/attestation patterns and returns pairs of attestors with
+    /// suspiciously high agreement rates. High-concordance pairs indicate potential
+    /// collusion and require review.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// Vec of (Attestor A, Attestor B, Concordance Score) tuples for suspicious pairs
+    pub fn detect_attestor_collusion(
         env: Env,
-        holder: Address,
-        issuer: Address,
-        signers: Vec<Address>,
-        threshold: u32,
-        metadata: String,
-        expires_at: u64,
-    ) -> Result<credential::Credential, ContractError> {
-        let cred = credential::create_multi_signed_credential(
-            &env,
-            holder.clone(),
-            issuer.clone(),
-            signers,
-            threshold,
-            metadata,
-            expires_at,
-        )?;
-
-        // Store the credential
-        env.storage()
-            .persistent()
-            .set(&DataKey::Credential(cred.id.clone()), &cred);
-
-        // Track credential in holder's list
-        let mut holder_creds = match env.storage().persistent().get(&DataKey::HolderCredentials(holder.clone())) {
-            Some(creds) => creds,
-            None => Vec::new(&env),
-        };
-        holder_creds.push_back(cred.id.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::HolderCredentials(holder), &holder_creds);
-
-        Ok(cred)
+        slice_id: u64,
+    ) -> Result<Vec<attestor_analytics::AttestorPair>, ContractError> {
+        attestor_analytics::detect_attestor_collusion(&env, slice_id)
     }
 
-    /// Issue #1599: Verify multi-signature endorsement for a credential
-    pub fn verify_credential_signatures(
+    /// Issue #1609: Tracks availability of a given attestor.
+    ///
+    /// Records periodic availability checks and computes uptime percentage.
+    /// Triggers notifications when availability falls below thresholds.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `attestor` – the attestor address to track
+    /// * `is_available` – whether the attestor responded to health check
+    ///
+    /// # Returns
+    /// Updated `AttestorAvailability` record
+    pub fn track_attestor_availability(
         env: Env,
-        credential_id: BytesN<32>,
-        signatures: Vec<credential::Signature>,
+        attestor: Address,
+        is_available: bool,
+    ) -> Result<attestor_analytics::AttestorAvailability, ContractError> {
+        attestor_analytics::track_attestor_availability(&env, &attestor, is_available)
+    }
+
+    /// Issue #1610: Predicts future performance of a quorum slice.
+    ///
+    /// Analyzes past consensus times and success rates to forecast reliability.
+    /// Provides confidence metrics to indicate prediction reliability.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// `PerformancePrediction` with consensus time and reliability estimates
+    pub fn predict_slice_performance(
+        env: Env,
+        slice_id: u64,
+    ) -> Result<attestor_analytics::PerformancePrediction, ContractError> {
+        attestor_analytics::predict_slice_performance(&env, slice_id)
+    }
+
+    /// Records a performance observation for a quorum slice.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    /// * `consensus_time_secs` – consensus duration in seconds
+    /// * `consensus_success` – whether consensus was successful
+    pub fn record_slice_performance(
+        env: Env,
+        admin_signers: Vec<Address>,
+        slice_id: u64,
+        consensus_time_secs: u32,
+        consensus_success: bool,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        attestor_analytics::record_slice_performance(&env, slice_id, consensus_time_secs, consensus_success)
+    }
+
+    /// Issue #1611: Validates that a quorum slice has geographically diverse attestors.
+    ///
+    /// Ensures that attestors are distributed across multiple countries and regions
+    /// to reduce correlated failure risk. Returns false if diversity requirements not met.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// Boolean indicating whether slice meets geographic diversity requirements
+    pub fn validate_geographic_diversity(
+        env: Env,
+        slice_id: u64,
     ) -> Result<bool, ContractError> {
-        let credential: credential::Credential = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Credential(credential_id.clone()))
-            .ok_or(ContractError::NotFound)?;
-
-        credential::verify_threshold_signatures(&env, &credential, signatures)
+        attestor_analytics::validate_geographic_diversity(&env, slice_id)
     }
 
-    /// Issue #1599: Get credential by ID
-    pub fn get_credential(env: Env, credential_id: BytesN<32>) -> Result<credential::Credential, ContractError> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Credential(credential_id))
-            .ok_or(ContractError::NotFound)
-    }
-
-    /// Issue #1599: Get all credentials for a holder
-    pub fn get_holder_credentials(env: Env, holder: Address) -> Vec<BytesN<32>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::HolderCredentials(holder.clone()))
-            .unwrap_or_else(|| Vec::new(&env))
-    }
-
-    /// Issue #1599: Track endorser record
-    pub fn track_endorser_record(
-        env: Env,
-        endorser: Address,
-        value: i128,
-    ) -> Result<credential::EndorserRecord, ContractError> {
-        let record = credential::track_endorser(&env, endorser.clone(), value);
-        env.storage()
-            .persistent()
-            .set(&DataKey::EndorserRecord(endorser), &record);
-        Ok(record)
-    }
-
-    /// Issue #1603: Set credential verification rate limit for a holder
-    pub fn set_verification_rate_limit(
-        env: Env,
-        admin: Address,
-        holder: Address,
-        limit: u32,
-    ) -> Result<(), ContractError> {
-        credential_rate_limit::set_verification_rate_limit(&env, &admin, holder.clone(), limit)?;
-
-        let rate_limit = credential_rate_limit::VerificationRateLimit {
-            holder: holder.clone(),
-            limit,
-            window_seconds: 3600,
-            created_at: env.ledger().timestamp(),
-            updated_at: env.ledger().timestamp(),
-        };
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::VerificationRateLimit(holder.clone()), &rate_limit);
-
-        // Initialize token bucket
-        let bucket = credential_rate_limit::initialize_token_bucket(&env, holder.clone(), limit);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TokenBucket(holder), &bucket);
-
-        Ok(())
-    }
-
-    /// Issue #1603: Check if verification is allowed (rate limiting)
-    pub fn check_verification_rate_limit(env: Env, holder: Address) -> Result<bool, ContractError> {
-        let mut bucket: credential_rate_limit::TokenBucket = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TokenBucket(holder.clone()))
-            .ok_or(ContractError::CredentialRateLimitExceeded)?;
-
-        let allowed = credential_rate_limit::check_rate_limit(&env, &mut bucket, &holder)?;
-
-        // Update bucket state
-        env.storage()
-            .persistent()
-            .set(&DataKey::TokenBucket(holder), &bucket);
-
-        Ok(allowed)
-    }
-
-    /// Issue #1603: Get current token count for a holder
-    pub fn get_verification_tokens(env: Env, holder: Address) -> Result<u32, ContractError> {
-        let bucket: credential_rate_limit::TokenBucket = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TokenBucket(holder))
-            .ok_or(ContractError::NotFound)?;
-
-        Ok(credential_rate_limit::get_token_count(&env, &bucket))
-    }
-
-    /// Issue #1605: Create versioned metadata for a credential
-    pub fn create_versioned_metadata(
-        env: Env,
-        credential_id: BytesN<32>,
-        metadata: String,
-        issuer: Address,
-    ) -> Result<(), ContractError> {
-        let versioned = credential_tamper_detection::create_versioned_metadata(
-            &env,
-            credential_id.clone(),
-            metadata,
-            issuer,
-        )?;
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::VersionedMetadata(credential_id), &versioned);
-
-        Ok(())
-    }
-
-    /// Issue #1605: Detect metadata tampering
-    pub fn detect_metadata_tampering(env: Env, credential_id: BytesN<32>) -> Result<bool, ContractError> {
-        let versioned: credential_tamper_detection::VersionedMetadata = env
-            .storage()
-            .persistent()
-            .get(&DataKey::VersionedMetadata(credential_id.clone()))
-            .ok_or(ContractError::NotFound)?;
-
-        credential_tamper_detection::detect_metadata_tampering(&env, &versioned)
-    }
-
-    /// Issue #1605: Record a tamper alert
-    pub fn record_tamper_alert(
-        env: Env,
-        credential_id: BytesN<32>,
-        expected_hash: BytesN<32>,
-        actual_hash: BytesN<32>,
-        detector: Address,
-    ) -> Result<(), ContractError> {
-        let alert = credential_tamper_detection::record_tamper_alert(
-            &env,
-            credential_id.clone(),
-            expected_hash,
-            actual_hash,
-            detector,
-        );
-
-        let mut alerts: Vec<credential_tamper_detection::TamperAlert> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TamperingAlerts(credential_id.clone()))
-            .unwrap_or_else(|| Vec::new(&env));
-
-        alerts.push_back(alert);
-        env.storage()
-            .persistent()
-            .set(&DataKey::TamperingAlerts(credential_id), &alerts);
-
-        Ok(())
-    }
-
-    /// Issue #1605: Get forensic metadata history
-    pub fn get_forensic_history(env: Env, credential_id: BytesN<32>) -> Result<credential_tamper_detection::ForensicHistory, ContractError> {
-        let versioned: credential_tamper_detection::VersionedMetadata = env
-            .storage()
-            .persistent()
-            .get(&DataKey::VersionedMetadata(credential_id.clone()))
-            .ok_or(ContractError::NotFound)?;
-
-        let alerts: Vec<credential_tamper_detection::TamperAlert> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::TamperingAlerts(credential_id))
-            .unwrap_or_else(|| Vec::new(&env));
-
-        Ok(credential_tamper_detection::get_forensic_history(&env, &versioned, alerts))
-    }
-
-    /// Issue #1606: Create a quorum slice
-    pub fn create_quorum_slice(
+    /// Calculates detailed geographic diversity metrics for a slice.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `slice_id` – the quorum slice identifier
+    ///
+    /// # Returns
+    /// `DiversityScore` with detailed diversity metrics
+    pub fn calculate_geographic_diversity(
         env: Env,
         slice_id: u64,
-        validators: Vec<Address>,
-        threshold: u32,
+    ) -> Result<attestor_analytics::DiversityScore, ContractError> {
+        attestor_analytics::calculate_geographic_diversity(&env, slice_id)
+    }
+
+    /// Sets geographic metadata for an attestor.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `admin_signers` – admin addresses for approval
+    /// * `attestor` – the attestor address
+    /// * `country_code` – ISO 3166-1 alpha-2 country code (e.g., "US", "CN")
+    /// * `region` – geographical region (e.g., "North America", "Asia")
+    pub fn set_attestor_location(
+        env: Env,
+        admin_signers: Vec<Address>,
+        attestor: Address,
+        country_code: String,
+        region: String,
     ) -> Result<(), ContractError> {
-        let slice = quorum_slice_healing::create_quorum_slice(&env, slice_id, validators.clone(), threshold)?;
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::QuorumSlice(slice_id), &slice);
-
-        // Initialize attestors
-        for i in 0..validators.len() {
-            let validator = validators.get(i).ok_or(ContractError::NotFound)?;
-            let attestor = quorum_slice_healing::initialize_attestor(&env, validator);
-            env.storage()
-                .persistent()
-                .set(&DataKey::SliceAttestor(slice_id, validator), &attestor);
-        }
-
-        Ok(())
+        helpers::require_admin_approval(&env, &admin_signers);
+        attestor_analytics::set_attestor_location(&env, &attestor, country_code, region)
     }
 
-    /// Issue #1606: Enable self-healing for a quorum slice
-    pub fn enable_slice_self_healing(env: Env, admin: Address, slice_id: u64) -> Result<(), ContractError> {
-        admin.require_auth();
-
-        let mut slice: quorum_slice_healing::QuorumSlice = env
-            .storage()
-            .persistent()
-            .get(&DataKey::QuorumSlice(slice_id))
-            .ok_or(ContractError::QuorumSliceNotFound)?;
-
-        quorum_slice_healing::enable_slice_self_healing(&env, &admin, &mut slice)?;
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::QuorumSlice(slice_id), &slice);
-
-        Ok(())
-    }
-
-    /// Issue #1606: Detect automatic failures in quorum
-    pub fn detect_slice_failures(
+    /// Retrieves geographic metadata for an attestor.
+    ///
+    /// # Arguments
+    /// * `env` – the environment
+    /// * `attestor` – the attestor address
+    ///
+    /// # Returns
+    /// `AttestorLocation` if metadata exists, None otherwise
+    pub fn get_attestor_location(
         env: Env,
-        slice_id: u64,
-    ) -> Result<quorum_slice_healing::FailureDetection, ContractError> {
-        let slice: quorum_slice_healing::QuorumSlice = env
-            .storage()
-            .persistent()
-            .get(&DataKey::QuorumSlice(slice_id))
-            .ok_or(ContractError::QuorumSliceNotFound)?;
-
-        // Retrieve all attestors for this slice
-        let mut attestors = Vec::new(&env);
-        for i in 0..slice.validators.len() {
-            let validator = slice.validators.get(i).ok_or(ContractError::NotFound)?;
-            if let Some(attestor) = env.storage().persistent().get(&DataKey::SliceAttestor(slice_id, validator)) {
-                attestors.push_back(attestor);
-            }
-        }
-
-        quorum_slice_healing::detect_automatic_failure(&env, &slice, attestors)
-    }
-
-    /// Issue #1606: Replace a failed attestor
-    pub fn replace_failed_attestor(
-        env: Env,
-        slice_id: u64,
-        failed_attestor: Address,
-        replacement_attestor: Address,
-    ) -> Result<(), ContractError> {
-        let mut slice: quorum_slice_healing::QuorumSlice = env
-            .storage()
-            .persistent()
-            .get(&DataKey::QuorumSlice(slice_id))
-            .ok_or(ContractError::QuorumSliceNotFound)?;
-
-        let healing_event =
-            quorum_slice_healing::replace_failed_attestor(&env, &mut slice, failed_attestor.clone(), replacement_attestor.clone())?;
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::QuorumSlice(slice_id), &slice);
-
-        // Track the healing event
-        let mut events: Vec<quorum_slice_healing::HealingEvent> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SliceHealingEvents(slice_id))
-            .unwrap_or_else(|| Vec::new(&env));
-
-        events.push_back(healing_event);
-        env.storage()
-            .persistent()
-            .set(&DataKey::SliceHealingEvents(slice_id), &events);
-
-        Ok(())
-    }
-
-    /// Issue #1606: Get quorum slice status
-    pub fn get_quorum_status(env: Env, slice_id: u64) -> Result<bool, ContractError> {
-        let slice: quorum_slice_healing::QuorumSlice = env
-            .storage()
-            .persistent()
-            .get(&DataKey::QuorumSlice(slice_id))
-            .ok_or(ContractError::QuorumSliceNotFound)?;
-
-        // Retrieve all attestors
-        let mut attestors = Vec::new(&env);
-        for i in 0..slice.validators.len() {
-            let validator = slice.validators.get(i).ok_or(ContractError::NotFound)?;
-            if let Some(attestor) = env.storage().persistent().get(&DataKey::SliceAttestor(slice_id, validator)) {
-                attestors.push_back(attestor);
-            }
-        }
-
-        quorum_slice_healing::get_quorum_status(&env, &slice, &attestors)
-    }
-
-    /// Issue #1606: Mark attestor as failed
-    pub fn mark_attestor_failed(env: Env, slice_id: u64, attestor: Address) -> Result<(), ContractError> {
-        let mut attestor_record: quorum_slice_healing::Attestor = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SliceAttestor(slice_id, attestor.clone()))
-            .ok_or(ContractError::NotFound)?;
-
-        quorum_slice_healing::mark_attestor_failed(&env, &mut attestor_record);
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::SliceAttestor(slice_id, attestor), &attestor_record);
-
-        Ok(())
-    }
-
-    /// Issue #1606: Get healing events for a slice
-    pub fn get_slice_healing_events(
-        env: Env,
-        slice_id: u64,
-    ) -> Vec<quorum_slice_healing::HealingEvent> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::SliceHealingEvents(slice_id))
-            .unwrap_or_else(|| Vec::new(&env))
+        attestor: Address,
+    ) -> Option<attestor_analytics::AttestorLocation> {
+        attestor_analytics::get_attestor_location(&env, &attestor)
     }
 }

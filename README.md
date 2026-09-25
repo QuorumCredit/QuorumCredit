@@ -1029,3 +1029,11 @@ MIT
 - [Stellar Documentation](https://developers.stellar.org)
 - [Soroban Docs](https://soroban.stellar.org)
 - [Stellar Developer Discord](https://discord.gg/stellardev)
+
+## Handsoff notes
+
+<!-- handsoff-issue-1563 -->
+- #1563: Implement Gradual Rollout API for New Features
+
+<!-- handsoff-issue-1564 -->
+- #1564: Add API Request Fingerprinting for Fraud Detection

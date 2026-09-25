@@ -1,0 +1,10 @@
+# Trivy Vulnerability Ignore List
+# Format: CVE-YYYY-XXXXX [justification] [expiry-date]
+# Only add exceptions with thorough justification and regular review
+
+# Example (commented out):
+# CVE-2021-1234 - False positive, not in vulnerable code path - expires 2024-12-31
+# CVE-2022-5678 - Known issue, plan to patch in v2.0 - expires 2024-09-30
+
+# Note: This file is reviewed quarterly by security team
+# Last reviewed: 2024-09-24

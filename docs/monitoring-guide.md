@@ -1,5 +1,11 @@
 # Monitoring and Alerting Setup Guide
 
+> **Role:** Quick start. This is the short, opinionated path to get Prometheus, Grafana, and AlertManager scraping the QuorumCredit indexer's `/metrics` endpoint.
+>
+> For the complete reference — full metric semantics, every dashboard panel, the full alert catalog, and detailed runbooks — see [monitoring-setup-guide.md](./monitoring-setup-guide.md).
+>
+> **Keep both in sync:** if you change a metric, alert, or dashboard here, update the complete reference too (and vice versa). See the checklist in [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 Comprehensive monitoring for QuorumCredit protocol operations.
 
 ## Prerequisites
