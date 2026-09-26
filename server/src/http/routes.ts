@@ -15,6 +15,9 @@ import { notificationStore } from "../notifications/notificationStore.js";
 import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
 import { exportStore } from "../exports/exportStore.js";
 import { ComplexityScorer } from "../verification/complexityScorer.js";
+import { credentialStore, type Credential } from "../credentials/credentialStore.js";
+import { searchCredentialsByIssuerPattern } from "../credentials/issuerPatternSearch.js";
+import { applyDeprecationHeaders, deprecationRegistry } from "./deprecation.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -98,6 +101,43 @@ export function handleHttpRequest(
   ctx: RouteContext
 ): void {
   const url = new URL(req.url ?? "", "http://internal");
+
+  // Issue #1745: deprecation headers + usage tracking for deprecated endpoints.
+  applyDeprecationHeaders(req, res);
+
+  // Issue #1745: deprecated endpoint registry and usage report
+  if (req.method === "GET" && url.pathname === "/api/v1/deprecations") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ deprecations: deprecationRegistry.report() }));
+    return;
+  }
+
+  // Issue #1742: GET /api/v1/credentials/search?issuer_pattern=<regex>
+  if (req.method === "GET" && url.pathname === "/api/v1/credentials/search") {
+    const pattern = url.searchParams.get("issuer_pattern");
+    if (!pattern) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "issuer_pattern query parameter is required" }));
+      return;
+    }
+    const limit = url.searchParams.get("limit");
+    const offset = url.searchParams.get("offset");
+    const result = searchCredentialsByIssuerPattern(pattern, {
+      caseSensitive: url.searchParams.get("case_sensitive") === "true",
+      status: (url.searchParams.get("status") ?? undefined) as Credential["status"] | undefined,
+      type: (url.searchParams.get("type") ?? undefined) as Credential["type"] | undefined,
+      limit: limit ? Number.parseInt(limit, 10) || undefined : undefined,
+      offset: offset ? Number.parseInt(offset, 10) || undefined : undefined,
+    });
+    if ("error" in result) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: result.error }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(result));
+    return;
+  }
 
   // Health check
   if (req.method === "GET" && url.pathname === "/health") {

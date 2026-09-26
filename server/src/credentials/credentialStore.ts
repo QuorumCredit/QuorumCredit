@@ -28,8 +28,24 @@ export interface VerificationRecord {
   nextVerificationRequired: number; // timestamp when re-verification is required
 }
 
+/** Issue #1743: emitted whenever a credential's status (or verification status) changes. */
+export interface CredentialStatusChange {
+  credentialId: string;
+  holderId: string;
+  status: Credential["status"];
+  verificationStatus?: VerificationRecord["verificationStatus"];
+  previousStatus?: Credential["status"];
+  changedAt: number;
+}
+
+export type CredentialStatusListener = (change: CredentialStatusChange) => void;
+
 class CredentialStore {
   private credentials = new Map<string, Credential>();
+  /** Issue #1742: issuer -> credential ids, so pattern search runs the regex once
+   * per distinct issuer instead of once per credential. */
+  private issuerIndex = new Map<string, Set<string>>();
+  private statusListeners = new Set<CredentialStatusListener>();
   private verifications = new Map<string, VerificationRecord>();
   private credentialCounter = 0;
   private verificationCounter = 0;
@@ -57,6 +73,13 @@ class CredentialStore {
     };
 
     this.credentials.set(credentialId, credential);
+    let ids = this.issuerIndex.get(issuer);
+    if (!ids) {
+      ids = new Set();
+      this.issuerIndex.set(issuer, ids);
+    }
+    ids.add(credentialId);
+    this.emitStatusChange(credential);
     return credential;
   }
 
@@ -82,8 +105,66 @@ class CredentialStore {
   revokeCredential(credentialId: string): boolean {
     const credential = this.credentials.get(credentialId);
     if (!credential) return false;
-    credential.status = "revoked";
+    return this.setCredentialStatus(credentialId, "revoked");
+  }
+
+  /**
+   * Issue #1743: change a credential's status and notify status subscribers.
+   */
+  setCredentialStatus(credentialId: string, status: Credential["status"]): boolean {
+    const credential = this.credentials.get(credentialId);
+    if (!credential) return false;
+    const previousStatus = credential.status;
+    if (previousStatus === status) return true;
+    credential.status = status;
+    this.emitStatusChange(credential, previousStatus);
     return true;
+  }
+
+  /** Issue #1742: distinct issuers currently holding at least one credential. */
+  getIssuers(): string[] {
+    return Array.from(this.issuerIndex.keys());
+  }
+
+  /** Issue #1742: credentials issued by any of the given issuers. */
+  getCredentialsByIssuers(issuers: Iterable<string>): Credential[] {
+    const out: Credential[] = [];
+    for (const issuer of issuers) {
+      const ids = this.issuerIndex.get(issuer);
+      if (!ids) continue;
+      for (const id of ids) {
+        const credential = this.credentials.get(id);
+        if (credential) out.push(credential);
+      }
+    }
+    return out;
+  }
+
+  /** Issue #1743: subscribe to credential status changes. Returns an unsubscribe fn. */
+  onStatusChange(listener: CredentialStatusListener): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  private emitStatusChange(
+    credential: Credential,
+    previousStatus?: Credential["status"]
+  ): void {
+    const change: CredentialStatusChange = {
+      credentialId: credential.id,
+      holderId: credential.holderId,
+      status: credential.status,
+      verificationStatus: this.getVerification(credential.id)?.verificationStatus,
+      previousStatus,
+      changedAt: Math.floor(Date.now() / 1000),
+    };
+    for (const listener of this.statusListeners) {
+      try {
+        listener(change);
+      } catch (err) {
+        console.error("[credentialStore] status listener failed", err);
+      }
+    }
   }
 
   /**
@@ -148,6 +229,9 @@ class CredentialStore {
     if (rejectionReason) {
       verification.rejectionReason = rejectionReason;
     }
+
+    const credential = this.credentials.get(credentialId);
+    if (credential) this.emitStatusChange(credential, credential.status);
 
     return true;
   }

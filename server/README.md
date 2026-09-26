@@ -114,3 +114,22 @@ npm run loadtest -- --connections 200   # smoke-scale; see scripts/loadtest.ts f
 This service only *reads* the indexer's SQLite file (`better-sqlite3`, `readonly:
 true`) — it never writes to it, so there's no contention with the indexer process.
 Run them side by side, pointed at the same `--db-path`/`INDEXER_DB_PATH`.
+
+## Credential search, status stream, idempotency and deprecation (#1742–#1745)
+
+- **Issuer pattern search (#1742)** — `GET /api/v1/credentials/search?issuer_pattern=<regex>`
+  (optional `case_sensitive`, `status`, `type`, `limit`, `offset`). Patterns are validated
+  (max 256 chars, no nested quantifiers or backreferences), compiled regexes are LRU-cached,
+  and matching runs once per distinct issuer via an issuer index.
+- **Credential status WebSocket (#1743)** — `/ws/credentials/status?token=<jwt>`. Send
+  `{"type":"subscribe","credentialIds":[...]}` or `{"type":"subscribe","holderId":"..."}`;
+  the server replies with a `snapshot` per credential, then `delta` frames containing only
+  the changed fields. Connections are admitted through a pool with global and per-client caps.
+- **Idempotency keys (#1744)** — send `Idempotency-Key` on POST/PUT/PATCH/DELETE. Retries
+  replay the stored response (`Idempotent-Replayed: true`); in-flight duplicates get 409, and
+  reusing a key with a different payload gets 422. Records expire after 24h and are swept
+  every 10 minutes.
+- **Deprecation headers (#1745)** — deprecated endpoints return `Deprecation`, `Sunset`,
+  `Link` and `Warning: 299` headers. Usage is counted per endpoint/client
+  (`qc_deprecated_endpoint_requests_total`), alerts are raised (throttled, escalating near
+  sunset), and `GET /api/v1/deprecations` reports registered endpoints and usage.
