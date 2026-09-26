@@ -7,6 +7,8 @@ import { EventStore } from "./bridge/eventStore.js";
 import { Bridge } from "./bridge/bridge.js";
 import { attachLoanSocketServer } from "./ws/loanSocketServer.js";
 import { attachMetricsWsServer } from "./ws/metricsWsServer.js";
+import { attachCredentialStatusWsServer } from "./ws/credentialStatusWsServer.js";
+import { withIdempotency, defaultIdempotencyStore } from "./http/idempotency.js";
 import { handleHttpRequest } from "./http/routes.js";
 import { metrics } from "./http/metricsRegistry.js";
 import * as insuranceMarketplace from "./insurance-marketplace.js";
@@ -59,7 +61,8 @@ async function main(): Promise<void> {
       if (res.statusCode >= 500) metrics.incCounter("qc_http_request_errors_total");
     });
 
-    handleHttpRequest(req, res, {
+    // Issue #1744: Idempotency-Key handling for mutating requests.
+    withIdempotency(req, res, () => handleHttpRequest(req, res, {
       authSecret: config.authSecret,
       tokenTtlSeconds: config.tokenTtlSeconds,
       costAllocator: bridge.costAllocator,
@@ -69,7 +72,7 @@ async function main(): Promise<void> {
       rpcClient,
       paymentStore,
       searchService,
-    });
+    }));
   });
 
   attachLoanSocketServer({
@@ -90,6 +93,12 @@ async function main(): Promise<void> {
     redisUrl: config.redisUrl,
   });
 
+  // Issue #1743: real-time credential status updates.
+  attachCredentialStatusWsServer({
+    httpServer,
+    authSecret: config.authSecret,
+  });
+
   bridge.start();
 
   httpServer.listen(config.port, () => {
@@ -106,6 +115,7 @@ async function main(): Promise<void> {
     await revocationStore.close();
     await rpcClient.close();
     await paymentStore.close();
+    defaultIdempotencyStore.close();
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown());
