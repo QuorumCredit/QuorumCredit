@@ -35,6 +35,10 @@ tags:
     description: Prometheus metrics scrape endpoint
   - name: auth
     description: API token issuance
+  - name: graphql
+    description: GraphQL queries with bounded complexity and list sizes
+  - name: api-v1
+    description: Tier-limited versioned API operations
   - name: expenses
     description: Loan expense tracking
   - name: recurring-payments
@@ -104,6 +108,145 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /graphql:
+    post:
+      tags: [graphql]
+      summary: Execute a GraphQL query
+      operationId: executeGraphqlQuery
+      description: Queries credentials, verifications, verification statistics, and indexed events. Query complexity is limited to 100 and list arguments to 100.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GraphqlRequest"
+      responses:
+        "200":
+          description: GraphQL query result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphqlResponse"
+        "400":
+          description: Invalid or over-complex query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GraphqlResponse"
+        "413":
+          description: Request body exceeds 64 KiB
+        "401":
+          description: Missing or invalid bearer token
+        "429":
+          description: Tier quota exhausted
+
+  /api/v1/limits:
+    get:
+      tags: [api-v1]
+      summary: Get current API rate-limit usage
+      operationId: getApiLimits
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current tier quota and window usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiLimitsResponse"
+        "401":
+          description: Missing or invalid bearer token
+        "429":
+          description: Tier quota exhausted
+
+  /api/v1/retry-stats:
+    get:
+      tags: [api-v1]
+      summary: Get retry statistics
+      operationId: getRetryStatistics
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Operation-level retry counts and accumulated delay
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetryStatsResponse"
+        "401":
+          description: Missing or invalid bearer token
+        "429":
+          description: Tier quota exhausted
+
+  /api/v1/credentials/import/batch:
+    post:
+      tags: [api-v1]
+      summary: Import a credential batch
+      operationId: importCredentialBatch
+      security:
+        - BearerAuth: []
+      description: Imports up to 500 credential records asynchronously. Invalid rows are reported individually. Expires-at values are Unix timestamps in seconds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              maxItems: 500
+              items:
+                $ref: "#/components/schemas/CredentialImportItem"
+          text/csv:
+            schema:
+              type: string
+              description: CSV with holderId,type,issuer,expiresAt and optional metadata columns
+      responses:
+        "202":
+          description: Import accepted; poll the returned importId for progress
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialImportBatch"
+        "400":
+          description: Invalid request body or CSV headers
+        "401":
+          description: Missing or invalid bearer token
+        "413":
+          description: Request exceeds 2 MiB or 500 rows
+        "415":
+          description: Unsupported content type
+        "429":
+          description: Tier quota exhausted
+
+  /api/v1/credentials/import/{importId}:
+    get:
+      tags: [api-v1]
+      summary: Get credential import progress
+      operationId: getCredentialImport
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Import status and per-row results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CredentialImportBatch"
+        "401":
+          description: Missing or invalid bearer token
+        "404":
+          description: Import does not exist or belongs to another API identity
+        "429":
+          description: Tier quota exhausted
 
   # ── Loan Expenses ───────────────────────────────────────────────────────────
   /loans/{loanId}/expenses:
@@ -527,6 +670,11 @@ paths:
 
 # ── Components ──────────────────────────────────────────────────────────────
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: signed token
   parameters:
     LoanId:
       name: loanId
@@ -553,6 +701,145 @@ components:
           description: Error message describing what went wrong
       example:
         error: "Invalid API key"
+
+    GraphqlRequest:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+        operationName:
+          type: string
+        variables:
+          type: object
+          additionalProperties: true
+
+    GraphqlResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          additionalProperties: true
+        errors:
+          type: array
+          items:
+            type: object
+            required: [message]
+            properties:
+              message:
+                type: string
+
+    ApiLimitsResponse:
+      type: object
+      required: [tier, limit, used, remaining, resetAt, windowMs]
+      properties:
+        tier:
+          type: string
+          enum: [free, pro, enterprise]
+        limit:
+          type: integer
+        used:
+          type: integer
+          description: Requests already consumed in the current rate-limit window
+        remaining:
+          type: integer
+        resetAt:
+          type: integer
+          format: int64
+          description: Rate-limit window reset timestamp in milliseconds
+        windowMs:
+          type: integer
+
+    RetryStatsResponse:
+      type: object
+      required: [operations]
+      properties:
+        operations:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/RetryStatistics"
+
+    RetryStatistics:
+      type: object
+      required: [attempts, retries, succeeded, failed, totalDelayMs]
+      properties:
+        attempts:
+          type: integer
+        retries:
+          type: integer
+        succeeded:
+          type: integer
+        failed:
+          type: integer
+        totalDelayMs:
+          type: integer
+
+    CredentialImportItem:
+      type: object
+      required: [holderId, type, issuer, expiresAt]
+      properties:
+        holderId:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          enum: [identity, education, professional, financial]
+        issuer:
+          type: string
+          minLength: 1
+        expiresAt:
+          type: integer
+          format: int64
+          description: Future Unix timestamp in seconds
+        metadata:
+          type: object
+          additionalProperties: true
+
+    CredentialImportBatch:
+      type: object
+      required: [importId, status, total, processed, imported, failed, progress, results]
+      properties:
+        importId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [in_progress, completed]
+        total:
+          type: integer
+        processed:
+          type: integer
+        imported:
+          type: integer
+        failed:
+          type: integer
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        createdAt:
+          type: integer
+          format: int64
+        completedAt:
+          type: integer
+          format: int64
+        results:
+          type: array
+          items:
+            type: object
+            required: [row, status, errors]
+            properties:
+              row:
+                type: integer
+              status:
+                type: string
+                enum: [pending, imported, failed]
+              credentialId:
+                type: string
+              errors:
+                type: array
+                items:
+                  type: string
 
     HealthResponse:
       type: object

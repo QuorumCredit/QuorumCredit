@@ -11,6 +11,7 @@
  */
 
 import type { Redis } from "ioredis";
+import { retryExecutor } from "../resilience/retry.js";
 
 export interface RecurringPaymentSchedule {
   loanId: string;
@@ -34,6 +35,13 @@ export interface RecurringPaymentAttemptResult {
 /** Number of retry attempts after an initial failed transfer, before the
  * schedule gives up on that period and notifies the borrower. */
 const MAX_RETRIES = 3;
+
+retryExecutor.setPolicy("recurring-payment", {
+  maxRetries: MAX_RETRIES,
+  baseDelayMs: 500,
+  maxDelayMs: 4_000,
+  jitter: true,
+});
 
 export interface RecurringPaymentStore {
   setup(
@@ -127,18 +135,18 @@ export class LocalRecurringPaymentStore implements RecurringPaymentStore {
       return { ok: true, retriesUsed: 0, notifiedBorrower: false };
     }
 
-    let retriesUsed = 0;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      retriesUsed = attempt;
-      const ok = await transfer();
-      if (ok) {
-        schedule.successCount += 1;
-        schedule.retryCount = 0;
-        schedule.nextPaymentDue += schedule.frequencySeconds;
-        // Record successful submission to prevent replay of THIS period.
-        this.recentlySubmitted.set(key, Date.now());
-        return { ok: true, retriesUsed, notifiedBorrower: false };
-      }
+    const execution = await retryExecutor.execute(
+      "recurring-payment",
+      transfer,
+      (ok) => !ok
+    );
+    const retriesUsed = execution.attempts - 1;
+    if (execution.value) {
+      schedule.successCount += 1;
+      schedule.retryCount = 0;
+      schedule.nextPaymentDue += schedule.frequencySeconds;
+      this.recentlySubmitted.set(key, Date.now());
+      return { ok: true, retriesUsed, notifiedBorrower: false };
     }
 
     schedule.retryCount = retriesUsed;
@@ -250,22 +258,21 @@ export class RedisRecurringPaymentStore implements RecurringPaymentStore {
       return { ok: true, retriesUsed: 0, notifiedBorrower: false };
     }
 
-    let retriesUsed = 0;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      retriesUsed = attempt;
-      const ok = await transfer();
-      if (ok) {
-        schedule.successCount += 1;
-        schedule.retryCount = 0;
-        schedule.nextPaymentDue += schedule.frequencySeconds;
-        // Persist schedule update.
-        const scheduleKey = `${REDIS_SCHEDULE_PREFIX}${loanId}`;
-        const payload = JSON.stringify(schedule);
-        await this.redis.set(scheduleKey, payload);
-        // Record successful submission to prevent replay of THIS period.
-        await this.recordSubmitted(key);
-        return { ok: true, retriesUsed, notifiedBorrower: false };
-      }
+    const execution = await retryExecutor.execute(
+      "recurring-payment",
+      transfer,
+      (ok) => !ok
+    );
+    const retriesUsed = execution.attempts - 1;
+    if (execution.value) {
+      schedule.successCount += 1;
+      schedule.retryCount = 0;
+      schedule.nextPaymentDue += schedule.frequencySeconds;
+      const scheduleKey = `${REDIS_SCHEDULE_PREFIX}${loanId}`;
+      const payload = JSON.stringify(schedule);
+      await this.redis.set(scheduleKey, payload);
+      await this.recordSubmitted(key);
+      return { ok: true, retriesUsed, notifiedBorrower: false };
     }
 
     schedule.retryCount = retriesUsed;

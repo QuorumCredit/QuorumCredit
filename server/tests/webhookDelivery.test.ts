@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { WebhookDeliveryService, MAX_RETRIES, BASE_DELAY_MS, backoffDelayMs } from "../../src/webhooks/delivery.js";
+import { WebhookDeliveryService, MAX_RETRIES, BASE_DELAY_MS, backoffDelayMs } from "../src/webhooks/delivery.js";
 
 describe("webhook delivery rate limiting", () => {
   it("backoffDelayMs returns increasing delays", () => {
@@ -21,6 +21,8 @@ describe("webhook delivery rate limiting", () => {
       url: "https://example.com",
       events: [],
       secret: "secret",
+      createdAt: new Date(),
+      enabled: true,
     };
 
     const record = await service.deliver(registration, "test", {}, sender, (ms) => Promise.resolve());
@@ -42,6 +44,8 @@ describe("webhook delivery rate limiting", () => {
       url: "https://example.com",
       events: [],
       secret: "secret",
+      createdAt: new Date(),
+      enabled: true,
     };
 
     const record = await service.deliver(registration, "test", {}, sender, (ms) => Promise.resolve());

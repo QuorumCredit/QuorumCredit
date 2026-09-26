@@ -71,6 +71,40 @@ hard expiry (30s default warning window) so clients can refresh in-band —
 dropping the connection. If a client never refreshes, the server sends `auth_expired`
 and disconnects.
 
+## API extensions
+
+The service adds a bearer-token-authenticated GraphQL endpoint and versioned API
+alongside the existing routes:
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /graphql` | Queries credentials, verifications, verification statistics, and indexed events. Query complexity is capped at 100; list arguments are bounded to 100. |
+| `GET /api/v1/limits` | Current bearer-token tier, usage, limit, and reset time. |
+| `GET /api/v1/retry-stats` | Per-operation retry attempts, retries, outcomes, and accumulated delay. |
+| `POST /api/v1/credentials/import/batch` | Import up to 500 credentials as a JSON array or CSV (`holderId,type,issuer,expiresAt,metadata`). Returns `202` with an import ID and row-level results. |
+| `GET /api/v1/credentials/import/{importId}` | Poll batch progress and row-level validation/import results; only the submitting API identity can read it. |
+
+JSON rows use `holderId`, `type` (`identity`, `education`, `professional`, or
+`financial`), `issuer`, `expiresAt` (future Unix timestamp in seconds), and
+optional object-valued `metadata`. Both formats are limited to 2 MiB. Import
+tracking and the existing credential store are in memory: records do not survive
+restart or replicate between instances; durable credential storage is outside the
+service's current storage design.
+
+Provisioned API keys default to the `free` tier. `API_KEY_TIERS` accepts a JSON
+object mapping each provisioned key's SHA-256 hash to `free`, `pro`, or
+`enterprise`. `/api/v1/*` bearer tokens carry that tier and return `X-RateLimit-*`
+headers. Defaults are 100, 1,000, and 10,000 requests per minute respectively;
+`API_RATE_LIMIT_FREE`, `API_RATE_LIMIT_PRO`, `API_RATE_LIMIT_ENTERPRISE`, and
+`API_RATE_LIMIT_WINDOW_MS` override the quotas. `REDIS_URL` enables atomic shared
+limits across replicas; without it, limits are per process. Retry statistics are
+also process-local.
+
+Retries use `RetryExecutor` (`src/resilience/retry.ts`) with per-operation
+policies and full jitter over capped exponential delays. Webhook delivery retains
+its five retries, 500 ms base, and 8 s cap; other operations can configure
+policies with `setPolicy`.
+
 **Resume cursor**: every broadcast event carries the underlying indexer row's `id`
 (monotonic). Loan-stream clients pass `since` on `subscribe({borrower, since})` to
 replay everything they missed before going live. Metrics is a cumulative gauge, not a

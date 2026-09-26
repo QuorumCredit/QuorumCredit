@@ -28,7 +28,7 @@ export interface VerificationRecord {
   nextVerificationRequired: number; // timestamp when re-verification is required
 }
 
-class CredentialStore {
+export class CredentialStore {
   private credentials = new Map<string, Credential>();
   private verifications = new Map<string, VerificationRecord>();
   private credentialCounter = 0;
@@ -74,6 +74,10 @@ class CredentialStore {
     return Array.from(this.credentials.values()).filter(
       (c) => c.holderId === holderId
     );
+  }
+
+  getAllCredentials(): Credential[] {
+    return Array.from(this.credentials.values());
   }
 
   /**

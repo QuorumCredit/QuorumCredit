@@ -20,6 +20,7 @@ interface EventRow {
 export class EventStore {
   private readonly db: Database.Database;
   private readonly stmt: Database.Statement<[number]>;
+  private readonly recentStmt: Database.Statement<[number]>;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath, { readonly: true, fileMustExist: true });
@@ -27,11 +28,31 @@ export class EventStore {
       `SELECT id, ledger, ledger_closed_at, tx_hash, contract_id, category, action, value_json
        FROM events WHERE id > ? ORDER BY id ASC`
     );
+    this.recentStmt = this.db.prepare(
+      `SELECT id, ledger, ledger_closed_at, tx_hash, contract_id, category, action, value_json
+       FROM events ORDER BY id DESC LIMIT ?`
+    );
   }
 
   /** Rows with id strictly greater than `sinceId`, oldest first. */
   getEventsSince(sinceId: number): IndexedEvent[] {
     const rows = this.stmt.all(sinceId) as EventRow[];
+    return rows.map((row) => ({
+      id: row.id,
+      ledger: row.ledger,
+      ledgerClosedAt: row.ledger_closed_at,
+      txHash: row.tx_hash,
+      contractId: row.contract_id,
+      category: row.category,
+      action: row.action,
+      value: safeParse(row.value_json),
+    }));
+  }
+
+  /** Most recent indexed events, newest first, bounded for API consumers. */
+  getRecentEvents(limit: number): IndexedEvent[] {
+    const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+    const rows = this.recentStmt.all(boundedLimit) as EventRow[];
     return rows.map((row) => ({
       id: row.id,
       ledger: row.ledger,
