@@ -305,6 +305,18 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "InsufficientQuorum"),
             String::from_str(env, "Insufficient quorum to perform self-healing."),
         ),
+        ContractError::SbtGroupNotFound => (
+            String::from_str(env, "SbtGroupNotFound"),
+            String::from_str(env, "No group SBT record found for the requested group_id."),
+        ),
+        ContractError::SbtGroupProposalNotFound => (
+            String::from_str(env, "SbtGroupProposalNotFound"),
+            String::from_str(env, "No membership proposal found for the requested (group_id, proposal_id)."),
+        ),
+        ContractError::SbtLineageNotFound => (
+            String::from_str(env, "SbtLineageNotFound"),
+            String::from_str(env, "No lineage node found for the requested sbt_id."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown error occurred."),
@@ -691,4 +703,14 @@ EmergencyBypassNotAuthorised = 131,
     SelfHealingDisabled = 233,
     /// Issue #1606: Insufficient quorum to perform self-healing.
     InsufficientQuorum = 234,
+
+    // ── Issue #1739: SBT Group Ownership ─────────────────────────────────────
+    /// No group SBT record found for the requested group_id.
+    SbtGroupNotFound = 235,
+    /// No membership proposal found for the requested (group_id, proposal_id).
+    SbtGroupProposalNotFound = 236,
+
+    // ── Issue #1741: SBT Lineage Tracking ────────────────────────────────────
+    /// No lineage node found for the requested sbt_id.
+    SbtLineageNotFound = 237,
 }

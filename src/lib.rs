@@ -117,6 +117,16 @@ pub mod webhook_registry;
 // Issues #1607, #1609, #1610, #1611 — attestor analytics and quorum slice monitoring
 pub mod attestor_analytics;
 
+// ── Issues #1738–#1741: SBT features ─────────────────────────────────────────
+// Issue #1738 — SBT Reputation System
+pub mod sbt_reputation;
+// Issue #1739 — SBT Group Ownership
+pub mod sbt_group;
+// Issue #1740 — SBT Staking and Rewards
+pub mod sbt_staking;
+// Issue #1741 — SBT Lineage Tracking
+pub mod sbt_lineage;
+
 #[cfg(test)]
 mod governance_test;
 #[cfg(test)]
