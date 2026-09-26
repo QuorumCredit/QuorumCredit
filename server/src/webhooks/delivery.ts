@@ -11,6 +11,7 @@
 
 import { createSignedWebhookRequest, type WebhookRegistration } from "./signature.js";
 import type { Redis } from "ioredis";
+import { retryExecutor } from "../resilience/retry.js";
 
 /** Canonical event types third-party apps can subscribe to. The legacy
  * dot-separated event names (loan.disbursed, etc.) remain supported in
@@ -68,9 +69,15 @@ export interface WebhookAlert {
 /** Retries after the initial attempt, before a delivery is marked failed. */
 export const MAX_RETRIES = 5;
 
-/** Base delay for exponential backoff between delivery attempts (ms). Actual
- * delay for retry N is BASE_DELAY_MS * 2^(N-1), e.g. 500ms, 1s, 2s, 4s, 8s. */
+/** Exponential delay ceiling for retry N before full jitter is applied. */
 export const BASE_DELAY_MS = 500;
+
+retryExecutor.setPolicy("webhook", {
+  maxRetries: MAX_RETRIES,
+  baseDelayMs: BASE_DELAY_MS,
+  maxDelayMs: BASE_DELAY_MS * 2 ** (MAX_RETRIES - 1),
+  jitter: true,
+});
 
 export function backoffDelayMs(retryNumber: number): number {
   return BASE_DELAY_MS * Math.pow(2, retryNumber - 1);
@@ -178,39 +185,39 @@ export class WebhookDeliveryService {
 
     this.upsertRecord(record);
 
-    for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
-      let result: { ok: boolean; statusCode?: number; error?: string };
-      try {
-        result = await send(signed.url, signed.headers, signed.payload);
-      } catch (error) {
-        result = { ok: false, error: error instanceof Error ? error.message : "unknown error" };
+    const execution = await retryExecutor.execute(
+      "webhook",
+      async () => {
+        let result: { ok: boolean; statusCode?: number; error?: string };
+        try {
+          result = await send(signed.url, signed.headers, signed.payload);
+        } catch (error) {
+          result = {
+            ok: false,
+            error: error instanceof Error ? error.message : "unknown error",
+          };
+        }
+        return result;
+      },
+      (result) => !result.ok,
+      {
+        sleep,
+        onAttempt: (attempt, result) => {
+          record.attempts.push({
+            attempt,
+            atMs: Date.now(),
+            ok: result.ok,
+            statusCode: result.statusCode,
+            error: result.error,
+          });
+        },
       }
+    );
 
-      record.attempts.push({
-        attempt,
-        atMs: Date.now(),
-        ok: result.ok,
-        statusCode: result.statusCode,
-        error: result.error,
-      });
-
-      if (result.ok) {
-        record.status = "delivered";
-        record.completedAt = Date.now();
-        this.upsertRecord(record);
-        return record;
-      }
-
-      const isLastAttempt = attempt === MAX_RETRIES + 1;
-      if (!isLastAttempt) {
-        await sleep(backoffDelayMs(attempt));
-      }
-    }
-
-    record.status = "failed";
+    record.status = execution.value.ok ? "delivered" : "failed";
     record.completedAt = Date.now();
     this.upsertRecord(record);
-    this.checkAndEmitAlerts(registration.id);
+    if (record.status === "failed") this.checkAndEmitAlerts(registration.id);
     return record;
   }
 
@@ -403,39 +410,39 @@ export class RedisWebhookDeliveryService {
 
     await this.persistRecord(record);
 
-    for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
-      let result: { ok: boolean; statusCode?: number; error?: string };
-      try {
-        result = await send(signed.url, signed.headers, signed.payload);
-      } catch (error) {
-        result = { ok: false, error: error instanceof Error ? error.message : "unknown error" };
+    const execution = await retryExecutor.execute(
+      "webhook",
+      async () => {
+        let result: { ok: boolean; statusCode?: number; error?: string };
+        try {
+          result = await send(signed.url, signed.headers, signed.payload);
+        } catch (error) {
+          result = {
+            ok: false,
+            error: error instanceof Error ? error.message : "unknown error",
+          };
+        }
+        return result;
+      },
+      (result) => !result.ok,
+      {
+        sleep,
+        onAttempt: (attempt, result) => {
+          record.attempts.push({
+            attempt,
+            atMs: Date.now(),
+            ok: result.ok,
+            statusCode: result.statusCode,
+            error: result.error,
+          });
+        },
       }
+    );
 
-      record.attempts.push({
-        attempt,
-        atMs: Date.now(),
-        ok: result.ok,
-        statusCode: result.statusCode,
-        error: result.error,
-      });
-
-      if (result.ok) {
-        record.status = "delivered";
-        record.completedAt = Date.now();
-        await this.persistRecord(record);
-        return record;
-      }
-
-      const isLastAttempt = attempt === MAX_RETRIES + 1;
-      if (!isLastAttempt) {
-        await sleep(backoffDelayMs(attempt));
-      }
-    }
-
-    record.status = "failed";
+    record.status = execution.value.ok ? "delivered" : "failed";
     record.completedAt = Date.now();
     await this.persistRecord(record);
-    await this.checkAndEmitAlerts(registration.id);
+    if (record.status === "failed") await this.checkAndEmitAlerts(registration.id);
     return record;
   }
 

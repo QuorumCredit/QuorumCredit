@@ -15,6 +15,13 @@ import { notificationStore } from "../notifications/notificationStore.js";
 import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
 import { exportStore } from "../exports/exportStore.js";
 import { ComplexityScorer } from "../verification/complexityScorer.js";
+import { credentialStore } from "../credentials/credentialStore.js";
+import type { EventStore } from "../bridge/eventStore.js";
+import type { ApiRateLimiter } from "../auth/apiRateLimiter.js";
+import {
+  handleApiV1Request,
+  handleTierLimitedGraphqlRequest,
+} from "./apiV1Routes.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -42,6 +49,10 @@ export interface RouteContext {
   notificationDelivery?: NotificationDelivery;
   /** Issue #1585 — Credential verification complexity scoring and analysis. */
   complexityScorer?: ComplexityScorer;
+  /** Issue #1747 — indexed event source for GraphQL queries. */
+  eventStore?: EventStore;
+  /** Issue #1748 — shared/local user-tier API request limiter. */
+  apiRateLimiter?: ApiRateLimiter;
 }
 
 /**
@@ -110,6 +121,34 @@ export function handleHttpRequest(
   if (req.method === "GET" && url.pathname === "/metrics") {
     res.writeHead(200, { "content-type": "text/plain; version=0.0.4" });
     res.end(metrics.toPrometheusText());
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/v1/")) {
+    handleApiV1Request(req, res, url, {
+      authSecret: ctx.authSecret,
+      revocationStore: ctx.revocationStore,
+      apiRateLimiter: ctx.apiRateLimiter,
+    });
+    return;
+  }
+
+  if (url.pathname === "/graphql") {
+    if (!ctx.eventStore) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ errors: [{ message: "GraphQL data sources are unavailable" }] }));
+      return;
+    }
+    handleTierLimitedGraphqlRequest(
+      req,
+      res,
+      {
+        authSecret: ctx.authSecret,
+        revocationStore: ctx.revocationStore,
+        apiRateLimiter: ctx.apiRateLimiter,
+      },
+      { credentials: credentialStore, events: ctx.eventStore }
+    );
     return;
   }
 
@@ -710,7 +749,13 @@ export function handleHttpRequest(
         return;
       }
 
-      const issued = issueToken(ctx.authSecret, body.apiKey, ctx.tokenTtlSeconds, body.borrower);
+      const issued = issueToken(
+        ctx.authSecret,
+        body.apiKey,
+        ctx.tokenTtlSeconds,
+        body.borrower,
+        keyStore.getTier(body.apiKey)
+      );
 
       // Issue #1593: Register token with expiration monitor
       const now = Math.floor(Date.now() / 1000);

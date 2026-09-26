@@ -23,6 +23,8 @@ export interface ApiKeyStore {
   isValid(rawKey: string): boolean;
   /** Register an additional hashed key at runtime (e.g. for tests). */
   registerHash(hash: KeyHash): void;
+  /** Returns the provisioned tier, defaulting valid keys to the free tier. */
+  getTier(rawKey: string): "free" | "pro" | "enterprise" | undefined;
 }
 
 function sha256hex(input: string): string {
@@ -36,12 +38,20 @@ function safeHexEqual(a: string, b: string): boolean {
 }
 
 /** Build the store from a comma-separated list of SHA-256 hex digests. */
-export function buildApiKeyStore(hashList: string): ApiKeyStore {
+export function buildApiKeyStore(
+  hashList: string,
+  tiers: Record<string, "free" | "pro" | "enterprise"> = {}
+): ApiKeyStore {
   const hashes = new Set<string>(
     hashList
       .split(",")
       .map((h) => h.trim().toLowerCase())
       .filter((h) => h.length === 64) // only valid SHA-256 hex strings
+  );
+  const tierByHash = new Map(
+    Object.entries(tiers)
+      .filter(([hash, tier]) => hashes.has(hash.toLowerCase()) && isApiTier(tier))
+      .map(([hash, tier]) => [hash.toLowerCase(), tier])
   );
 
   return {
@@ -56,6 +66,10 @@ export function buildApiKeyStore(hashList: string): ApiKeyStore {
       const normalised = hash.trim().toLowerCase();
       if (normalised.length === 64) hashes.add(normalised);
     },
+    getTier(rawKey: string): "free" | "pro" | "enterprise" | undefined {
+      const digest = sha256hex(rawKey);
+      return hashes.has(digest) ? tierByHash.get(digest) ?? "free" : undefined;
+    },
   };
 }
 
@@ -64,5 +78,23 @@ export function buildApiKeyStore(hashList: string): ApiKeyStore {
  * Falls back to an empty store (all keys rejected) when the variable is absent.
  */
 export function loadApiKeyStore(env: NodeJS.ProcessEnv = process.env): ApiKeyStore {
-  return buildApiKeyStore(env.API_KEY_HASHES ?? "");
+  let tiers: Record<string, "free" | "pro" | "enterprise"> = {};
+  if (env.API_KEY_TIERS) {
+    const parsed: unknown = JSON.parse(env.API_KEY_TIERS);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error("API_KEY_TIERS must be a JSON object mapping key hashes to tiers");
+    }
+    tiers = {};
+    for (const [hash, tier] of Object.entries(parsed)) {
+      if (!/^[a-f0-9]{64}$/i.test(hash) || !isApiTier(tier)) {
+        throw new Error("API_KEY_TIERS entries must map SHA-256 hashes to known API tiers");
+      }
+      tiers[hash.toLowerCase()] = tier;
+    }
+  }
+  return buildApiKeyStore(env.API_KEY_HASHES ?? "", tiers);
+}
+
+function isApiTier(value: unknown): value is "free" | "pro" | "enterprise" {
+  return value === "free" || value === "pro" || value === "enterprise";
 }

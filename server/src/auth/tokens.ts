@@ -17,6 +17,7 @@ import type { RevocationStore } from "./jtiRevocationStore.js";
 export interface TokenPayload {
   sub: string;
   borrower?: string;
+  tier?: "free" | "pro" | "enterprise";
   iat: number;
   exp: number;
   /** Issue #1292: unique token identifier for targeted revocation. */
@@ -53,13 +54,15 @@ export function issueToken(
   secret: string,
   subject: string,
   ttlSeconds: number,
-  borrower?: string
+  borrower?: string,
+  tier?: TokenPayload["tier"]
 ): IssuedToken {
   const now = Math.floor(Date.now() / 1000);
   const jti = generateJti();
   const payload: TokenPayload = {
     sub: subject,
     borrower,
+    tier,
     iat: now,
     exp: now + ttlSeconds,
     jti,
