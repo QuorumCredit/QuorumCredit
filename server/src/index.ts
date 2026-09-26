@@ -13,6 +13,7 @@ import * as insuranceMarketplace from "./insurance-marketplace.js";
 import { buildRevocationStore } from "./auth/jtiRevocationStore.js";
 import { buildSorobanRpcClient } from "./soroban/rpcClient.js";
 import { buildRecurringPaymentStore } from "./recurring/recurringPaymentStore.js";
+import { FacetedSearchService } from "./search/facetedSearch.js";
 
 export function buildBus(redisUrl: string | undefined): PubSubBus {
   if (redisUrl) return new RedisBus(redisUrl);
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
   const revocationStore = buildRevocationStore(config.redisUrl);
   const rpcClient = buildSorobanRpcClient(config.sorobanRpc.url, config.sorobanRpc.contractId, config.sorobanRpc.keeperSecretKey);
   const paymentStore = buildRecurringPaymentStore(config.redisUrl);
+  const searchService = new FacetedSearchService(store);
 
   const bridge = new Bridge({
     bus,
@@ -66,6 +68,7 @@ async function main(): Promise<void> {
       revocationStore,
       rpcClient,
       paymentStore,
+      searchService,
     });
   });
 
