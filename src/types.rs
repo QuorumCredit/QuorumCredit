@@ -1250,6 +1250,26 @@ pub enum DataKey {
     SlicePerformanceHistory(u64),
     /// attestor → AttestorLocation geographic metadata
     AttestorLocation(Address),
+
+    // ── Issue #1738: SBT Reputation System ───────────────────────────────────
+    /// holder → SbtReputationRecord
+    SbtReputation(Address),
+
+    // ── Issue #1739: SBT Group Ownership ──────────────────────────────────────
+    /// u64: monotonically increasing group SBT ID counter
+    SbtGroupCounter,
+    /// group_id → GroupSbt
+    SbtGroup(u64),
+    /// (group_id, proposal_id) → GroupMembershipProposal
+    SbtGroupProposal(u64, u64),
+
+    // ── Issue #1740: SBT Staking and Rewards ─────────────────────────────────
+    /// (sbt_id, holder) → SbtStakeRecord
+    SbtStake(u64, Address),
+
+    // ── Issue #1741: SBT Lineage Tracking ─────────────────────────────────────
+    /// sbt_id → SbtLineageNode
+    SbtLineage(u64),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
