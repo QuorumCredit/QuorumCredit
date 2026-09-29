@@ -22,6 +22,10 @@ import {
   handleApiV1Request,
   handleTierLimitedGraphqlRequest,
 } from "./apiV1Routes.js";
+import { circuitBreakerService } from "../resilience/circuitBreaker.js";
+import { credentialDeduplicationService } from "../credentials/credentialDeduplicationService.js";
+import { credentialAnonymizationService } from "../credentials/credentialAnonymizationService.js";
+import { serviceHealthDashboard } from "../health/serviceHealthDashboard.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -2003,6 +2007,204 @@ export function handleHttpRequest(
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(stats));
     metrics.incCounter("qc_verification_stats_retrieved_total");
+    return;
+  }
+
+  // ── Issue #1762: Circuit Breaker state endpoints ─────────────────────────
+
+  // GET /circuit-breaker/snapshot — all circuit states
+  if (req.method === "GET" && url.pathname === "/circuit-breaker/snapshot") {
+    const snapshot = circuitBreakerService.getSnapshot();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(snapshot));
+    return;
+  }
+
+  // GET /circuit-breaker/:service — single circuit state
+  const circuitMatch = url.pathname.match(/^\/circuit-breaker\/([^/]+)$/);
+  if (circuitMatch && req.method === "GET") {
+    const service = decodeURIComponent(circuitMatch[1] as string);
+    const status = circuitBreakerService.getStatus(service);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(status));
+    return;
+  }
+
+  // POST /circuit-breaker/:service/reset — manually reset a circuit
+  const circuitResetMatch = url.pathname.match(/^\/circuit-breaker\/([^/]+)\/reset$/);
+  if (circuitResetMatch && req.method === "POST") {
+    const service = decodeURIComponent(circuitResetMatch[1] as string);
+    circuitBreakerService.reset(service);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ service, reset: true }));
+    return;
+  }
+
+  // ── Issue #1763: Credential Deduplication endpoints ───────────────────────
+
+  // POST /credentials/deduplicate — scan all credentials for duplicates
+  if (req.method === "POST" && url.pathname === "/credentials/deduplicate") {
+    const all = credentialStore.getAllCredentials();
+    const result = credentialDeduplicationService.detectDuplicates(all);
+    metrics.incCounter("qc_dedup_scans_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(result));
+    return;
+  }
+
+  // GET /credentials/deduplicate/pending — list pending duplicate groups
+  if (req.method === "GET" && url.pathname === "/credentials/deduplicate/pending") {
+    const groups = credentialDeduplicationService.getPendingGroups();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ groups }));
+    return;
+  }
+
+  // POST /credentials/deduplicate/:groupId/merge — merge a duplicate group
+  const dedupMergeMatch = url.pathname.match(/^\/credentials\/deduplicate\/([^/]+)\/merge$/);
+  if (dedupMergeMatch && req.method === "POST") {
+    const groupId = decodeURIComponent(dedupMergeMatch[1] as string);
+    const mergeResult = credentialDeduplicationService.mergeGroup(groupId);
+    if (!mergeResult) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "group not found or already resolved" }));
+      return;
+    }
+    metrics.incCounter("qc_dedup_merges_total");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(mergeResult));
+    return;
+  }
+
+  // GET /credentials/deduplicate/stats — deduplication statistics
+  if (req.method === "GET" && url.pathname === "/credentials/deduplicate/stats") {
+    const stats = credentialDeduplicationService.getStats();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    return;
+  }
+
+  // ── Issue #1764: Credential Anonymization endpoint ────────────────────────
+
+  // POST /admin/anonymize — anonymize credentials for safe export
+  if (req.method === "POST" && url.pathname === "/admin/anonymize") {
+    readJsonBody<{
+      credentialIds?: string[];
+      reversible?: boolean;
+      suppressMetadataFields?: string[];
+    }>(req)
+      .then((body) => {
+        const ids = body.credentialIds ?? [];
+        if (!Array.isArray(ids) || ids.length === 0) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "credentialIds must be a non-empty array" }));
+          return;
+        }
+
+        const credentials = ids
+          .map((id) => credentialStore.getCredential(id))
+          .filter((c): c is NonNullable<typeof c> => c !== undefined);
+
+        if (credentials.length === 0) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "no matching credentials found" }));
+          return;
+        }
+
+        const anonymized = credentialAnonymizationService.anonymizeBatch(credentials, {
+          reversible: body.reversible ?? false,
+          suppressMetadataFields: body.suppressMetadataFields ?? [],
+        });
+
+        metrics.incCounter("qc_anonymize_requests_total");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ anonymized, count: anonymized.length }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /admin/anonymize/stats — anonymization statistics
+  if (req.method === "GET" && url.pathname === "/admin/anonymize/stats") {
+    const stats = credentialAnonymizationService.getStats();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(stats));
+    return;
+  }
+
+  // ── Issue #1765: Service Health Dashboard endpoints ───────────────────────
+
+  // GET /health/dashboard — full dashboard snapshot
+  if (req.method === "GET" && url.pathname === "/health/dashboard") {
+    const snapshot = serviceHealthDashboard.getSnapshot();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(snapshot));
+    return;
+  }
+
+  // GET /health/dashboard/alerts — active alerts only
+  if (req.method === "GET" && url.pathname === "/health/dashboard/alerts") {
+    const alerts = serviceHealthDashboard.getAlerts();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ alerts }));
+    return;
+  }
+
+  // POST /health/dashboard/check — record a health check result
+  if (req.method === "POST" && url.pathname === "/health/dashboard/check") {
+    readJsonBody<{
+      service?: string;
+      status?: string;
+      responseTimeMs?: number;
+      message?: string;
+    }>(req)
+      .then((body) => {
+        if (!body.service) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "service is required" }));
+          return;
+        }
+        const validStatuses = ["healthy", "degraded", "unhealthy", "unknown"];
+        const status = (body.status ?? "unknown") as "healthy" | "degraded" | "unhealthy" | "unknown";
+        if (!validStatuses.includes(status)) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: `status must be one of: ${validStatuses.join(", ")}` }));
+          return;
+        }
+        serviceHealthDashboard.recordResult({
+          service: body.service,
+          status,
+          responseTimeMs: body.responseTimeMs,
+          message: body.message,
+          checkedAt: Date.now(),
+        });
+        metrics.incCounter("qc_health_checks_recorded_total");
+        const serviceHealth = serviceHealthDashboard.getServiceHealth(body.service);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(serviceHealth));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // GET /health/dashboard/:service — health for a single service
+  const healthServiceMatch = url.pathname.match(/^\/health\/dashboard\/([^/]+)$/);
+  if (healthServiceMatch && req.method === "GET") {
+    const service = decodeURIComponent(healthServiceMatch[1] as string);
+    const serviceHealth = serviceHealthDashboard.getServiceHealth(service);
+    if (!serviceHealth) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "service not found" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(serviceHealth));
     return;
   }
 
