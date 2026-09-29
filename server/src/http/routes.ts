@@ -26,6 +26,15 @@ import { circuitBreakerService } from "../resilience/circuitBreaker.js";
 import { credentialDeduplicationService } from "../credentials/credentialDeduplicationService.js";
 import { credentialAnonymizationService } from "../credentials/credentialAnonymizationService.js";
 import { serviceHealthDashboard } from "../health/serviceHealthDashboard.js";
+// Issue #1750 — API Field Aliasing for Backward Compatibility
+import { fieldAliasRegistry } from "./fieldAliasRegistry.js";
+// Issue #1751 — Multi-Region API Availability
+import { regionRegistry } from "./regionConfig.js";
+import { regionAwareRouter } from "./crossRegionReplication.js";
+// Issue #1752 — API Response Transformation Pipeline
+import { responseTransformer } from "./responseTransformer.js";
+// Issue #1753 — Credential Archival Service
+import { buildCredentialArchivalService } from "../credentials/credentialArchival.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -2208,6 +2217,141 @@ export function handleHttpRequest(
     return;
   }
 
+  // -------------------------------------------------------------------------
+  // Issue #1751: Multi-Region API Availability — region info & health
+  // -------------------------------------------------------------------------
+
+  // GET /regions — list all regions and their health status
+  if (url.pathname === "/regions" && req.method === "GET") {
+    regionAwareRouter.attachRegionHeaders(req, res);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ regions: regionRegistry.getAllRegions() }));
+    return;
+  }
+
+  // GET /regions/health — health summary for all regions
+  if (url.pathname === "/regions/health" && req.method === "GET") {
+    regionAwareRouter.attachRegionHeaders(req, res);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ health: regionRegistry.healthSummary() }));
+    return;
+  }
+
+  // GET /regions/:id — single region config + health
+  const regionIdMatch = url.pathname.match(/^\/regions\/([^/]+)$/);
+  if (regionIdMatch && req.method === "GET") {
+    const regionId = decodeURIComponent(regionIdMatch[1] as string);
+    const region = regionRegistry.getRegion(regionId);
+    if (!region) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "region not found" }));
+      return;
+    }
+    regionAwareRouter.attachRegionHeaders(req, res);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(region));
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Issue #1752: API Response Transformation Pipeline
+  // -------------------------------------------------------------------------
+
+  // GET /transforms — list all registered transformation rules
+  if (url.pathname === "/transforms" && req.method === "GET") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ rules: responseTransformer.listRules() }));
+    return;
+  }
+
+  // POST /transforms/preview — apply a transform to a provided body for testing
+  if (url.pathname === "/transforms/preview" && req.method === "POST") {
+    readJsonBody<{ ruleId?: string; body?: unknown }>(req)
+      .then((payload) => {
+        const ruleId = payload.ruleId ?? url.searchParams.get("transform") ?? "identity";
+        const body = payload.body ?? {};
+        const transformed = responseTransformer.apply(body, ruleId, {
+          req,
+          statusCode: 200,
+          ruleId,
+        });
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ruleId, transformed }));
+      })
+      .catch(() => {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid request body" }));
+      });
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Issue #1750: API Field Aliasing — admin & introspection endpoints
+  // -------------------------------------------------------------------------
+
+  // GET /field-aliases — list all registered field aliases and usage stats
+  if (url.pathname === "/field-aliases" && req.method === "GET") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ aliases: fieldAliasRegistry.report() }));
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Issue #1753: Credential Archival Service — admin & stats endpoints
+  // -------------------------------------------------------------------------
+
+  // Build a lazy singleton wired to the live credentialStore.
+  // We define it here (closure over credentialStore) rather than at module-level
+  // to avoid circular-import issues.
+  const _archivalService = _getArchivalService();
+
+  // GET /credentials/archive/stats — archival statistics
+  if (url.pathname === "/credentials/archive/stats" && req.method === "GET") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(_archivalService.getStats()));
+    return;
+  }
+
+  // POST /credentials/archive/sweep — trigger a manual sweep
+  if (url.pathname === "/credentials/archive/sweep" && req.method === "POST") {
+    const archived = _archivalService.runSweepNow();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ archived, stats: _archivalService.getStats() }));
+    return;
+  }
+
+  // GET /credentials/archive — list archived credentials (paginated)
+  if (url.pathname === "/credentials/archive" && req.method === "GET") {
+    const limitParam = url.searchParams.get("limit");
+    const offsetParam = url.searchParams.get("offset");
+    const type = url.searchParams.get("type") as "identity" | "education" | "professional" | "financial" | null;
+    const status = url.searchParams.get("status") as "active" | "revoked" | "expired" | "suspended" | null;
+    const results = _archivalService.listArchived({
+      type: type ?? undefined,
+      status: status ?? undefined,
+      limit: limitParam ? Number.parseInt(limitParam, 10) : 50,
+      offset: offsetParam ? Number.parseInt(offsetParam, 10) : 0,
+    });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ archived: results, count: results.length }));
+    return;
+  }
+
+  // GET /credentials/archive/:id — retrieve a single archived credential
+  const archiveIdMatch = url.pathname.match(/^\/credentials\/archive\/([^/]+)$/);
+  if (archiveIdMatch && req.method === "GET") {
+    const credId = decodeURIComponent(archiveIdMatch[1] as string);
+    const archived = _archivalService.getArchivedCredential(credId);
+    if (!archived) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "archived credential not found" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(archived));
+    return;
+  }
+
   // Not found
   res.writeHead(404, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: "not found" }));
@@ -2226,6 +2370,22 @@ export function readJsonBody<T>(req: IncomingMessage): Promise<T> {
     });
     req.on("error", reject);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1753: Lazy singleton for the credential archival service.
+// Instantiated once on first use to avoid circular-import issues at module load.
+// ---------------------------------------------------------------------------
+let _archivalServiceSingleton: ReturnType<typeof buildCredentialArchivalService> | null = null;
+function _getArchivalService(): ReturnType<typeof buildCredentialArchivalService> {
+  if (!_archivalServiceSingleton) {
+    _archivalServiceSingleton = buildCredentialArchivalService(
+      () => credentialStore.getAllCredentials(),
+      (id: string) => { credentialStore.revokeCredential(id); }
+    );
+    _archivalServiceSingleton.start();
+  }
+  return _archivalServiceSingleton;
 }
 
 /**
