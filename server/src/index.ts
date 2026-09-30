@@ -18,6 +18,8 @@ import { buildRecurringPaymentStore } from "./recurring/recurringPaymentStore.js
 import { FacetedSearchService } from "./search/facetedSearch.js";
 import { buildApiRateLimiter } from "./auth/apiRateLimiter.js";
 import { loadApiKeyStore } from "./auth/apiKeyStore.js";
+// Issue #1751 — Multi-Region API Availability: start the health-check loop
+import { regionHealthChecker } from "./http/crossRegionReplication.js";
 
 export function buildBus(redisUrl: string | undefined): PubSubBus {
   if (redisUrl) return new RedisBus(redisUrl);
@@ -108,6 +110,9 @@ async function main(): Promise<void> {
 
   bridge.start();
 
+  // Issue #1751: start the periodic region health-check sweep.
+  regionHealthChecker.start();
+
   httpServer.listen(config.port, () => {
     console.log(
       `[quorum-credit-broadcast-server] instance=${config.instanceId} listening on :${config.port} ` +
@@ -117,6 +122,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     await bridge.stop();
+    regionHealthChecker.stop(); // Issue #1751
     httpServer.close();
     await bus.close();
     await revocationStore.close();
