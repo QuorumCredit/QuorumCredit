@@ -68,7 +68,7 @@ pub fn calculate_transparency_index(
         .unwrap_or(0);
 
     let diversity_score = if validator_count > 0 {
-        ((distinct_domains * 30) / validator_count).min(30)
+        (distinct_domains.saturating_mul(30) / validator_count).min(30)
     } else {
         0
     };
@@ -307,6 +307,54 @@ mod tests {
             let retrieved = get_transparency_score(&env, &slice_id);
             // Note: score is not persisted by publish_transparency_metrics itself
             // This test verifies the function doesn't error
+        });
+    }
+
+    /// Every report function must return a value on an address that has no
+    /// stored data, without panicking.
+    #[test]
+    fn report_functions_return_on_missing_records() {
+        let env = Env::default();
+        let contract_id = setup_contract(&env);
+        let slice_id = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(calculate_transparency_index(&env, &slice_id), Ok(0));
+            assert_eq!(get_transparency_score(&env, &slice_id), 0);
+            assert_eq!(get_transparency_history(&env, &slice_id).len(), 0);
+            assert!(publish_transparency_metrics(&env, &slice_id, 0).is_ok());
+        });
+    }
+
+    /// Malformed stored counts at the numeric limit must not overflow the
+    /// diversity term; the index stays within the documented maximum.
+    #[test]
+    fn report_handles_extreme_stored_counts() {
+        let env = Env::default();
+        let contract_id = setup_contract(&env);
+        let slice_id = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            update_validator_count(&env, &slice_id, u32::MAX).unwrap();
+            update_distinct_domains(&env, &slice_id, u32::MAX).unwrap();
+            set_slice_public(&env, &slice_id, true).unwrap();
+
+            let score = calculate_transparency_index(&env, &slice_id).unwrap();
+            assert!(score <= MAX_TRANSPARENCY_SCORE);
+        });
+    }
+
+    /// A slice with domains but no validators reports zero rather than
+    /// dividing by zero.
+    #[test]
+    fn report_handles_domains_without_validators() {
+        let env = Env::default();
+        let contract_id = setup_contract(&env);
+        let slice_id = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            update_distinct_domains(&env, &slice_id, 7).unwrap();
+            assert_eq!(calculate_transparency_index(&env, &slice_id), Ok(0));
         });
     }
 }
