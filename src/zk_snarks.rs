@@ -230,6 +230,11 @@ pub fn reveal_commitment_bytes(
     reveal_commitment(env, commitment, amount, &buf[..len])
 }
 
+/// Reads the `i`-th public input, rejecting a proof that is too short instead of panicking.
+fn public_input_at(proof: &ZkProof, i: u32) -> Result<BytesN<32>, ContractError> {
+    proof.public_inputs.get(i).ok_or(ContractError::InvalidProof)
+}
+
 pub fn verify_vouch_proof(
     env: &Env,
     proof: &ZkProof,
@@ -252,10 +257,10 @@ pub fn verify_vouch_proof(
     let expected_balance = hash_to_bytesn(env, &hash_bool(balance_ok));
     let expected_blacklist = hash_to_bytesn(env, &hash_bool(blacklisted));
 
-    if proof.public_inputs.get(0).unwrap() != expected_context
-        || proof.public_inputs.get(1).unwrap() != expected_amount
-        || proof.public_inputs.get(2).unwrap() != expected_balance
-        || proof.public_inputs.get(3).unwrap() != expected_blacklist
+    if public_input_at(proof, 0)? != expected_context
+        || public_input_at(proof, 1)? != expected_amount
+        || public_input_at(proof, 2)? != expected_balance
+        || public_input_at(proof, 3)? != expected_blacklist
     {
         return Err(ContractError::InvalidProof);
     }
@@ -295,11 +300,11 @@ pub fn verify_loan_proof(
     let expected_eligibility = hash_to_bytesn(env, &hash_bool(eligibility_ok));
     let expected_vouches = hash_to_bytesn(env, &hash_bool(sufficient_vouches));
 
-    if proof.public_inputs.get(0).unwrap() != expected_context
-        || proof.public_inputs.get(1).unwrap() != expected_amount
-        || proof.public_inputs.get(2).unwrap() != expected_threshold
-        || proof.public_inputs.get(3).unwrap() != expected_eligibility
-        || proof.public_inputs.get(4).unwrap() != expected_vouches
+    if public_input_at(proof, 0)? != expected_context
+        || public_input_at(proof, 1)? != expected_amount
+        || public_input_at(proof, 2)? != expected_threshold
+        || public_input_at(proof, 3)? != expected_eligibility
+        || public_input_at(proof, 4)? != expected_vouches
     {
         return Err(ContractError::InvalidProof);
     }
@@ -319,21 +324,172 @@ pub fn verify_loan_proof(
     Ok(())
 }
 
-pub fn record_proof(env: &Env, proof: &ZkProof, operation_type: u32, submitter: &Address) -> ZkProofRecord {
+pub fn record_proof(
+    env: &Env,
+    proof: &ZkProof,
+    operation_type: u32,
+    submitter: &Address,
+) -> Result<ZkProofRecord, ContractError> {
     let proof_id: u64 = env
         .storage()
         .instance()
         .get(&DataKey::ZkProofCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proof ID overflow");
+        .ok_or(ContractError::CounterOverflow)?;
     env.storage().instance().set(&DataKey::ZkProofCounter, &proof_id);
-    ZkProofRecord {
+    Ok(ZkProofRecord {
         proof_id,
         proof: proof.clone(),
         operation_type,
         submitter: submitter.clone(),
         verified: true,
         submitted_at: env.ledger().timestamp(),
+    })
+}
+
+#[cfg(test)]
+mod malformed_input_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Bytes};
+
+    const STAKE: i128 = 500_000;
+
+    struct Fixture {
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        token: Address,
+    }
+
+    fn fixture() -> Fixture {
+        let env = Env::default();
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let token = Address::generate(&env);
+        Fixture { env, voucher, borrower, token }
+    }
+
+    /// Positive control: the unmodified proof must verify, so the negative
+    /// cases below fail only because of the injected malformation.
+    #[test]
+    fn well_formed_vouch_proof_verifies() {
+        let f = fixture();
+        let proof = create_vouch_proof(&f.env, &f.voucher, &f.borrower, &f.token, STAKE, true, false);
+        assert_eq!(
+            verify_vouch_proof(&f.env, &proof, &f.voucher, &f.borrower, &f.token, STAKE, true, false),
+            Ok(())
+        );
+    }
+
+    /// Truncated proof bytes (0..32) and oversized proof bytes must be rejected
+    /// with `InvalidProof`, never a panic.
+    #[test]
+    fn truncated_and_oversized_proof_bytes_are_rejected() {
+        let f = fixture();
+        let proof = create_vouch_proof(&f.env, &f.voucher, &f.borrower, &f.token, STAKE, true, false);
+
+        let check = |bytes: Bytes, label: &str| {
+            let candidate = ZkProof {
+                proof_bytes: bytes,
+                public_inputs: proof.public_inputs.clone(),
+                proof_type: PROOF_TYPE_VOUCH,
+            };
+            assert_eq!(
+                verify_vouch_proof(&f.env, &candidate, &f.voucher, &f.borrower, &f.token, STAKE, true, false),
+                Err(ContractError::InvalidProof),
+                "{label}"
+            );
+        };
+
+        for n in 0..32u32 {
+            check(proof.proof_bytes.slice(0..n), "truncated proof bytes should be rejected");
+        }
+        for n in [33u32, 64, 128, 1024] {
+            let mut oversized = Bytes::new(&f.env);
+            for _ in 0..n {
+                oversized.push_back(0xAB);
+            }
+            check(oversized, "oversized proof bytes should be rejected");
+        }
+    }
+
+    /// A vouch proof with fewer public inputs than required must be rejected
+    /// before any index access, for every truncation length.
+    #[test]
+    fn truncated_vouch_public_inputs_are_rejected() {
+        let f = fixture();
+        let proof = create_vouch_proof(&f.env, &f.voucher, &f.borrower, &f.token, STAKE, true, false);
+
+        for keep in 0..4u32 {
+            let mut inputs = Vec::new(&f.env);
+            for i in 0..keep {
+                inputs.push_back(proof.public_inputs.get(i).unwrap());
+            }
+            let candidate = ZkProof {
+                proof_bytes: proof.proof_bytes.clone(),
+                public_inputs: inputs,
+                proof_type: PROOF_TYPE_VOUCH,
+            };
+            assert_eq!(
+                verify_vouch_proof(&f.env, &candidate, &f.voucher, &f.borrower, &f.token, STAKE, true, false),
+                Err(ContractError::InvalidProof),
+                "vouch proof with {keep} public inputs should be rejected"
+            );
+        }
+    }
+
+    /// Same as above for loan proofs, which require five public inputs.
+    #[test]
+    fn truncated_loan_public_inputs_are_rejected() {
+        let f = fixture();
+        let proof = create_loan_proof(&f.env, &f.borrower, &f.token, STAKE, STAKE, true, true);
+
+        for keep in 0..5u32 {
+            let mut inputs = Vec::new(&f.env);
+            for i in 0..keep {
+                inputs.push_back(proof.public_inputs.get(i).unwrap());
+            }
+            let candidate = ZkProof {
+                proof_bytes: proof.proof_bytes.clone(),
+                public_inputs: inputs,
+                proof_type: PROOF_TYPE_LOAN_REQUEST,
+            };
+            assert_eq!(
+                verify_loan_proof(&f.env, &candidate, &f.borrower, &f.token, STAKE, STAKE, true, true),
+                Err(ContractError::InvalidProof),
+                "loan proof with {keep} public inputs should be rejected"
+            );
+        }
+    }
+
+    /// Five public inputs with a wrong proof type must still be rejected
+    /// without panicking.
+    #[test]
+    fn loan_proof_with_wrong_type_is_rejected() {
+        let f = fixture();
+        let proof = create_loan_proof(&f.env, &f.borrower, &f.token, STAKE, STAKE, true, true);
+        let candidate = ZkProof {
+            proof_bytes: proof.proof_bytes.clone(),
+            public_inputs: proof.public_inputs.clone(),
+            proof_type: PROOF_TYPE_VOUCH,
+        };
+        assert_eq!(
+            verify_loan_proof(&f.env, &candidate, &f.borrower, &f.token, STAKE, STAKE, true, true),
+            Err(ContractError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn record_proof_returns_record_with_incrementing_ids() {
+        let f = fixture();
+        let proof = create_vouch_proof(&f.env, &f.voucher, &f.borrower, &f.token, STAKE, true, false);
+        f.env.as_contract(&f.voucher, || {
+            let first = record_proof(&f.env, &proof, PROOF_TYPE_VOUCH, &f.voucher).unwrap();
+            let second = record_proof(&f.env, &proof, PROOF_TYPE_VOUCH, &f.voucher).unwrap();
+            assert_eq!(first.proof_id, 1);
+            assert_eq!(second.proof_id, 2);
+            assert!(first.verified);
+        });
     }
 }

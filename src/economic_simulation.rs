@@ -122,7 +122,9 @@ fn derive_seed(env: &Env, params: &SimulationParams) -> u64 {
     let encoded = payload.to_xdr(env);
     let hash: BytesN<32> = env.crypto().sha256(&encoded).into();
     let bytes = hash.to_array();
-    u64::from_be_bytes(bytes[0..8].try_into().unwrap())
+    u64::from_be_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
 }
 
 /// Run Monte Carlo simulation for portfolio stress testing.
@@ -224,10 +226,12 @@ fn calculate_portfolio_metrics(
     // Simple bubble sort for small arrays
     for i in 0..sorted_results.len() {
         for j in i + 1..sorted_results.len() {
-            if sorted_results.get(i).unwrap() > sorted_results.get(j).unwrap() {
-                let temp = sorted_results.get(i).unwrap();
-                sorted_results.set(i, sorted_results.get(j).unwrap());
-                sorted_results.set(j, temp);
+            let (Some(a), Some(b)) = (sorted_results.get(i), sorted_results.get(j)) else {
+                return Err(ContractError::InvalidInput);
+            };
+            if a > b {
+                sorted_results.set(i, b);
+                sorted_results.set(j, a);
             }
         }
     }
@@ -239,7 +243,10 @@ fn calculate_portfolio_metrics(
     // Calculate VaR (Value at Risk) at 95% confidence, using fixed-point
     // basis-point arithmetic throughout (no f64 — see module docs).
     let var_index = (results.len() as u64 * (10_000 - VAR_CONFIDENCE_LEVEL_BPS) as u64 / 10_000) as usize;
-    let var_95 = sorted_results.get(var_index).unwrap_or(sorted_results.get(0).unwrap());
+    let var_95 = sorted_results
+        .get(var_index)
+        .or_else(|| sorted_results.get(0))
+        .ok_or(ContractError::InvalidInput)?;
 
     // Calculate CVaR (Conditional Value at Risk / Expected Shortfall)
     let cvar_index = (results.len() as u64 * (10_000 - CVAR_CONFIDENCE_LEVEL_BPS) as u64 / 10_000) as usize;
@@ -249,8 +256,10 @@ fn calculate_portfolio_metrics(
         .fold(0i128, |acc, val| acc.saturating_add(val))
         / (cvar_index as i128 + 1);
 
-    let min_value = sorted_results.get(0).unwrap();
-    let max_value = sorted_results.get(sorted_results.len() - 1).unwrap();
+    let min_value = sorted_results.get(0).ok_or(ContractError::InvalidInput)?;
+    let max_value = sorted_results
+        .get(sorted_results.len() - 1)
+        .ok_or(ContractError::InvalidInput)?;
 
     // Calculate standard deviation
     let variance = results

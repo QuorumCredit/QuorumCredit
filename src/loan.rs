@@ -208,7 +208,7 @@ pub fn request_loan(
     }
 
     let now = env.ledger().timestamp();
-    let _loan_id = next_loan_id(&env);
+    let _loan_id = next_loan_id(&env)?;
 
     // ── Credit score tier rewards ────────────────────────────────────────────
     // Apply tier-based yield bonus to base yield rate (Issue #866)
@@ -239,7 +239,7 @@ pub fn request_loan(
     }
 
     let _deadline = now + cfg.loan_duration;
-    let loan_id = next_loan_id(&env);
+    let loan_id = next_loan_id(&env)?;
     // Issue #1391: `total_yield` above is already the sum of every entry pushed
     // into `yield_distribution` in the loop — it must stay that way so
     // repay()'s per-voucher payouts (read from YieldDistribution) can never sum
@@ -1199,7 +1199,7 @@ pub fn refinance_loan(
         .persistent()
         .remove(&DataKey::ActiveLoan(borrower.clone()));
 
-    let new_loan_id = next_loan_id(&env);
+    let new_loan_id = next_loan_id(&env)?;
     let new_yield = new_amount * new_yield_bps / 10_000;
 
     let new_loan = LoanRecord {

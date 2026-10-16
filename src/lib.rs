@@ -1149,7 +1149,7 @@ impl QuorumCreditContract {
         for i in 0..borrowers.len() {
             let borrower = borrowers.get(i).unwrap();
             let amount = amounts.get(i).unwrap();
-            let loan_id = helpers::next_loan_id(&env);
+            let loan_id = helpers::next_loan_id(&env)?;
 
             env.storage().persistent().set(
                 &DataKey::Loan(loan_id),

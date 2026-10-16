@@ -101,16 +101,17 @@ impl QuoteProvider for MockProvider {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Increment and return the next value for a u64 counter stored in instance storage.
-fn next_id(env: &Env, key: &DataKey) -> u64 {
+/// Returns `CounterOverflow` instead of panicking if the counter is exhausted.
+fn next_id(env: &Env, key: &DataKey) -> Result<u64, ContractError> {
     let next = env
         .storage()
         .instance()
         .get::<DataKey, u64>(key)
         .unwrap_or(0)
         .checked_add(1)
-        .expect("ID counter overflow");
+        .ok_or(ContractError::CounterOverflow)?;
     env.storage().instance().set(key, &next);
-    next
+    Ok(next)
 }
 
 /// Load a provider or return `ProviderNotFound`.
@@ -145,6 +146,40 @@ pub fn load_claim(env: &Env, claim_id: u64) -> Result<InsuranceClaim, ContractEr
         .ok_or(ContractError::ClaimNotFound)
 }
 
+/// Collect loan insurance fee at disbursement time.
+/// 
+/// Routes `insurance_fund_premium_bps` percentage of the loan principal
+/// to the dedicated insurance fund.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `loan_amount` - Loan principal in stroops
+/// * `config` - Current protocol configuration
+pub fn collect_insurance_fee(env: &Env, loan_amount: i128, config: &Config) -> Result<i128, ContractError> {
+    if config.insurance_fund_premium_bps == 0 {
+        return Ok(0);
+    }
+
+    let fee = (loan_amount as u128)
+        .saturating_mul(config.insurance_fund_premium_bps as u128)
+        .saturating_div(10_000)
+        as i128;
+
+    // Add fee to insurance fund balance
+    let current_balance: i128 = env.storage().instance()
+        .get(&DataKey::InsuranceFund)
+        .unwrap_or(0i128);
+
+    let new_balance = current_balance.saturating_add(fee);
+    env.storage().instance().set(&DataKey::InsuranceFund, &new_balance);
+
+    // Record the contribution timestamp
+    let now = env.ledger().timestamp();
+    env.storage().instance().set(&DataKey::InsuranceFundLastContribution, &now);
+
+    Ok(fee)
+}
+
 /// Dispatch to the correct `QuoteProvider` implementation based on the
 /// provider's `adapter_tag`.
 ///
@@ -173,11 +208,6 @@ pub fn contribute_to_insurance_fund(
     if amount <= 0 {
         return Err(ContractError::InvalidAmount);
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Public marketplace functions
-// ─────────────────────────────────────────────────────────────────────────────
 
     // Issue #1437: reject contributions above the configured sanity bound.
     if config.insurance_fund_max_contrib > 0
@@ -190,17 +220,11 @@ pub fn contribute_to_insurance_fund(
         .get(&DataKey::InsuranceFund)
         .unwrap_or(0i128);
 
-    let provider = InsuranceProvider {
-        id,
-        name,
-        adapter_tag,
-        active: true,
-        registered_at: env.ledger().timestamp(),
-    };
+    let new_balance = current_balance.saturating_add(amount);
+    env.storage().instance().set(&DataKey::InsuranceFund, &new_balance);
 
-    env.storage()
-        .persistent()
-        .set(&DataKey::InsuranceProvider(id), &provider);
+    let now = env.ledger().timestamp();
+    env.storage().instance().set(&DataKey::InsuranceFundLastContribution, &now);
 
     // Issue #1437: emit an audit event for the manual top-up.
     env.events().publish(
@@ -229,7 +253,9 @@ pub fn fetch_quote(
 ) -> Result<u64, ContractError> {
     borrower.require_auth();
 
-    assert!(loan_amount > 0, "loan_amount must be positive");
+    if loan_amount <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
 
     let product = load_product(&env, product_id)?;
     if !product.active {
@@ -244,7 +270,7 @@ pub fn fetch_quote(
     let (coverage_amount, premium_amount) =
         dispatch_quote_provider(&env, &provider, &product, loan_amount);
 
-    let id = next_id(&env, &DataKey::InsuranceQuoteCounter);
+    let id = next_id(&env, &DataKey::InsuranceQuoteCounter)?;
 
     let quote = InsuranceQuote {
         id,
@@ -319,7 +345,7 @@ pub fn file_claim(env: Env, quote_id: u64) -> Result<u64, ContractError> {
         }
     }
 
-    let id = next_id(&env, &DataKey::InsuranceClaimCounter);
+    let id = next_id(&env, &DataKey::InsuranceClaimCounter)?;
 
     let claim = InsuranceClaim {
         id,
@@ -389,11 +415,7 @@ pub fn pay_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
 
     // Look up the token from the quote's provider product for correct denomination.
     // We use the protocol token (Config.token) for all payouts.
-    let cfg: crate::types::Config = env
-        .storage()
-        .instance()
-        .get(&DataKey::Config)
-        .expect("contract not initialized");
+    let cfg: crate::types::Config = crate::helpers::try_config(&env)?;
 
     let token = soroban_sdk::token::Client::new(&env, &cfg.token);
     token.transfer(
@@ -426,6 +448,47 @@ pub fn get_provider(env: Env, provider_id: u64) -> Option<InsuranceProvider> {
         .get(&DataKey::InsuranceProvider(provider_id))
 }
 
+
+/// Claim insurance to cover slash shortfall.
+///
+/// Called during slash processing when the protocol cannot fully cover
+/// all voucher losses from protocol fees or reserves. The insurance fund
+/// absorbs the difference, capped at `insurance_max_payout_bps` of the shortfall.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `shortfall` - Amount needed to cover all voucher losses (in stroops)
+/// * `config` - Current protocol configuration
+///
+/// # Returns
+/// Amount actually paid out from insurance fund (may be less than shortfall if fund is depleted or payout cap is reached).
+pub fn claim_insurance_for_shortfall(
+    env: &Env,
+    shortfall: i128,
+    config: &Config,
+) -> Result<i128, ContractError> {
+    if shortfall <= 0 {
+        return Ok(0);
+    }
+
+    let current_balance: i128 = env.storage().instance()
+        .get(&DataKey::InsuranceFund)
+        .unwrap_or(0i128);
+
+    if current_balance == 0 {
+        return Err(ContractError::InsurancePoolEmpty);
+    }
+
+    let max_payout = (shortfall as u128)
+        .saturating_mul(config.insurance_max_payout_bps as u128)
+        .saturating_div(10_000)
+        as i128;
+
+    let payout = current_balance.min(max_payout);
+    let remaining_balance = current_balance.saturating_sub(payout);
+
+    env.storage().instance().set(&DataKey::InsuranceFund, &remaining_balance);
+
     // Issue #1436: warn operators before the fund is fully depleted. The event
     // fires only on the claim that pushes the balance across the threshold
     // (i.e. it was at/above the threshold before this claim and is below now),
@@ -440,6 +503,21 @@ pub fn get_provider(env: Env, provider_id: u64) -> Option<InsuranceProvider> {
 
     Ok(payout)
 }
+
+/// Get the current balance of the insurance fund.
+pub fn get_insurance_fund_balance(env: &Env) -> i128 {
+    env.storage().instance()
+        .get(&DataKey::InsuranceFund)
+        .unwrap_or(0i128)
+}
+
+/// Get the timestamp of the most recent insurance fund contribution.
+pub fn get_insurance_fund_last_contribution(env: &Env) -> u64 {
+    env.storage().instance()
+        .get(&DataKey::InsuranceFundLastContribution)
+        .unwrap_or(0u64)
+}
+
 
 pub fn get_quote(env: Env, quote_id: u64) -> Option<InsuranceQuote> {
     env.storage()
@@ -554,6 +632,77 @@ mod insurance_fund_hardening_tests {
                 before,
                 "alert must not repeat once already below threshold"
             );
+        });
+    }
+}
+
+#[cfg(test)]
+mod missing_record_tests {
+    //! Unwrap-removal coverage (Issue #1916): claim and quote paths must return
+    //! typed errors for missing records and malformed input instead of panicking.
+    use super::*;
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{vec, Address, Env};
+
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &vec![&env, admin.clone()], &1u32, &token);
+        (env, contract_id)
+    }
+
+    #[test]
+    fn fetch_quote_rejects_non_positive_amount() {
+        let (env, contract_id) = setup();
+        let borrower = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                fetch_quote(env.clone(), 1, borrower.clone(), 0),
+                Err(ContractError::InvalidAmount)
+            );
+            assert_eq!(
+                fetch_quote(env.clone(), 1, borrower.clone(), -100),
+                Err(ContractError::InvalidAmount)
+            );
+        });
+    }
+
+    #[test]
+    fn fetch_quote_on_missing_product_returns_error() {
+        let (env, contract_id) = setup();
+        let borrower = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert!(fetch_quote(env.clone(), 999, borrower.clone(), 1_000).is_err());
+        });
+    }
+
+    #[test]
+    fn claim_paths_on_missing_records_return_errors() {
+        let (env, contract_id) = setup();
+        env.as_contract(&contract_id, || {
+            assert!(file_claim(env.clone(), 999).is_err());
+            assert!(approve_claim(env.clone(), 999).is_err());
+            assert!(reject_claim(env.clone(), 999).is_err());
+            assert!(pay_claim(env.clone(), 999).is_err());
+            assert!(accept_quote(env.clone(), 999).is_err());
+        });
+    }
+
+    #[test]
+    fn next_id_returns_overflow_error_at_counter_max() {
+        let (env, contract_id) = setup();
+        let key = DataKey::InsuranceClaimCounter;
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(&key, &u64::MAX);
+            assert_eq!(next_id(&env, &key), Err(ContractError::CounterOverflow));
         });
     }
 }

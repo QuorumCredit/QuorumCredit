@@ -72,7 +72,7 @@ pub fn get_pause_mode(env: &Env) -> PauseMode {
 /// Blocks all write operations when `Paused`, `Thawing`, or emergency-paused.
 /// This is the standard guard — call it in every state-mutating function.
 pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
-    let cfg = config(env);
+    let cfg = try_config(env)?;
     if cfg.emergency_pause_enabled {
         return Err(ContractError::ContractPaused);
     }
@@ -87,7 +87,7 @@ pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
 /// Lenient guard for read-friendly operations (e.g., `withdraw_vouch`).
 /// Blocks when `Paused` or emergency-paused, but passes through during `Thawing`.
 pub fn require_reads_allowed(env: &Env) -> Result<(), ContractError> {
-    let cfg = config(env);
+    let cfg = try_config(env)?;
     if cfg.emergency_pause_enabled {
         return Err(ContractError::ContractPaused);
     }
@@ -124,7 +124,10 @@ pub fn validate_timestamp(_env: &Env, timestamp: u64, now: u64) -> Result<(), Co
 
 // ── Config & Loan Helpers ─────────────────────────────────────────────────────
 
-pub fn config(env: &Env) -> Config {
+/// Fallible read of the contract `Config`. Returns `NotInitialized` if
+/// `initialize()` has not run. Prefer this in any function that already returns
+/// `Result`, so an uninitialized contract surfaces as a typed error.
+pub fn try_config(env: &Env) -> Result<Config, ContractError> {
     // Issue #1285: bump instance TTL on every config read so the contract
     // instance never silently expires due to inactivity.
     env.storage()
@@ -133,7 +136,18 @@ pub fn config(env: &Env) -> Config {
     env.storage()
         .instance()
         .get(&DataKey::Config)
-        .expect("not initialized")
+        .ok_or(ContractError::NotInitialized)
+}
+
+/// Infallible read of the contract `Config`. Used by call sites that cannot
+/// return an error. Panics only if the contract was never initialized, which
+/// every entry point rejects before reaching these helpers. Fallible callers
+/// should use [`try_config`].
+pub fn config(env: &Env) -> Config {
+    match try_config(env) {
+        Ok(cfg) => cfg,
+        Err(_) => panic!("not initialized"),
+    }
 }
 
 // ── Issue #1285: TTL / Storage Lifecycle Helpers ──────────────────────────────
@@ -242,18 +256,18 @@ pub fn get_latest_loan_record(env: &Env, borrower: &Address) -> Option<LoanRecor
     }
 }
 
-pub fn next_loan_id(env: &Env) -> u64 {
+pub fn next_loan_id(env: &Env) -> Result<u64, ContractError> {
     let loan_id = env
         .storage()
         .persistent()
         .get(&DataKey::LoanCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("loan ID overflow");
+        .ok_or(ContractError::CounterOverflow)?;
     env.storage()
         .persistent()
         .set(&DataKey::LoanCounter, &loan_id);
-    loan_id
+    Ok(loan_id)
 }
 
 pub fn add_slash_balance(env: &Env, amount: i128) {
@@ -326,20 +340,28 @@ pub fn validate_admin_config(
         return Err(ContractError::InvalidAdminThreshold);
     }
     for i in 0..admin_whitelist.len() {
-        let allowed = admin_whitelist.get(i).unwrap();
+        let allowed = admin_whitelist
+            .get(i)
+            .ok_or(ContractError::InvalidAdminThreshold)?;
         require_valid_address(env, &allowed)?;
         for j in 0..i {
-            let prior = admin_whitelist.get(j).unwrap();
+            let prior = admin_whitelist
+                .get(j)
+                .ok_or(ContractError::InvalidAdminThreshold)?;
             if allowed == prior {
                 return Err(ContractError::InvalidAdminThreshold);
             }
         }
     }
     for i in 0..admin_blacklist.len() {
-        let blocked = admin_blacklist.get(i).unwrap();
+        let blocked = admin_blacklist
+            .get(i)
+            .ok_or(ContractError::InvalidAdminThreshold)?;
         require_valid_address(env, &blocked)?;
         for j in 0..i {
-            let prior = admin_blacklist.get(j).unwrap();
+            let prior = admin_blacklist
+                .get(j)
+                .ok_or(ContractError::InvalidAdminThreshold)?;
             if blocked == prior {
                 return Err(ContractError::InvalidAdminThreshold);
             }
@@ -350,10 +372,14 @@ pub fn validate_admin_config(
     }
     let admin_count = admins.len();
     for i in 0..admin_count {
-        let admin = admins.get(i).unwrap();
+        let admin = admins
+            .get(i)
+            .ok_or(ContractError::InvalidAdminThreshold)?;
         require_valid_address(env, &admin)?;
         for j in 0..i {
-            let prior_admin = admins.get(j).unwrap();
+            let prior_admin = admins
+                .get(j)
+                .ok_or(ContractError::InvalidAdminThreshold)?;
             if admin == prior_admin {
                 return Err(ContractError::InvalidAdminThreshold);
             }
@@ -550,7 +576,12 @@ where
 
     let end = (offset + capped_limit).min(len);
     for i in offset..end {
-        page.push_back(items.get(i).unwrap());
+        // `i < len` by construction, so `get` only misses if the Vec is malformed;
+        // stop the page rather than panic.
+        match items.get(i) {
+            Some(item) => page.push_back(item),
+            None => break,
+        }
     }
 
     let next_cursor = if end < len { Some(end) } else { None };
@@ -976,5 +1007,130 @@ pub fn require_graduated_response(
         crate::types::ThreatLevel::Critical => {
             Err(ContractError::ContractPaused)
         }
+    }
+}
+
+#[cfg(test)]
+mod missing_record_tests {
+    //! Issue #1915: each shared guard must return a typed error for a missing
+    //! record or uninitialized state instead of panicking.
+    use super::*;
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{vec, Address, Env};
+
+    /// Registers the contract and initializes it, returning its id.
+    fn initialized(env: &Env) -> Address {
+        env.mock_all_auths();
+        let deployer = Address::generate(env);
+        let admin = Address::generate(env);
+        let token = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(env, &contract_id);
+        client.initialize(&deployer, &vec![env, admin.clone()], &1u32, &token);
+        contract_id
+    }
+
+    #[test]
+    fn try_config_returns_not_initialized_before_init() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        env.as_contract(&contract_id, || {
+            assert_eq!(try_config(&env).map(|_| ()), Err(ContractError::NotInitialized));
+            assert_eq!(require_not_paused(&env), Err(ContractError::NotInitialized));
+            assert_eq!(require_reads_allowed(&env), Err(ContractError::NotInitialized));
+        });
+    }
+
+    #[test]
+    fn try_config_succeeds_after_init() {
+        let env = Env::default();
+        let contract_id = initialized(&env);
+        env.as_contract(&contract_id, || {
+            assert!(try_config(&env).is_ok());
+            assert!(require_not_paused(&env).is_ok());
+        });
+    }
+
+    #[test]
+    fn get_active_loan_record_returns_no_active_loan_when_missing() {
+        let env = Env::default();
+        let contract_id = initialized(&env);
+        let borrower = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                get_active_loan_record(&env, &borrower).map(|_| ()),
+                Err(ContractError::NoActiveLoan)
+            );
+            assert!(!has_active_loan(&env, &borrower));
+        });
+    }
+
+    #[test]
+    fn get_loan_by_id_returns_no_active_loan_when_missing() {
+        let env = Env::default();
+        let contract_id = initialized(&env);
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                get_loan_by_id(&env, &42).map(|_| ()),
+                Err(ContractError::NoActiveLoan)
+            );
+            assert!(get_latest_loan_record(&env, &Address::generate(&env)).is_none());
+        });
+    }
+
+    #[test]
+    fn next_loan_id_increments_and_reports_overflow() {
+        let env = Env::default();
+        let contract_id = initialized(&env);
+        env.as_contract(&contract_id, || {
+            let first = next_loan_id(&env).unwrap();
+            let second = next_loan_id(&env).unwrap();
+            assert_eq!(second, first + 1);
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::LoanCounter, &u64::MAX);
+            assert_eq!(next_loan_id(&env), Err(ContractError::CounterOverflow));
+        });
+    }
+
+    #[test]
+    fn validate_admin_config_rejects_duplicate_admins() {
+        let env = Env::default();
+        let a = Address::generate(&env);
+        let empty: Vec<Address> = Vec::new(&env);
+        let dup = vec![&env, a.clone(), a.clone()];
+        assert_eq!(
+            validate_admin_config(&env, &dup, 1, &empty, &empty),
+            Err(ContractError::InvalidAdminThreshold)
+        );
+        let ok = vec![&env, a.clone()];
+        assert_eq!(validate_admin_config(&env, &ok, 1, &empty, &empty), Ok(()));
+        assert_eq!(
+            validate_admin_config(&env, &empty, 1, &empty, &empty),
+            Err(ContractError::InvalidAdminThreshold)
+        );
+    }
+
+    #[test]
+    fn paginate_vec_handles_empty_and_out_of_range_offsets() {
+        let env = Env::default();
+        let empty: Vec<u32> = Vec::new(&env);
+        let (page, cursor) = paginate_vec(&env, &empty, 0, 10);
+        assert_eq!(page.len(), 0);
+        assert!(cursor.is_none());
+
+        let items = vec![&env, 10u32, 20, 30];
+        let (page, cursor) = paginate_vec(&env, &items, 99, 2);
+        assert_eq!(page.len(), 0);
+        assert!(cursor.is_none());
+
+        let (page, cursor) = paginate_vec(&env, &items, 1, 2);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page.get(0), Some(20));
+        assert!(cursor.is_none());
     }
 }

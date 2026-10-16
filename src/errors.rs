@@ -317,6 +317,14 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "SbtLineageNotFound"),
             String::from_str(env, "No lineage node found for the requested sbt_id."),
         ),
+        ContractError::NotInitialized => (
+            String::from_str(env, "NotInitialized"),
+            String::from_str(env, "Contract has not been initialized. Call initialize() first."),
+        ),
+        ContractError::CounterOverflow => (
+            String::from_str(env, "CounterOverflow"),
+            String::from_str(env, "An internal ID counter overflowed. This should not happen; contact the protocol team."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown error occurred."),
@@ -735,4 +743,10 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1736: SBT Marketplace Integration ──────────────────────────────
     /// No marketplace listing found for the requested sbt_id.
     SbtMarketplaceListingNotFound = 242,
+
+    // ── Unwrap removal: typed errors for panic-prone helpers ─────────────────
+    /// The contract instance has no `Config` entry; `initialize()` has not run.
+    NotInitialized = 243,
+    /// A monotonic ID or counter would overflow its integer type.
+    CounterOverflow = 244,
 }
