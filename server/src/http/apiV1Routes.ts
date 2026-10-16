@@ -18,9 +18,14 @@ import { metrics } from "./metricsRegistry.js";
 import { readRequestBody, RequestBodyTooLargeError } from "./requestBody.js";
 import { handleGraphqlHttpRequest, type GraphqlContext } from "../graphql/api.js";
 import type { TokenPayload } from "../auth/tokens.js";
+import {
+  attestorFeedbackStore,
+  FeedbackValidationError,
+} from "../attestors/feedbackStore.js";
 
 const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
 const MAX_IMPORT_ROWS = 500;
+const MAX_FEEDBACK_BYTES = 16 * 1024;
 const defaultLimiter = new LocalApiRateLimiter();
 
 export interface ApiV1Context {
@@ -89,6 +94,24 @@ export function handleApiV1Request(
         return;
       }
       sendJson(res, 200, batch);
+      return;
+    }
+
+    const feedbackMatch = url.pathname.match(/^\/api\/v1\/attestors\/([^/]+)\/feedback$/);
+    if (feedbackMatch) {
+      if (req.method !== "POST") {
+        res.setHeader("allow", "POST");
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      let attestorId: string;
+      try {
+        attestorId = decodeURIComponent(feedbackMatch[1]!);
+      } catch {
+        sendJson(res, 400, { error: "invalid attestor ID" });
+        return;
+      }
+      await handleAttestorFeedback(req, res, attestorId, authorized.payload.sub);
       return;
     }
 
@@ -194,6 +217,42 @@ async function handleCredentialImport(
   } catch (error) {
     console.error("[quorum-credit] unable to start credential import", error);
     sendJson(res, 503, { error: "credential import tracking capacity is unavailable" });
+  }
+}
+
+async function handleAttestorFeedback(
+  req: IncomingMessage,
+  res: ServerResponse,
+  attestorId: string,
+  rater: string
+): Promise<void> {
+  let parsed: unknown;
+  try {
+    const body = await readRequestBody(req, MAX_FEEDBACK_BYTES);
+    parsed = JSON.parse(body.toString("utf8"));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, { error: "feedback body is too large" });
+    } else {
+      sendJson(res, 400, { error: "request body must be valid JSON" });
+    }
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    sendJson(res, 400, { error: "request body must be a JSON object" });
+    return;
+  }
+  const { score, comment } = parsed as { score?: unknown; comment?: unknown };
+  try {
+    const summary = attestorFeedbackStore.submit(attestorId, rater, score, comment);
+    metrics.incCounter("qc_attestor_feedback_total");
+    sendJson(res, 201, summary);
+  } catch (error) {
+    if (error instanceof FeedbackValidationError) {
+      sendJson(res, 400, { error: error.message });
+      return;
+    }
+    throw error;
   }
 }
 
