@@ -15,6 +15,7 @@ import { notificationStore } from "../notifications/notificationStore.js";
 import type { NotificationDelivery } from "../notifications/notificationDelivery.js";
 import { exportStore } from "../exports/exportStore.js";
 import { ComplexityScorer } from "../verification/complexityScorer.js";
+import { collectCredentialSignals } from "../verification/fraudModel.js";
 import { credentialStore } from "../credentials/credentialStore.js";
 import type { EventStore } from "../bridge/eventStore.js";
 import type { ApiRateLimiter } from "../auth/apiRateLimiter.js";
@@ -1154,12 +1155,14 @@ export function handleHttpRequest(
         }
 
         const expiresAt = body.expiresAt || credential.expiresAt;
+        // Issue #1776: holder/issuer activity feeds the advisory fraud model.
         const verification = identityVerificationService.verifyDocument(
           credentialId,
           body.documentType as "passport" | "driver_license" | "national_id" | "utility_bill" | "bank_statement",
           body.documentHash,
           expiresAt,
-          body.metadata
+          body.metadata,
+          collectCredentialSignals(credentialStore, credential)
         );
 
         metrics.incCounter("qc_documents_verified_total");
