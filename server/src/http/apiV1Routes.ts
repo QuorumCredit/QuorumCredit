@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { credentialStore } from "../credentials/credentialStore.js";
+import { parseFieldsParam, projectCredential } from "../credentials/fieldProjection.js";
+import { contractStateMonitor } from "../monitoring/contractStateMonitor.js";
+import {
+  OnboardingError,
+  onboardingStore,
+  progressOf,
+} from "../onboarding/onboardingStore.js";
 import {
   credentialImportStore,
   parseCredentialCsv,
@@ -71,6 +78,67 @@ export function handleApiV1Request(
         return;
       }
       await handleCredentialImport(req, res, authorized.payload.sub);
+      return;
+    }
+
+    // Issue #1779: progressive disclosure — return only the fields requested via ?fields=
+    const credentialMatch = url.pathname.match(/^\/api\/v1\/credentials\/([^/]+)$/);
+    if (credentialMatch && req.method === "GET") {
+      let credentialId: string;
+      try {
+        credentialId = decodeURIComponent(credentialMatch[1]!);
+      } catch {
+        sendJson(res, 400, { error: "invalid credential ID" });
+        return;
+      }
+      let paths: string[] | undefined;
+      try {
+        paths = parseFieldsParam(url.searchParams.get("fields"));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "invalid fields parameter";
+        sendJson(res, 400, { error: message });
+        return;
+      }
+      const credential = credentialStore.getCredential(credentialId);
+      // Holder-only access; other callers get a 404 so existence is not disclosed.
+      if (!credential || credential.holderId !== authorized.payload.sub) {
+        sendJson(res, 404, { error: "credential not found" });
+        return;
+      }
+      sendJson(res, 200, projectCredential(credential, paths));
+      return;
+    }
+
+    // Issue #1782: read-only view of contract state monitoring. Observations are
+    // ingested in-process only, so there is deliberately no write route here.
+    if (url.pathname === "/api/v1/state/snapshot") {
+      if (req.method !== "GET") {
+        res.setHeader("allow", "GET");
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      sendJson(res, 200, { values: contractStateMonitor.snapshot() });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/state/alerts") {
+      if (req.method !== "GET") {
+        res.setHeader("allow", "GET");
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      const rawLimit = url.searchParams.get("limit");
+      const limit = rawLimit === null ? 25 : Number(rawLimit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        sendJson(res, 400, { error: "limit must be an integer between 1 and 100" });
+        return;
+      }
+      sendJson(res, 200, { alerts: contractStateMonitor.getAlerts(limit) });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/v1/onboarding")) {
+      await handleOnboardingRoute(req, res, url, authorized.payload.sub);
       return;
     }
 
@@ -194,6 +262,112 @@ async function handleCredentialImport(
   } catch (error) {
     console.error("[quorum-credit] unable to start credential import", error);
     sendJson(res, 503, { error: "credential import tracking capacity is unavailable" });
+  }
+}
+
+// Issue #1780: credential holder onboarding
+//   POST /api/v1/onboarding/start
+//   GET  /api/v1/onboarding/:flowId
+//   POST /api/v1/onboarding/:flowId/steps/:step
+//   POST /api/v1/onboarding/:flowId/complete
+const ONBOARDING_ROUTE = /^\/api\/v1\/onboarding(?:\/([^/]+)(?:\/(steps\/([^/]+)|complete))?)?$/;
+
+async function handleOnboardingRoute(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  holderId: string
+): Promise<void> {
+  const match = url.pathname.match(ONBOARDING_ROUTE);
+  if (!match) {
+    sendJson(res, 404, { error: "not found" });
+    return;
+  }
+  const [, rawFlowId, tail, rawStep] = match;
+
+  if (!rawFlowId) {
+    sendJson(res, 404, { error: "not found" });
+    return;
+  }
+
+  if (rawFlowId === "start" && !tail) {
+    if (req.method !== "POST") {
+      res.setHeader("allow", "POST");
+      sendJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+    const flow = onboardingStore.start(holderId);
+    sendJson(res, 200, { ...flow, progress: progressOf(flow) });
+    return;
+  }
+
+  let flowId: string;
+  let step: string | undefined;
+  try {
+    flowId = decodeURIComponent(rawFlowId);
+    step = rawStep ? decodeURIComponent(rawStep) : undefined;
+  } catch {
+    sendJson(res, 400, { error: "invalid onboarding ID" });
+    return;
+  }
+
+  if (!tail) {
+    if (req.method !== "GET") {
+      res.setHeader("allow", "GET");
+      sendJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+    const flow = onboardingStore.getFlow(flowId, holderId);
+    if (!flow) {
+      sendJson(res, 404, { error: "onboarding flow not found" });
+      return;
+    }
+    sendJson(res, 200, { ...flow, progress: progressOf(flow) });
+    return;
+  }
+
+  if (tail === "complete") {
+    if (req.method !== "POST") {
+      res.setHeader("allow", "POST");
+      sendJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+    await runOnboardingTransition(res, holderId, flowId, (id, holder) =>
+      onboardingStore.complete(id, holder)
+    );
+    return;
+  }
+
+  if (req.method !== "POST") {
+    res.setHeader("allow", "POST");
+    sendJson(res, 405, { error: "method not allowed" });
+    return;
+  }
+  await runOnboardingTransition(res, holderId, flowId, (id, holder) =>
+    onboardingStore.completeStep(id, holder, step ?? "")
+  );
+}
+
+async function runOnboardingTransition(
+  res: ServerResponse,
+  holderId: string,
+  flowId: string,
+  transition: (flowId: string, holderId: string) => ReturnType<typeof onboardingStore.complete>
+): Promise<void> {
+  try {
+    const flow = transition(flowId, holderId);
+    if (!flow) {
+      sendJson(res, 404, { error: "onboarding flow not found" });
+      return;
+    }
+    sendJson(res, 200, { ...flow, progress: progressOf(flow) });
+  } catch (error) {
+    if (error instanceof OnboardingError) {
+      const status = error.code === "unknown_step" ? 400 : 409;
+      sendJson(res, status, { error: error.message, code: error.code, missingSteps: error.missingSteps });
+      return;
+    }
+    throw error;
   }
 }
 
