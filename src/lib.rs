@@ -152,6 +152,9 @@ mod audit_trail_compression_test;
 #[cfg(test)]
 mod credential_batch_test;
 
+#[cfg(test)]
+mod credential_rate_limit_test;
+
 pub use errors::ContractError;
 pub use types::*;
 
@@ -1611,6 +1614,47 @@ impl QuorumCreditContract {
         batch_id: u64,
     ) -> Result<credential_batch::BatchStatus, ContractError> {
         credential_batch::get_batch_status(&env, batch_id)
+    }
+
+    // ── Issue #1797: Credential Verification Rate Limiting per Holder ────────
+
+    /// Set how many verification attempts `holder` allows per window. The new
+    /// limit starts with a full bucket. Only the holder can change its own limit.
+    pub fn set_verification_rate_limit(
+        env: Env,
+        holder: Address,
+        limit: u32,
+    ) -> Result<credential_rate_limit::VerificationRateLimit, ContractError> {
+        holder.require_auth();
+        credential_rate_limit::set_verification_rate_limit(&env, &holder, limit)
+    }
+
+    /// Set the refill window, in seconds, for `holder`'s verification limit.
+    pub fn set_verification_rate_limit_window(
+        env: Env,
+        holder: Address,
+        window_secs: u64,
+    ) -> Result<credential_rate_limit::VerificationRateLimit, ContractError> {
+        holder.require_auth();
+        credential_rate_limit::set_verification_window(&env, &holder, window_secs)
+    }
+
+    pub fn get_verification_rate_limit(
+        env: Env,
+        holder: Address,
+    ) -> credential_rate_limit::VerificationRateLimit {
+        credential_rate_limit::get_verification_rate_limit(&env, &holder)
+    }
+
+    /// Spend one verification attempt for `holder` and return the tokens left.
+    /// Verifiers call this, so it needs no holder auth. Fails with
+    /// `CredentialRateLimitExceeded` once the holder's bucket is empty.
+    pub fn consume_verification_attempt(env: Env, holder: Address) -> Result<u32, ContractError> {
+        credential_rate_limit::consume_verification_attempt(&env, &holder)
+    }
+
+    pub fn get_available_verification_attempts(env: Env, holder: Address) -> u32 {
+        credential_rate_limit::get_available_attempts(&env, &holder)
     }
 
     // ── Loan Priority / Subordination (senior-junior debt structures) ────────

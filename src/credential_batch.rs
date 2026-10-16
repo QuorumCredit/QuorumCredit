@@ -19,6 +19,7 @@ use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 use crate::audit_trail_compression::{
     append_credential_audit_entry, hot_entry_count, validate_audit_event, MAX_HOT_AUDIT_ENTRIES,
 };
+use crate::credential_rate_limit::{set_verification_rate_limit, validate_verification_limit};
 use crate::errors::ContractError;
 use crate::types::DataKey;
 
@@ -31,6 +32,8 @@ pub const MAX_BATCH_OPERATIONS: u32 = 20;
 pub enum BatchOperation {
     /// Append an event to a credential holder's hot audit trail.
     AppendAuditEntry(Address, String),
+    /// Set a holder's verification attempts per window (#1797).
+    SetVerificationRateLimit(Address, u32),
 }
 
 /// Lifecycle state of a batch.
@@ -68,6 +71,9 @@ pub fn create_batch_operation(
     for op in operations.iter() {
         match op {
             BatchOperation::AppendAuditEntry(_, event) => validate_audit_event(&event)?,
+            BatchOperation::SetVerificationRateLimit(_, limit) => {
+                validate_verification_limit(limit)?
+            }
         }
     }
 
@@ -109,6 +115,9 @@ pub fn execute_batch_operation(env: &Env, batch_id: u64) -> Result<(), ContractE
             BatchOperation::AppendAuditEntry(holder, event) => {
                 append_credential_audit_entry(env, &holder, event)?;
             }
+            BatchOperation::SetVerificationRateLimit(holder, limit) => {
+                set_verification_rate_limit(env, &holder, limit)?;
+            }
         }
     }
 
@@ -142,6 +151,10 @@ fn check_batch(env: &Env, operations: &Vec<BatchOperation>) -> Result<(), Contra
                 validate_audit_event(&event)?;
                 let so_far = pending.get(holder.clone()).unwrap_or(0);
                 pending.set(holder, so_far + 1);
+            }
+            BatchOperation::SetVerificationRateLimit(holder, limit) => {
+                holder.require_auth();
+                validate_verification_limit(limit)?;
             }
         }
     }

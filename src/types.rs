@@ -1118,6 +1118,12 @@ pub enum DataKey {
     CredentialBatch(u64),
     /// Last issued credential batch id (instance storage)
     CredentialBatchCounter,
+
+    // ── Issue #1797: Credential Verification Rate Limiting per Holder ────────
+    /// holder → VerificationRateLimit (absent means protocol defaults)
+    VerificationRateLimit(Address),
+    /// holder → TokenBucket
+    VerificationBucket(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

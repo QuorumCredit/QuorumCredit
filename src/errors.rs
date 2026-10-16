@@ -329,6 +329,10 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "BatchAlreadyExecuted"),
             String::from_str(env, "This credential batch has already been executed."),
         ),
+        ContractError::InvalidRateLimitWindow => (
+            String::from_str(env, "InvalidRateLimitWindow"),
+            String::from_str(env, "Rate limit window must be between 1 minute and 7 days."),
+        ),
         ContractError::MetadataTamperDetected => (
             String::from_str(env, "MetadataTamperDetected"),
             String::from_str(env, "Credential metadata tampering detected. Metadata hash mismatch."),
@@ -805,4 +809,8 @@ EmergencyBypassNotAuthorised = 131,
     BatchNotFound = 252,
     /// The batch has already been executed.
     BatchAlreadyExecuted = 253,
+
+    // ── Issue #1797: Verification rate limit window ──────────────────────────
+    /// Rate-limit refill window is outside the allowed range.
+    InvalidRateLimitWindow = 254,
 }
