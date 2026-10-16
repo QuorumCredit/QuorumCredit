@@ -6,6 +6,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 interface GeneratedClient {
   language: "typescript" | "python";
@@ -319,10 +320,12 @@ class QuorumCreditClient:
  * Write generated client to file
  */
 function writeClient(language: "typescript" | "python", content: string): void {
+  // The Python client is a package (setup.py uses find_packages), so it lives
+  // in a directory named after the import path, `quorum_credit_client`.
   const dir =
     language === "typescript"
       ? join(process.cwd(), "generated/typescript-client")
-      : join(process.cwd(), "generated/python-client");
+      : join(process.cwd(), "generated/python-client/quorum_credit_client");
 
   mkdirSync(dir, { recursive: true });
 
@@ -331,7 +334,21 @@ function writeClient(language: "typescript" | "python", content: string): void {
 
   writeFileSync(filepath, content, "utf-8");
   console.log(`Generated ${language} client: ${filepath}`);
+
+  if (language === "python") {
+    const initPath = join(dir, "__init__.py");
+    writeFileSync(initPath, PYTHON_PACKAGE_INIT, "utf-8");
+    console.log(`Generated python package init: ${initPath}`);
+  }
 }
+
+/** Re-exports the public names from the generated Python module (Issue #1999). */
+const PYTHON_PACKAGE_INIT = `"""QuorumCredit API client package. Auto-generated; do not edit manually."""
+
+from .client import ClientConfig, QuorumCreditClient
+
+__all__ = ["ClientConfig", "QuorumCreditClient"]
+`;
 
 /**
  * Main generation function
@@ -352,7 +369,7 @@ async function generateClients(): Promise<void> {
 }
 
 // Run if executed directly
-if (import.meta.url === \`file://\${process.argv[1]}\`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   generateClients().catch((err) => {
     console.error("Client generation failed:", err);
     process.exit(1);
@@ -360,25 +377,3 @@ if (import.meta.url === \`file://\${process.argv[1]}\`) {
 }
 
 export { generateClients, generateTypeScriptClient, generatePythonClient };
-`;
-
-  return code;
-}
-
-// Main execution
-if (import.meta.url === `file://${process.argv[1]}`) {
-  readOpenAPISpec();
-  const spec = readOpenAPISpec();
-
-  console.log("Generating TypeScript client...");
-  const tsClient = generateTypeScriptClient(spec);
-  writeClient("typescript", tsClient);
-
-  console.log("Generating Python client...");
-  const pyClient = generatePythonClient(spec);
-  writeClient("python", pyClient);
-
-  console.log("✓ Client generation complete");
-}
-
-export { generateTypeScriptClient, generatePythonClient };
