@@ -20,3 +20,6 @@ jobs:
 
       - name: Reject duplicated source files under contracts/
         run: python3 scripts/check_duplicate_sources.py
+
+      - name: Verify test file discovery matches src/tests.rs and lib.rs
+        run: python3 scripts/gen_test_includes.py
