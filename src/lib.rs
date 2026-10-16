@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, BytesN, Env,
-    Vec,
+    String, Vec,
 };
 
 pub mod admin;
@@ -16,6 +16,7 @@ pub mod cache;
 pub mod circuit_breaker;
 pub mod cooldown_bypass;
 pub mod credential;
+pub mod audit_trail_compression;
 pub mod credential_rate_limit;
 pub mod credential_tamper_detection;
 pub mod credit_score;
@@ -143,6 +144,9 @@ mod repay_validation_test;
 mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
+
+#[cfg(test)]
+mod audit_trail_compression_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -1490,6 +1494,88 @@ impl QuorumCreditContract {
         batch_id: u32,
     ) -> Vec<crate::types::VouchAuditEvent> {
         audit::get_archived_vouch_audit_trail_batch(&env, &borrower, &voucher, &token, batch_id)
+    }
+
+    // ── Issue #1795: Credential Audit Trail Compression ──────────────────────
+
+    /// Append an event to a credential's hot audit trail. The credential
+    /// holder authorizes writes to its own log.
+    pub fn log_credential_audit_entry(
+        env: Env,
+        credential_id: Address,
+        event: String,
+    ) -> Result<u32, ContractError> {
+        credential_id.require_auth();
+        audit_trail_compression::append_credential_audit_entry(&env, &credential_id, event)
+    }
+
+    /// Move hot audit entries older than `older_than` into a new archive and
+    /// return the new archive id. Only the credential holder may compress its trail.
+    pub fn compress_audit_trail(
+        env: Env,
+        credential_id: Address,
+        older_than: u64,
+    ) -> Result<u32, ContractError> {
+        credential_id.require_auth();
+        audit_trail_compression::compress_audit_trail(&env, &credential_id, older_than)
+    }
+
+    /// Compress entries older than the credential's configured retention period.
+    pub fn compress_expired_audit_entries(
+        env: Env,
+        credential_id: Address,
+    ) -> Result<u32, ContractError> {
+        credential_id.require_auth();
+        audit_trail_compression::compress_expired_audit_entries(&env, &credential_id)
+    }
+
+    /// Set how long audit entries stay hot before `compress_expired_audit_entries`
+    /// archives them. Must be between 7 days and 5 years, in seconds.
+    pub fn set_audit_retention_period(
+        env: Env,
+        credential_id: Address,
+        retention_period_secs: u64,
+    ) -> Result<(), ContractError> {
+        credential_id.require_auth();
+        audit_trail_compression::set_retention_config(&env, &credential_id, retention_period_secs)
+    }
+
+    pub fn get_audit_retention_config(
+        env: Env,
+        credential_id: Address,
+    ) -> audit_trail_compression::RetentionConfig {
+        audit_trail_compression::get_retention_config(&env, &credential_id)
+    }
+
+    pub fn get_compressed_archive(
+        env: Env,
+        credential_id: Address,
+        archive_id: u32,
+    ) -> Result<audit_trail_compression::CompressedAuditArchive, ContractError> {
+        audit_trail_compression::get_compressed_archive(&env, &credential_id, archive_id)
+    }
+
+    /// Decode an archive's entries. Fails with `ArchiveIntegrityFailed` when the
+    /// stored payload no longer matches its digest.
+    pub fn get_archived_audit_entries(
+        env: Env,
+        credential_id: Address,
+        archive_id: u32,
+    ) -> Result<Vec<audit_trail_compression::CredentialAuditEntry>, ContractError> {
+        audit_trail_compression::get_archive_entries(&env, &credential_id, archive_id)
+    }
+
+    /// Recompute an archive's digest and report whether it still matches.
+    pub fn verify_compressed_audit_archive(
+        env: Env,
+        credential_id: Address,
+        archive_id: u32,
+    ) -> Result<bool, ContractError> {
+        audit_trail_compression::verify_archive_integrity(&env, &credential_id, archive_id)
+    }
+
+    pub fn get_audit_compression_history(env: Env, credential_id: Address) -> Vec<(u64, u32, u32)> {
+        audit_trail_compression::get_compression_history(&env, &credential_id)
     }
 
     // ── Loan Priority / Subordination (senior-junior debt structures) ────────
