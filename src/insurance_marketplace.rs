@@ -127,16 +127,17 @@ impl QuoteProvider for MockProvider {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Increment and return the next value for a u64 counter stored in instance storage.
-fn next_id(env: &Env, key: &DataKey) -> u64 {
+/// Returns `CounterOverflow` instead of panicking if the counter is exhausted.
+fn next_id(env: &Env, key: &DataKey) -> Result<u64, ContractError> {
     let next = env
         .storage()
         .instance()
         .get::<DataKey, u64>(key)
         .unwrap_or(0)
         .checked_add(1)
-        .expect("ID counter overflow");
+        .ok_or(ContractError::CounterOverflow)?;
     env.storage().instance().set(key, &next);
-    next
+    Ok(next)
 }
 
 /// Load a provider or return `ProviderNotFound`.
@@ -216,7 +217,7 @@ pub fn register_provider(
     name: SorobanString,
     adapter_tag: Bytes,
 ) -> Result<u64, ContractError> {
-    let id = next_id(&env, &DataKey::InsuranceProviderCounter);
+    let id = next_id(&env, &DataKey::InsuranceProviderCounter)?;
 
     let provider = InsuranceProvider {
         id,
@@ -251,13 +252,14 @@ pub fn add_product(
         return Err(ContractError::ProviderInactive);
     }
 
-    assert!(
-        coverage_pct_bps > 0 && coverage_pct_bps <= 10_000,
-        "coverage_pct_bps must be 1-10000"
-    );
-    assert!(premium_bps > 0, "premium_bps must be > 0");
+    if coverage_pct_bps == 0 || coverage_pct_bps > 10_000 {
+        return Err(ContractError::InvalidBps);
+    }
+    if premium_bps == 0 {
+        return Err(ContractError::InvalidBps);
+    }
 
-    let id = next_id(&env, &DataKey::InsuranceProductCounter);
+    let id = next_id(&env, &DataKey::InsuranceProductCounter)?;
 
     let product = InsuranceProduct {
         id,
@@ -296,7 +298,9 @@ pub fn fetch_quote(
 ) -> Result<u64, ContractError> {
     borrower.require_auth();
 
-    assert!(loan_amount > 0, "loan_amount must be positive");
+    if loan_amount <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
 
     let product = load_product(&env, product_id)?;
     if !product.active {
@@ -311,7 +315,7 @@ pub fn fetch_quote(
     let (coverage_amount, premium_amount) =
         dispatch_quote_provider(&env, &provider, &product, loan_amount);
 
-    let id = next_id(&env, &DataKey::InsuranceQuoteCounter);
+    let id = next_id(&env, &DataKey::InsuranceQuoteCounter)?;
 
     let quote = InsuranceQuote {
         id,
@@ -386,7 +390,7 @@ pub fn file_claim(env: Env, quote_id: u64) -> Result<u64, ContractError> {
         }
     }
 
-    let id = next_id(&env, &DataKey::InsuranceClaimCounter);
+    let id = next_id(&env, &DataKey::InsuranceClaimCounter)?;
 
     let claim = InsuranceClaim {
         id,

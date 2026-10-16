@@ -682,4 +682,40 @@ mod tests {
             assert!(get_badge(&env, &borrower, BadgeType::TenLoans).is_some());
         });
     }
+
+    /// Badge operations on an owner with no minted badge must return a typed
+    /// error, not panic. Covers the missing-record path for every mutator.
+    #[test]
+    fn badge_operations_on_missing_record_return_errors() {
+        let (env, contract_id, owner, token) = setup();
+        let buyer = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert!(get_badge(&env, &owner, BadgeType::FirstLoan).is_none());
+            assert!(stake_badge(&env, owner.clone(), BadgeType::FirstLoan).is_err());
+            assert!(unstake_badge(&env, owner.clone(), BadgeType::FirstLoan).is_err());
+            assert!(list_badge_for_sale(&env, owner.clone(), BadgeType::FirstLoan, 1_000).is_err());
+            assert!(delist_badge(&env, owner.clone(), BadgeType::FirstLoan).is_err());
+            assert!(
+                purchase_badge(&env, buyer.clone(), owner.clone(), BadgeType::FirstLoan, token.clone(), 1_000)
+                    .is_err()
+            );
+        });
+    }
+
+    /// Malformed input: a non-positive listing price is rejected before the
+    /// badge record is read.
+    #[test]
+    fn list_badge_rejects_non_positive_price() {
+        let (env, contract_id, owner, _token) = setup();
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                list_badge_for_sale(&env, owner.clone(), BadgeType::FirstLoan, 0),
+                Err(ContractError::InvalidAmount)
+            );
+            assert_eq!(
+                list_badge_for_sale(&env, owner.clone(), BadgeType::FirstLoan, -5),
+                Err(ContractError::InvalidAmount)
+            );
+        });
+    }
 }
