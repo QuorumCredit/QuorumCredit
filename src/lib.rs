@@ -112,6 +112,8 @@ mod circuit_breaker_insurance_integration_test;
 #[cfg(test)]
 mod rbac_enforcement_test;
 #[cfg(test)]
+mod admin_empty_signer_test;
+#[cfg(test)]
 mod contingent_loan_test;
 #[cfg(test)]
 mod loan_tranching_test;

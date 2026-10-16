@@ -245,7 +245,7 @@ pub fn set_protocol_fee(env: Env, admin_signers: Vec<Address>, fee_bps: u32) {
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("fee")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             fee_bps,
             env.ledger().timestamp(),
         ),
@@ -270,7 +270,7 @@ pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: boo
         .set(&DataKey::WhitelistEnabled, &enabled);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("wlena")),
-        (admin_signers.get(0).unwrap(), enabled),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), enabled),
     );
 }
 
@@ -312,7 +312,7 @@ pub fn pause(env: Env, admin_signers: Vec<Address>) {
     );
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("pause")),
-        (admin_signers.get(0).unwrap(), now),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), now),
     );
 }
 
@@ -347,7 +347,7 @@ pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("beg_thaw")),
-        (admin_signers.get(0).unwrap(), now, thaw.thaw_duration),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), now, thaw.thaw_duration),
     );
 }
 
@@ -366,7 +366,7 @@ pub fn unpause(env: Env, admin_signers: Vec<Address>) {
     env.storage().instance().remove(&DataKey::ThawState);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("unpause")),
-        (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), env.ledger().timestamp()),
     );
 }
 
@@ -391,7 +391,7 @@ pub fn pause_with_thaw(env: Env, admin_signers: Vec<Address>, thaw_duration: u64
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("pse_thaw")),
-        (admin_signers.get(0).unwrap(), now, thaw_duration),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), now, thaw_duration),
     );
 }
 
@@ -494,7 +494,7 @@ pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     env.storage().instance().set(&DataKey::Config, &config);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("config")),
-        (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), env.ledger().timestamp()),
     );
 }
 
@@ -532,7 +532,7 @@ pub fn update_config(
     env.storage().instance().set(&DataKey::Config, &cfg);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("upconfig")),
-        (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), env.ledger().timestamp()),
     );
 }
 
@@ -610,7 +610,7 @@ pub fn batch_update_config(
     env.storage().instance().set(&DataKey::Config, &cfg);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("batch_cfg")),
-        (admin_signers.get(0).unwrap(), env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), env.ledger().timestamp()),
     );
 }
 
@@ -632,7 +632,7 @@ pub fn set_dynamic_slash_threshold(
     env.storage().instance().set(&DataKey::Config, &cfg);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("dynslash")),
-        (admin_signers.get(0).unwrap(), enabled, env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), enabled, env.ledger().timestamp()),
     );
 }
 
@@ -661,7 +661,7 @@ pub fn set_loan_size_slash_enabled(
     env.storage().instance().set(&DataKey::Config, &cfg);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("lsslash")),
-        (admin_signers.get(0).unwrap(), enabled, env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), enabled, env.ledger().timestamp()),
     );
 }
 
@@ -689,7 +689,7 @@ pub fn set_loan_size_slash_max_bps(
     env.storage().instance().set(&DataKey::Config, &updated);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("lsmaxbps")),
-        (admin_signers.get(0).unwrap(), max_bps, env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), max_bps, env.ledger().timestamp()),
     );
 }
 
@@ -703,7 +703,7 @@ pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: A
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("repnft")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             nft_contract,
             env.ledger().timestamp(),
         ),
@@ -728,7 +728,7 @@ pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("minstake")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             amount,
             env.ledger().timestamp(),
         ),
@@ -755,7 +755,7 @@ pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("maxloan")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             amount,
             env.ledger().timestamp(),
         ),
@@ -770,7 +770,7 @@ pub fn set_min_vouchers(env: Env, admin_signers: Vec<Address>, count: u32) {
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("minvchrs")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             count,
             env.ledger().timestamp(),
         ),
@@ -949,7 +949,7 @@ pub fn set_max_vouchers_per_borrower(env: Env, admin_signers: Vec<Address>, max_
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("maxvchbr")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             max_vouchers,
             env.ledger().timestamp(),
         ),
@@ -991,7 +991,7 @@ pub fn withdraw_slash_treasury(
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("slshwdraw")),
-        (admin_signers.get(0).unwrap(), recipient, amount),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), recipient, amount),
     );
 }
 
@@ -1068,7 +1068,7 @@ pub fn set_successor_admin(
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("successor")),
-        (admin_signers.get(0).unwrap(), successor),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), successor),
     );
 }
 
@@ -1092,7 +1092,7 @@ pub fn cancel_successor_admin(
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("cx_succ")),
-        (admin_signers.get(0).unwrap(), prev_successor),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), prev_successor),
     );
 
     Ok(())
@@ -1144,7 +1144,7 @@ pub fn set_prepayment_penalty_bps(env: Env, admin_signers: Vec<Address>, penalty
         .set(&DataKey::PrepaymentPenaltyBps, &penalty_bps);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("prepay")),
-        (admin_signers.get(0).unwrap(), penalty_bps),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), penalty_bps),
     );
 }
 
@@ -1431,7 +1431,7 @@ pub fn emergency_pause(env: Env, admin_signers: Vec<Address>) -> Result<(), Cont
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("em_pause")),
-        admin_signers.get(0).unwrap(),
+        crate::rbac::first_admin_signer(&env, &admin_signers),
     );
 
     Ok(())
@@ -1446,7 +1446,7 @@ pub fn emergency_unpause(env: Env, admin_signers: Vec<Address>) -> Result<(), Co
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("em_unpa")),
-        admin_signers.get(0).unwrap(),
+        crate::rbac::first_admin_signer(&env, &admin_signers),
     );
 
     Ok(())
@@ -1470,7 +1470,7 @@ pub fn set_confirmation_required(
     env.storage().instance().set(&DataKey::Config, &cfg);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("cnf_req")),
-        (admin_signers.get(0).unwrap(), enabled, env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), enabled, env.ledger().timestamp()),
     );
 }
 
@@ -1499,7 +1499,7 @@ pub fn set_admin_compensation_bps(
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("cmp_bps")),
-        (admin_signers.get(0).unwrap(), compensation_bps, env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), compensation_bps, env.ledger().timestamp()),
     );
 }
 
@@ -1632,7 +1632,7 @@ pub fn set_removal_vote_threshold(
 
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("rmv_thr")),
-        (admin_signers.get(0).unwrap(), threshold, env.ledger().timestamp()),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), threshold, env.ledger().timestamp()),
     );
 }
 
@@ -1701,7 +1701,7 @@ pub fn set_governance_queue_config(
 
     env.events().publish(
         (symbol_short!("gov"), symbol_short!("queue_cfg")),
-        (admin_signers.get(0).unwrap(), config.timelock_delay, config.execution_window),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), config.timelock_delay, config.execution_window),
     );
 }
 
@@ -2372,7 +2372,7 @@ pub fn set_insurance_fund_premium_bps(env: Env, admin_signers: Vec<Address>, pre
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("insur")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             premium_bps,
             env.ledger().timestamp(),
         ),
@@ -2395,7 +2395,7 @@ pub fn set_insurance_max_payout_bps(env: Env, admin_signers: Vec<Address>, max_p
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("insur")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             max_payout_bps,
             env.ledger().timestamp(),
         ),
@@ -2417,7 +2417,7 @@ pub fn set_insurance_premium_bps(env: Env, admin_signers: Vec<Address>, premium_
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("insur")),
         (
-            admin_signers.get(0).unwrap(),
+            crate::rbac::first_admin_signer(&env, &admin_signers),
             premium_bps,
             env.ledger().timestamp(),
         ),

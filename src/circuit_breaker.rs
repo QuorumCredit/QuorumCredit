@@ -276,7 +276,7 @@ pub fn acknowledge_circuit_breaker(
     let now = env.ledger().timestamp();
     env.events().publish(
         ("circuit_breaker", "acknowledged"),
-        (admin_signers.get(0).unwrap(), now, last_triggered),
+        (crate::rbac::first_admin_signer(&env, &admin_signers), now, last_triggered),
     );
 
     Ok(())

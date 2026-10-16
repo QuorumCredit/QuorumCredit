@@ -317,6 +317,10 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "SbtLineageNotFound"),
             String::from_str(env, "No lineage node found for the requested sbt_id."),
         ),
+        ContractError::EmptySignerList => (
+            String::from_str(env, "EmptySignerList"),
+            String::from_str(env, "Admin signer list is empty. At least one admin signer is required."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown error occurred."),
@@ -735,4 +739,8 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1736: SBT Marketplace Integration ──────────────────────────────
     /// No marketplace listing found for the requested sbt_id.
     SbtMarketplaceListingNotFound = 242,
+
+    // ── Issue #1908: Admin entrypoints must not panic on an empty signer list ─
+    /// An admin entrypoint received an empty `admin_signers` vector.
+    EmptySignerList = 243,
 }
