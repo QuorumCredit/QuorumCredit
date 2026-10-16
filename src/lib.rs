@@ -255,16 +255,6 @@ impl QuorumCreditContract {
         vouch::vouch(env, voucher, borrower, stake, token)
     }
 
-    pub fn batch_vouch(
-        env: Env,
-        voucher: Address,
-        borrowers: Vec<Address>,
-        stakes: Vec<i128>,
-        token: Address,
-    ) -> Result<(), ContractError> {
-        vouch::batch_vouch(env, voucher, borrowers, stakes, token)
-    }
-
     pub fn increase_stake(
         env: Env,
         voucher: Address,
@@ -336,10 +326,6 @@ impl QuorumCreditContract {
         token: Address,
     ) -> Result<(), ContractError> {
         loan::request_loan(env, borrower, amount, threshold, loan_purpose, token)
-    }
-
-    pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
-        loan::repay(env, borrower, payment)
     }
 
     pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
@@ -464,14 +450,6 @@ impl QuorumCreditContract {
         admin::set_config(env, admin_signers, config)
     }
 
-    pub fn update_config(
-        env: Env,
-        admin_signers: Vec<Address>,
-        updates: Vec<(soroban_sdk::String, i128)>,
-    ) {
-        admin::update_config(env, admin_signers, updates)
-    }
-
     pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: Address) {
         admin::set_reputation_nft(env, admin_signers, nft_contract)
     }
@@ -526,10 +504,6 @@ impl QuorumCreditContract {
 
     pub fn get_fee_treasury(env: Env) -> Option<Address> {
         admin::get_fee_treasury(env)
-    }
-
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
-        admin::add_allowed_token(env, admin_signers, token)
     }
 
     /// Confidential (self-attestation) loan request with commitment + proof verification.
@@ -639,15 +613,6 @@ impl QuorumCreditContract {
     }
 
     // ── Governance & Slashing ────────────────────────────────────────────────
-
-    pub fn vote_slash(
-        env: Env,
-        voucher: Address,
-        borrower: Address,
-        approve: bool,
-    ) -> Result<(), ContractError> {
-        governance::vote_slash(env, voucher, borrower, approve)
-    }
 
     pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
         governance::get_slash_vote(env, borrower)
@@ -1027,10 +992,6 @@ impl QuorumCreditContract {
         result
     }
 
-    pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
-        loan::is_eligible(env, borrower, threshold)
-    }
-
     pub fn get_contract_balance(env: Env) -> i128 {
         helpers::token(&env).balance(&env.current_contract_address())
     }
@@ -1049,10 +1010,6 @@ impl QuorumCreditContract {
             None => return 0,
         };
         ReputationNftExternalClient::new(&env, &nft_addr).balance(&borrower)
-    }
-
-    pub fn total_vouched(env: Env, borrower: Address) -> Result<i128, ContractError> {
-        vouch::total_vouched(env, borrower)
     }
 
     pub fn repayment_count(env: Env, borrower: Address) -> u32 {
@@ -1354,10 +1311,6 @@ impl QuorumCreditContract {
 
     // ── Admin ─────────────────────────────────────────────────────────────────
 
-    pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
-        admin::add_admin(env, admin_signers, new_admin)
-    }
-
     /// #669: Retry a failed repayment. Increments retry_count and re-attempts the transfer.
     /// Returns `MaxRetriesExceeded` if retry_count >= MAX_REPAYMENT_RETRIES.
     pub fn retry_repayment(
@@ -1391,21 +1344,6 @@ impl QuorumCreditContract {
 
         // Delegate to the standard repay logic
         Self::repay(env, borrower, payment)
-    }
-
-    pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
-        let loan_id: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::ActiveLoan(borrower.clone()))?;
-        env.storage().persistent().get(&DataKey::Loan(loan_id))
-    }
-
-    pub fn get_vouches(env: Env, borrower: Address) -> Vec<VouchRecord> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Vouches(borrower))
-            .unwrap_or(Vec::new(&env))
     }
 
     // ── Insurance Marketplace ────────────────────────────────────────────────
@@ -1800,26 +1738,9 @@ impl QuorumCreditContract {
         crate::invariants::check_invariants_live(&env, borrowers)
     }
 
-    pub fn vouch_exists(env: Env, voucher: Address, borrower: Address) -> bool {
-        let vouches: Vec<VouchRecord> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Vouches(borrower))
-            .unwrap_or(Vec::new(&env));
-        vouches.iter().any(|v| v.voucher == voucher)
-    }
-
     /// Returns the total primary-token stake for `borrower`.
     pub fn total_vouched(env: Env, borrower: Address) -> Result<i128, ContractError> {
         vouch::total_vouched(env, borrower)
-    }
-
-    pub fn get_config(env: Env) -> Config {
-        config(&env)
-    }
-
-    pub fn loan_status(env: Env, borrower: Address) -> LoanStatus {
-        helper_loan_status(&env, &borrower)
     }
 
     pub fn loan_status_extended(env: Env, borrower: Address) -> LoanStatusEx {
@@ -1985,19 +1906,6 @@ impl QuorumCreditContract {
         governance::vote_slash(env, voucher, borrower, approve)
     }
 
-    pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
-        governance::get_slash_vote(env, borrower)
-    }
-
-    pub fn set_slash_vote_quorum(env: Env, admin_signers: Vec<Address>, quorum_bps: u32) {
-        helpers::require_admin_approval(&env, &admin_signers);
-        governance::set_slash_vote_quorum(&env, quorum_bps);
-    }
-
-    pub fn get_slash_vote_quorum(env: Env) -> u32 {
-        governance::get_slash_vote_quorum(env)
-    }
-
     pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractError> {
         governance::execute_slash_vote(env, borrower)
     }
@@ -2133,10 +2041,6 @@ impl QuorumCreditContract {
 
     // ── Admin management ─────────────────────────────────────────────────────
 
-    pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Address) {
-        admin::remove_admin(env, admin_signers, admin_to_remove)
-    }
-
     /// Emergency admin revocation — removes a compromised admin key with N-1 approval.
     ///
     /// This is an emergency mechanism: if one admin key is compromised, ALL remaining
@@ -2178,10 +2082,6 @@ impl QuorumCreditContract {
         admin::is_admin_revoked(env, admin)
     }
 
-    pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold: u32) {
-        admin::set_admin_threshold(env, admin_signers, new_threshold)
-    }
-
     // ── RBAC (Issue #16) ──────────────────────────────────────────────────────
 
     pub fn assign_admin_role(
@@ -2198,23 +2098,6 @@ impl QuorumCreditContract {
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
-
-    pub fn pause(env: Env, admin_signers: Vec<Address>) {
-        admin::pause(env, admin_signers)
-    }
-
-
-
-    pub fn get_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-    }
-
-    pub fn set_config(env: Env, admin_signers: Vec<Address>, cfg: Config) {
-        admin::set_config(env, admin_signers, cfg)
-    }
 
     // ── Issue #688: Admin whitelist management ────────────────────────────────
 
@@ -2269,26 +2152,6 @@ impl QuorumCreditContract {
             grace_period,
             liquidity_mining_rate_bps,
         )
-    }
-
-    pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: Address) {
-        admin::set_reputation_nft(env, admin_signers, nft_contract)
-    }
-
-    pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
-        admin::set_min_stake(env, admin_signers, amount)
-    }
-
-    pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
-        admin::set_max_loan_amount(env, admin_signers, amount)
-    }
-
-    pub fn set_min_vouchers(env: Env, admin_signers: Vec<Address>, count: u32) {
-        admin::set_min_vouchers(env, admin_signers, count)
-    }
-
-    pub fn set_max_loan_to_stake_ratio(env: Env, admin_signers: Vec<Address>, ratio: u32) {
-        admin::set_max_loan_to_stake_ratio(env, admin_signers, ratio)
     }
 
     pub fn set_max_vouchers_per_loan(env: Env, admin_signers: Vec<Address>, max: u32) {
@@ -2352,56 +2215,8 @@ impl QuorumCreditContract {
 
     // ── Views ─────────────────────────────────────────────────────────────────
 
-    pub fn is_initialized(env: Env) -> bool {
-        env.storage().instance().has(&DataKey::Config)
-    }
-
-    pub fn get_token(env: Env) -> Address {
-        config(&env).token
-    }
-
     pub fn get_admins(env: Env) -> Vec<Address> {
         admin::get_admins(env)
-    }
-
-    pub fn get_admin_threshold(env: Env) -> u32 {
-        admin::get_admin_threshold(env)
-    }
-
-    pub fn get_slash_treasury_balance(env: Env) -> i128 {
-        env.storage()
-            .instance()
-            .get(&DataKey::SlashTreasury)
-            .unwrap_or(0)
-    }
-
-
-    pub fn get_protocol_fee(env: Env) -> u32 {
-        admin::get_protocol_fee(env)
-    }
-
-    pub fn get_fee_treasury(env: Env) -> Option<Address> {
-        admin::get_fee_treasury(env)
-    }
-
-    pub fn is_blacklisted(env: Env, borrower: Address) -> bool {
-        admin::is_blacklisted(env, borrower)
-    }
-
-    pub fn get_min_stake(env: Env) -> i128 {
-        admin::get_min_stake(env)
-    }
-
-    pub fn get_max_loan_amount(env: Env) -> i128 {
-        admin::get_max_loan_amount(env)
-    }
-
-    pub fn get_min_vouchers(env: Env) -> u32 {
-        admin::get_min_vouchers(env)
-    }
-
-    pub fn get_max_loan_to_stake_ratio(env: Env) -> u32 {
-        admin::get_max_loan_to_stake_ratio(env)
     }
 
     pub fn get_max_vouchers_per_loan(env: Env) -> u32 {
@@ -2646,10 +2461,6 @@ impl QuorumCreditContract {
 
 
 
-    pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
-        vouch::voucher_history(env, voucher)
-    }
-
     // ── Loan delegation ───────────────────────────────────────────────────────
 
     // ── Issue #969 (#86): Cross-Chain Event Relay ─────────────────────────────
@@ -2669,15 +2480,6 @@ impl QuorumCreditContract {
     // ── Admin delegation ──────────────────────────────────────────────────────
 
 
-
-    pub fn rotate_admin(
-        env: Env,
-        admin_signers: Vec<Address>,
-        old_admin: Address,
-        new_admin: Address,
-    ) {
-        admin::rotate_admin(env, admin_signers, old_admin, new_admin)
-    }
 
     // ── Cross-Chain Relay Pipeline (Issue #1361) ──────────────────────────────
 
@@ -2803,10 +2605,6 @@ impl QuorumCreditContract {
 
 
 
-
-    pub fn get_contract_balance(env: Env) -> i128 {
-        token(&env).balance(&env.current_contract_address())
-    }
 
     // ── Issue #1074: Reentrancy guard — already wired into vouch / request_loan / repay above ──
 
@@ -3049,11 +2847,6 @@ impl QuorumCreditContract {
     pub fn apply_next_config_patch(env: Env) -> bool {
         admin::apply_next_config_patch(env)
     }
-
-    pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
-        admin::is_whitelisted(env, voucher)
-    }
-
 
     pub fn get_config_patch(env: Env, idx: u32) -> Option<ConfigPatch> {
         admin::get_config_patch(env, idx)
