@@ -17,6 +17,7 @@ pub mod circuit_breaker;
 pub mod cooldown_bypass;
 pub mod credential;
 pub mod audit_trail_compression;
+pub mod credential_batch;
 pub mod credential_rate_limit;
 pub mod credential_tamper_detection;
 pub mod credit_score;
@@ -147,6 +148,9 @@ mod attestor_analytics_test;
 
 #[cfg(test)]
 mod audit_trail_compression_test;
+
+#[cfg(test)]
+mod credential_batch_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -1576,6 +1580,37 @@ impl QuorumCreditContract {
 
     pub fn get_audit_compression_history(env: Env, credential_id: Address) -> Vec<(u64, u32, u32)> {
         audit_trail_compression::get_compression_history(&env, &credential_id)
+    }
+
+    // ── Issue #1796: Credential Transactional Batching ───────────────────────
+
+    /// Record a batch of credential operations and return its id. Nothing is
+    /// written until the batch is executed.
+    pub fn create_batch_operation(
+        env: Env,
+        operations: Vec<credential_batch::BatchOperation>,
+    ) -> Result<u64, ContractError> {
+        credential_batch::create_batch_operation(&env, operations)
+    }
+
+    /// Execute a pending batch atomically. Every holder in the batch must
+    /// authorize the call. If any operation would fail, nothing is written.
+    pub fn execute_batch_operation(env: Env, batch_id: u64) -> Result<(), ContractError> {
+        credential_batch::execute_batch_operation(&env, batch_id)
+    }
+
+    pub fn get_batch_operation(
+        env: Env,
+        batch_id: u64,
+    ) -> Result<credential_batch::CredentialBatch, ContractError> {
+        credential_batch::get_batch_operation(&env, batch_id)
+    }
+
+    pub fn get_batch_status(
+        env: Env,
+        batch_id: u64,
+    ) -> Result<credential_batch::BatchStatus, ContractError> {
+        credential_batch::get_batch_status(&env, batch_id)
     }
 
     // ── Loan Priority / Subordination (senior-junior debt structures) ────────

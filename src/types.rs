@@ -1112,6 +1112,12 @@ pub enum DataKey {
     AuditTrailCompressionConfig(Address),
     /// credential_id → Vec<(timestamp, archive_id, entry_count)>
     AuditTrailCompressionLog(Address),
+
+    // ── Issue #1796: Credential Transactional Batching ───────────────────────
+    /// batch_id → CredentialBatch
+    CredentialBatch(u64),
+    /// Last issued credential batch id (instance storage)
+    CredentialBatchCounter,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

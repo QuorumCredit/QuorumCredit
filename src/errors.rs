@@ -313,6 +313,22 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "InvalidRetentionPeriod"),
             String::from_str(env, "Retention period is outside the allowed range."),
         ),
+        ContractError::EmptyBatch => (
+            String::from_str(env, "EmptyBatch"),
+            String::from_str(env, "A batch must contain at least one operation."),
+        ),
+        ContractError::BatchTooLarge => (
+            String::from_str(env, "BatchTooLarge"),
+            String::from_str(env, "Batch exceeds the maximum number of operations."),
+        ),
+        ContractError::BatchNotFound => (
+            String::from_str(env, "BatchNotFound"),
+            String::from_str(env, "No credential batch exists for this id."),
+        ),
+        ContractError::BatchAlreadyExecuted => (
+            String::from_str(env, "BatchAlreadyExecuted"),
+            String::from_str(env, "This credential batch has already been executed."),
+        ),
         ContractError::MetadataTamperDetected => (
             String::from_str(env, "MetadataTamperDetected"),
             String::from_str(env, "Credential metadata tampering detected. Metadata hash mismatch."),
@@ -779,4 +795,14 @@ EmergencyBypassNotAuthorised = 131,
     ArchiveCorrupted = 248,
     /// Retention period is outside the allowed range.
     InvalidRetentionPeriod = 249,
+
+    // ── Issue #1796: Credential Transactional Batching ───────────────────────
+    /// A batch must contain at least one operation.
+    EmptyBatch = 250,
+    /// A batch exceeds MAX_BATCH_OPERATIONS operations.
+    BatchTooLarge = 251,
+    /// No batch exists for the requested id.
+    BatchNotFound = 252,
+    /// The batch has already been executed.
+    BatchAlreadyExecuted = 253,
 }

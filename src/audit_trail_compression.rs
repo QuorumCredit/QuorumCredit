@@ -82,9 +82,7 @@ pub fn append_credential_audit_entry(
     credential_id: &Address,
     event: String,
 ) -> Result<u32, ContractError> {
-    if event.is_empty() || event.len() > MAX_AUDIT_EVENT_BYTES {
-        return Err(ContractError::InvalidAuditEvent);
-    }
+    validate_audit_event(&event)?;
 
     let trail_key = DataKey::CredentialAuditTrail(credential_id.clone());
     let mut trail: Vec<CredentialAuditEntry> = env
@@ -104,6 +102,23 @@ pub fn append_credential_audit_entry(
     let len = trail.len();
     env.storage().persistent().set(&trail_key, &trail);
     Ok(len)
+}
+
+/// Reject events that are empty or larger than `MAX_AUDIT_EVENT_BYTES`.
+pub fn validate_audit_event(event: &String) -> Result<(), ContractError> {
+    if event.is_empty() || event.len() > MAX_AUDIT_EVENT_BYTES {
+        return Err(ContractError::InvalidAuditEvent);
+    }
+    Ok(())
+}
+
+/// Number of entries currently in a credential's hot trail.
+pub fn hot_entry_count(env: &Env, credential_id: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<_, Vec<CredentialAuditEntry>>(&DataKey::CredentialAuditTrail(credential_id.clone()))
+        .map(|trail| trail.len())
+        .unwrap_or(0)
 }
 
 /// Move hot entries with `timestamp < older_than` into a new archive.
