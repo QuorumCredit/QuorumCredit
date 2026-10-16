@@ -12,7 +12,7 @@ use crate::types::{
     MAX_WITHDRAWAL_QUEUE_SIZE, PARTIAL_WITHDRAWAL_MAX_BPS, PARTIAL_WITHDRAWAL_PENALTY_BPS,
     BPS_DENOMINATOR, SECS_PER_DAY, VOUCH_HISTORY_ARCHIVE_TRIGGER_ENTRIES,
 };
-use soroban_sdk::{symbol_short, token, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, token, Address, BytesN, Env, String, Vec};
 
 /// Verify that an active bridge is registered for `chain_id`.
 /// Returns `InvalidChain` if no active bridge record exists.
@@ -79,7 +79,7 @@ pub fn remove_bridge(
         .unwrap_or_else(|| Vec::new(&env));
 
     for i in 0..bridges.len() {
-        let mut bridge = bridges.get(i).unwrap();
+        let mut bridge = bridges.get(i).ok_or(ContractError::BridgeNotConfigured)?;
         if bridge.chain_id == chain_id {
             bridge.active = false;
             bridges.set(i, bridge);
@@ -432,8 +432,8 @@ pub fn batch_vouch(
     let mut results: Vec<BatchVouchResult> = Vec::new(&env);
 
     for i in 0..borrowers.len() {
-        let borrower = borrowers.get(i).unwrap();
-        let stake = stakes.get(i).unwrap();
+        let borrower = borrowers.get(i).ok_or(ContractError::InsufficientFunds)?;
+        let stake = stakes.get(i).ok_or(ContractError::InsufficientFunds)?;
 
         match validate_vouch(&env, &cfg, &voucher, &borrower, stake, &token, chain_id) {
             Err(e) => {
@@ -519,7 +519,7 @@ pub fn increase_stake(
         .position(|v| v.voucher == voucher)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let mut vouch_rec = vouches.get(idx).unwrap();
+    let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
     if has_active_loan(&env, &borrower) {
         return Err(ContractError::ActiveLoanExists);
@@ -601,7 +601,7 @@ pub fn decrease_stake(
         .position(|v| v.voucher == voucher)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let vouch_rec = vouches.get(idx).unwrap();
+    let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
     if amount > vouch_rec.stake {
         return Err(ContractError::InsufficientFunds);
@@ -701,7 +701,7 @@ pub fn withdraw_vouch(
         .position(|v| v.voucher == voucher)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let vouch_rec = vouches.get(idx).unwrap();
+    let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     let vouch_stake = vouch_rec.stake;
     let vouch_token = vouch_rec.token.clone();
 
@@ -785,7 +785,7 @@ pub fn request_withdrawal(
         .position(|v| v.voucher == voucher)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let vouch_rec = vouches.get(idx).unwrap();
+    let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
     if priority_fee > 0 {
         let max_fee = vouch_rec
@@ -845,7 +845,7 @@ pub fn partial_withdraw(
         .position(|v| v.voucher == voucher)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let vouch_rec = vouches.get(idx).unwrap();
+    let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
     if !has_active_loan(&env, &borrower) {
         // No active loan — queue as a full withdrawal request
@@ -918,7 +918,7 @@ pub fn process_withdrawal_queue(env: &Env, borrower: &Address) {
         let idx_opt = vouches.iter().position(|v| v.voucher == queued.voucher);
         if let Some(idx) = idx_opt {
             let idx_u32 = idx as u32;
-            let vouch_rec = vouches.get(idx_u32).unwrap();
+            let vouch_rec = vouches.get(idx_u32).unwrap_or_else(|| panic_with_error!(env, ContractError::VoucherNotFound));
             let token_client = require_allowed_token(env, &vouch_rec.token).ok();
             if let Some(tc) = token_client {
                 let contract = env.current_contract_address();
@@ -1019,7 +1019,7 @@ pub fn process_withdrawal_batch(env: &Env, borrower: &Address, count: u32) -> u3
     // Queue is pre-sorted by priority_fee (DESC) and requested_at (ASC).
     // Process the first `count` entries, keep the rest.
     for i in 0..queue.len() {
-        let queued = queue.get(i as u32).unwrap();
+        let queued = queue.get(i as u32).unwrap_or_else(|| panic_with_error!(env, ContractError::WithdrawalNotQueued));
         if (i as u32) < process_count {
             env.events().publish(
                 (symbol_short!("wq"), symbol_short!("processed")),
@@ -1109,7 +1109,7 @@ fn queue_withdrawal_internal(
     // This way the queue is always sorted and process_withdrawal_queue can iterate without re-sorting.
     let mut insert_idx = queue.len();
     for i in 0..queue.len() {
-        let existing = queue.get(i).unwrap();
+        let existing = queue.get(i).ok_or(ContractError::WithdrawalNotQueued)?;
         if existing.priority_fee < priority_fee {
             // New entry has higher fee, insert before this one
             insert_idx = i;
@@ -1206,7 +1206,7 @@ pub fn transfer_vouch(
 
     // Check no duplicate vouch for the target voucher
     for v in vouches.iter() {
-        if v.voucher == to && v.token == vouches.get(idx).unwrap().token {
+        if v.voucher == to && v.token == vouches.get(idx).ok_or(ContractError::VoucherNotFound)?.token {
             return Err(ContractError::DuplicateVouch);
         }
     }
@@ -1216,7 +1216,7 @@ pub fn transfer_vouch(
         return Err(ContractError::ActiveLoanExists);
     }
 
-    let vouch_rec = vouches.get(idx).unwrap();
+    let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     let token = vouch_rec.token.clone();
 
     // Update the voucher field from `from` to `to`
@@ -1284,7 +1284,7 @@ fn detect_circular_delegation(
     queue.push_back(delegate.clone());
 
     while queue.len() > 0 {
-        let current = queue.get(0).unwrap();
+        let current = queue.get(0).ok_or(ContractError::NotFound)?;
         queue.remove(0);
 
         // Get all borrowers this address has vouched for
@@ -1350,7 +1350,7 @@ pub fn delegate_vouch(
         .position(|v| v.voucher == voucher && v.token == token)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let mut vouch_rec = vouches.get(idx).unwrap();
+    let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     vouch_rec.delegate = Some(delegate.clone());
     vouches.set(idx, vouch_rec.clone());
 
@@ -1406,7 +1406,7 @@ pub fn revoke_delegation(
         .position(|v| v.voucher == voucher && v.token == token)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let mut vouch_rec = vouches.get(idx).unwrap();
+    let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     vouch_rec.delegate = None;
     vouches.set(idx, vouch_rec);
 
@@ -1443,7 +1443,7 @@ pub fn set_vouch_expiry(
         .position(|v| v.voucher == voucher && v.token == token)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let mut vouch_rec = vouches.get(idx).unwrap();
+    let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     let now = env.ledger().timestamp();
 
     if expiry > 0 && expiry <= now {
@@ -1508,7 +1508,7 @@ fn append_vouch_history_entry(
         let overflow = history.len() - MAX_HOT_VOUCH_HISTORY_ENTRIES;
         let mut archived_batch: Vec<VouchHistoryEntry> = Vec::new(env);
         for _ in 0..overflow {
-            archived_batch.push_back(history.get(0).unwrap());
+            archived_batch.push_back(history.get(0).unwrap_or_else(|| panic_with_error!(env, ContractError::NotFound)));
             history.remove(0);
         }
 
@@ -2126,7 +2126,7 @@ pub fn split_vouch(
         .position(|v| v.voucher == voucher)
         .ok_or(ContractError::VoucherNotFound)? as u32;
 
-    let original = vouches.get(idx).unwrap();
+    let original = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
     if amount_to_split >= original.stake {
         return Err(ContractError::InsufficientFunds);
@@ -2284,7 +2284,7 @@ pub fn rotate_to_new_borrower(
         return Err(ContractError::ActiveLoanExists);
     }
 
-    let vouch_rec = old_vouches.get(idx).unwrap();
+    let vouch_rec = old_vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     let token = vouch_rec.token.clone();
 
     let mut new_borrower_vouches: Vec<VouchRecord> = env
@@ -2482,7 +2482,7 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match token_addrs.iter().position(|t| t == v.token) {
             Some(i) => {
-                let updated = token_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                let updated = token_stakes.get(i as u32).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)).saturating_add(v.stake);
                 token_stakes.set(i as u32, updated);
             }
             None => {
@@ -2493,7 +2493,7 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
         match chain_ids.iter().position(|c| c == v.chain_id) {
             Some(i) => {
-                let updated = chain_stakes.get(i as u32).unwrap().saturating_add(v.stake);
+                let updated = chain_stakes.get(i as u32).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)).saturating_add(v.stake);
                 chain_stakes.set(i as u32, updated);
             }
             None => {
@@ -2523,14 +2523,14 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
     let mut token_breakdown: Vec<TokenExposure> = Vec::new(&env);
     for i in 0..token_addrs.len() {
-        let stake = token_stakes.get(i).unwrap();
+        let stake = token_stakes.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound));
         let pct_bps: u32 = if total_stake > 0 {
             (stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
         } else {
             0
         };
         token_breakdown.push_back(TokenExposure {
-            token: token_addrs.get(i).unwrap(),
+            token: token_addrs.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)),
             stake,
             pct_bps,
         });
@@ -2538,14 +2538,14 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
 
     let mut chain_breakdown: Vec<ChainExposure> = Vec::new(&env);
     for i in 0..chain_ids.len() {
-        let stake = chain_stakes.get(i).unwrap();
+        let stake = chain_stakes.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound));
         let pct_bps: u32 = if total_stake > 0 {
             (stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
         } else {
             0
         };
         chain_breakdown.push_back(ChainExposure {
-            chain_id: chain_ids.get(i).unwrap(),
+            chain_id: chain_ids.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)),
             stake,
             pct_bps,
         });

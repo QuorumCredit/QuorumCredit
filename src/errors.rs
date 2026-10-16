@@ -317,6 +317,18 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "SbtLineageNotFound"),
             String::from_str(env, "No lineage node found for the requested sbt_id."),
         ),
+        ContractError::EmptySignerList => (
+            String::from_str(env, "EmptySignerList"),
+            String::from_str(env, "Admin signer list is empty. At least one admin signer is required."),
+        ),
+        ContractError::GracePeriodNotPassed => (
+            String::from_str(env, "GracePeriodNotPassed"),
+            String::from_str(env, "The loan's grace period has not elapsed yet, so it cannot be auto-slashed."),
+        ),
+        ContractError::LoanNotExpired => (
+            String::from_str(env, "LoanNotExpired"),
+            String::from_str(env, "The loan has not reached its deadline yet."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown error occurred."),
@@ -735,4 +747,14 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1736: SBT Marketplace Integration ──────────────────────────────
     /// No marketplace listing found for the requested sbt_id.
     SbtMarketplaceListingNotFound = 242,
+
+    // ── Issue #1908: Admin entrypoints must not panic on an empty signer list ─
+    /// An admin entrypoint received an empty `admin_signers` vector.
+    EmptySignerList = 243,
+
+    // ── Issue #1909: slash entrypoints return typed errors instead of panicking ─
+    /// `auto_slash` was called before the post-deadline grace period has elapsed.
+    GracePeriodNotPassed = 244,
+    /// `claim_expired_loan` was called before the loan's deadline has passed.
+    LoanNotExpired = 245,
 }

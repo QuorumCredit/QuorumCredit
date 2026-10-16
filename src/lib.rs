@@ -112,6 +112,12 @@ mod circuit_breaker_insurance_integration_test;
 #[cfg(test)]
 mod rbac_enforcement_test;
 #[cfg(test)]
+mod admin_empty_signer_test;
+#[cfg(test)]
+mod slash_result_test;
+#[cfg(test)]
+mod vouch_panic_free_test;
+#[cfg(test)]
 mod contingent_loan_test;
 #[cfg(test)]
 mod loan_tranching_test;
@@ -653,14 +659,18 @@ impl QuorumCreditContract {
         governance::get_slash_vote(env, borrower)
     }
 
-    pub fn slash(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+    pub fn slash(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+    ) -> Result<(), ContractError> {
         helpers::require_admin_approval(&env, &admin_signers);
-        helpers::require_not_paused(&env).expect("contract is paused");
+        helpers::require_not_paused(&env)?;
 
-        let mut loan = helpers::get_active_loan_record(&env, &borrower).expect("no active loan");
+        let mut loan = helpers::get_active_loan_record(&env, &borrower)?;
 
         if loan.repaid || loan.defaulted {
-            panic_with_error!(&env, ContractError::NoActiveLoan);
+            return Err(ContractError::NoActiveLoan);
         }
 
         let cfg = helpers::config(&env);
@@ -751,6 +761,8 @@ impl QuorumCreditContract {
             helpers::get_total_default_count(&env),
             helpers::get_total_loan_count(&env),
         );
+
+        Ok(())
     }
 
     // ── Issue #1422: Fraud score detection ──────────────────────────────────
@@ -839,22 +851,21 @@ impl QuorumCreditContract {
         );
     }
 
-    pub fn auto_slash(env: Env, borrower: Address) {
-        let mut loan: LoanRecord = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Loan(borrower.clone()))
-            .expect("no active loan");
+    pub fn auto_slash(env: Env, borrower: Address) -> Result<(), ContractError> {
+        let mut loan = helpers::get_active_loan_record(&env, &borrower)?;
 
-        assert!(!loan.repaid, "loan already repaid");
-        assert!(!loan.defaulted, "loan already defaulted");
+        if loan.repaid {
+            return Err(ContractError::AlreadyRepaid);
+        }
+        if loan.defaulted {
+            return Err(ContractError::NoActiveLoan);
+        }
 
         let cfg = helpers::config(&env);
         let slash_threshold = loan.deadline.saturating_add(cfg.grace_period);
-        assert!(
-            env.ledger().timestamp() > slash_threshold,
-            "loan grace period has not passed"
-        );
+        if env.ledger().timestamp() <= slash_threshold {
+            return Err(ContractError::GracePeriodNotPassed);
+        }
 
         let token = helpers::token(&env);
         let vouches: Vec<VouchRecord> = env
@@ -893,19 +904,23 @@ impl QuorumCreditContract {
         {
             ReputationNftExternalClient::new(&env, &nft_addr).burn(&borrower);
         }
+
+        Ok(())
     }
 
-    pub fn claim_expired_loan(env: Env, borrower: Address) {
+    pub fn claim_expired_loan(env: Env, borrower: Address) -> Result<(), ContractError> {
         borrower.require_auth();
 
-        let mut loan = helpers::get_active_loan_record(&env, &borrower).expect("no active loan");
+        let mut loan = helpers::get_active_loan_record(&env, &borrower)?;
 
         if loan.repaid || loan.defaulted {
-            panic_with_error!(&env, ContractError::NoActiveLoan);
+            return Err(ContractError::NoActiveLoan);
         }
 
         let now = env.ledger().timestamp();
-        assert!(now >= loan.deadline, "loan has not expired yet");
+        if now < loan.deadline {
+            return Err(ContractError::LoanNotExpired);
+        }
 
         let token = helpers::token(&env);
         let vouches: Vec<VouchRecord> = env
@@ -938,6 +953,8 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Vouches(borrower));
+
+        Ok(())
     }
 
     pub fn slash_treasury(env: Env, admin_signers: Vec<Address>, recipient: Address) {
