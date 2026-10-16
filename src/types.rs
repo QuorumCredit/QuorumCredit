@@ -1102,6 +1102,28 @@ pub enum DataKey {
     SbtMarketplaceIndex,
     /// Global marketplace statistics: SbtMarketplaceStats
     SbtMarketplaceStats,
+
+    // ── Issue #1795: Credential Audit Trail Compression ──────────────────────
+    /// credential_id → Vec<CredentialAuditEntry> (hot, uncompressed trail)
+    CredentialAuditTrail(Address),
+    /// (credential_id, archive_id) → CompressedAuditArchive
+    CompressedAuditArchive(Address, u32),
+    /// credential_id → RetentionConfig
+    AuditTrailCompressionConfig(Address),
+    /// credential_id → Vec<(timestamp, archive_id, entry_count)>
+    AuditTrailCompressionLog(Address),
+
+    // ── Issue #1796: Credential Transactional Batching ───────────────────────
+    /// batch_id → CredentialBatch
+    CredentialBatch(u64),
+    /// Last issued credential batch id (instance storage)
+    CredentialBatchCounter,
+
+    // ── Issue #1797: Credential Verification Rate Limiting per Holder ────────
+    /// holder → VerificationRateLimit (absent means protocol defaults)
+    VerificationRateLimit(Address),
+    /// holder → TokenBucket
+    VerificationBucket(Address),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

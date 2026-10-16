@@ -285,6 +285,54 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "InvalidRateLimit"),
             String::from_str(env, "Invalid rate limit configuration. Limit must be positive."),
         ),
+        ContractError::InvalidAuditEvent => (
+            String::from_str(env, "InvalidAuditEvent"),
+            String::from_str(env, "Audit event must be 1 to 256 bytes."),
+        ),
+        ContractError::AuditTrailFull => (
+            String::from_str(env, "AuditTrailFull"),
+            String::from_str(env, "Hot audit trail is full. Compress older entries first."),
+        ),
+        ContractError::NoEventsToCompress => (
+            String::from_str(env, "NoEventsToCompress"),
+            String::from_str(env, "No audit entries are older than the compression cutoff."),
+        ),
+        ContractError::ArchiveNotFound => (
+            String::from_str(env, "ArchiveNotFound"),
+            String::from_str(env, "No compressed audit archive exists for this id."),
+        ),
+        ContractError::ArchiveIntegrityFailed => (
+            String::from_str(env, "ArchiveIntegrityFailed"),
+            String::from_str(env, "Compressed audit archive failed its integrity check."),
+        ),
+        ContractError::ArchiveCorrupted => (
+            String::from_str(env, "ArchiveCorrupted"),
+            String::from_str(env, "Compressed audit archive could not be decoded."),
+        ),
+        ContractError::InvalidRetentionPeriod => (
+            String::from_str(env, "InvalidRetentionPeriod"),
+            String::from_str(env, "Retention period is outside the allowed range."),
+        ),
+        ContractError::EmptyBatch => (
+            String::from_str(env, "EmptyBatch"),
+            String::from_str(env, "A batch must contain at least one operation."),
+        ),
+        ContractError::BatchTooLarge => (
+            String::from_str(env, "BatchTooLarge"),
+            String::from_str(env, "Batch exceeds the maximum number of operations."),
+        ),
+        ContractError::BatchNotFound => (
+            String::from_str(env, "BatchNotFound"),
+            String::from_str(env, "No credential batch exists for this id."),
+        ),
+        ContractError::BatchAlreadyExecuted => (
+            String::from_str(env, "BatchAlreadyExecuted"),
+            String::from_str(env, "This credential batch has already been executed."),
+        ),
+        ContractError::InvalidRateLimitWindow => (
+            String::from_str(env, "InvalidRateLimitWindow"),
+            String::from_str(env, "Rate limit window must be between 1 minute and 7 days."),
+        ),
         ContractError::MetadataTamperDetected => (
             String::from_str(env, "MetadataTamperDetected"),
             String::from_str(env, "Credential metadata tampering detected. Metadata hash mismatch."),
@@ -735,4 +783,34 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1736: SBT Marketplace Integration ──────────────────────────────
     /// No marketplace listing found for the requested sbt_id.
     SbtMarketplaceListingNotFound = 242,
+
+    // ── Issue #1795: Credential Audit Trail Compression ──────────────────────
+    /// Audit event is empty or longer than MAX_AUDIT_EVENT_BYTES.
+    InvalidAuditEvent = 243,
+    /// The hot audit trail is full; compress older entries before appending.
+    AuditTrailFull = 244,
+    /// No hot audit entries are older than the requested cutoff.
+    NoEventsToCompress = 245,
+    /// No compressed archive exists for the requested archive id.
+    ArchiveNotFound = 246,
+    /// An archive's payload no longer matches its stored digest.
+    ArchiveIntegrityFailed = 247,
+    /// An archive payload could not be decoded into its declared entries.
+    ArchiveCorrupted = 248,
+    /// Retention period is outside the allowed range.
+    InvalidRetentionPeriod = 249,
+
+    // ── Issue #1796: Credential Transactional Batching ───────────────────────
+    /// A batch must contain at least one operation.
+    EmptyBatch = 250,
+    /// A batch exceeds MAX_BATCH_OPERATIONS operations.
+    BatchTooLarge = 251,
+    /// No batch exists for the requested id.
+    BatchNotFound = 252,
+    /// The batch has already been executed.
+    BatchAlreadyExecuted = 253,
+
+    // ── Issue #1797: Verification rate limit window ──────────────────────────
+    /// Rate-limit refill window is outside the allowed range.
+    InvalidRateLimitWindow = 254,
 }

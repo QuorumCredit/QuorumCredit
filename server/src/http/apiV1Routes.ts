@@ -14,6 +14,10 @@ import {
 import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 import { verifyToken } from "../auth/tokens.js";
 import { retryExecutor } from "../resilience/retry.js";
+import {
+  ComplexityScorer,
+  type VerificationCostInput,
+} from "../verification/complexityScorer.js";
 import { metrics } from "./metricsRegistry.js";
 import { readRequestBody, RequestBodyTooLargeError } from "./requestBody.js";
 import { handleGraphqlHttpRequest, type GraphqlContext } from "../graphql/api.js";
@@ -21,7 +25,13 @@ import type { TokenPayload } from "../auth/tokens.js";
 
 const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
 const MAX_IMPORT_ROWS = 500;
+// Issue #1783: cost-estimate bodies are a handful of scalar fields.
+const MAX_COST_ESTIMATE_BYTES = 4 * 1024;
+const MAX_COST_ESTIMATE_FIELD_COUNT = 100;
+const VERIFICATION_METHODS = ["automated", "document", "manual", "biometric"] as const;
 const defaultLimiter = new LocalApiRateLimiter();
+// Estimation is stateless, so one shared scorer is safe across requests.
+const costEstimator = new ComplexityScorer();
 
 export interface ApiV1Context {
   authSecret: string;
@@ -61,6 +71,16 @@ export function handleApiV1Request(
         return;
       }
       sendJson(res, 200, { operations: retryExecutor.getStatistics() });
+      return;
+    }
+
+    if (url.pathname === "/api/v1/verify/estimate-cost") {
+      if (req.method !== "POST") {
+        res.setHeader("allow", "POST");
+        sendJson(res, 405, { error: "method not allowed" });
+        return;
+      }
+      await handleVerificationCostEstimate(req, res);
       return;
     }
 
@@ -151,6 +171,113 @@ async function authorizeApiRequest(
     return undefined;
   }
   return { payload: verified.payload, rate };
+}
+
+async function handleVerificationCostEstimate(
+  req: IncomingMessage,
+  res: ServerResponse
+): Promise<void> {
+  let parsed: unknown;
+  try {
+    const contentType = (req.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
+    if (contentType !== "application/json") {
+      sendJson(res, 415, { error: "Content-Type must be application/json" });
+      return;
+    }
+    const body = await readRequestBody(req, MAX_COST_ESTIMATE_BYTES);
+    parsed = JSON.parse(body.toString("utf8"));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      sendJson(res, 413, { error: error.message });
+    } else {
+      sendJson(res, 400, { error: "request body must be valid JSON" });
+    }
+    return;
+  }
+
+  const input = parseVerificationCostInput(parsed);
+  if (!input.ok) {
+    sendJson(res, 400, { error: input.error });
+    return;
+  }
+
+  metrics.incCounter("qc_verification_cost_estimates_total");
+  sendJson(res, 200, {
+    input: input.value,
+    estimate: costEstimator.estimateVerificationCost(input.value),
+    currency: "USD",
+    costUnit: "cents",
+  });
+}
+
+/**
+ * Issue #1783: validate and normalise a cost-estimate body. Fails closed on any
+ * unexpected type so the scorer only ever sees well-formed numeric inputs.
+ */
+export function parseVerificationCostInput(
+  body: unknown
+): { ok: true; value: VerificationCostInput } | { ok: false; error: string } {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, error: "request body must be a JSON object" };
+  }
+  const fields = body as Record<string, unknown>;
+
+  const method = fields.method;
+  if (
+    typeof method !== "string" ||
+    !(VERIFICATION_METHODS as readonly string[]).includes(method)
+  ) {
+    return {
+      ok: false,
+      error: `method must be one of: ${VERIFICATION_METHODS.join(", ")}`,
+    };
+  }
+
+  const dataFields = countField(fields.dataFields, "dataFields");
+  if (typeof dataFields !== "number") return { ok: false, error: dataFields.error };
+  const documentCount = countField(fields.documentCount, "documentCount");
+  if (typeof documentCount !== "number") return { ok: false, error: documentCount.error };
+
+  const requiresBiometric = booleanField(fields.requiresBiometric, "requiresBiometric");
+  if (typeof requiresBiometric !== "boolean") return { ok: false, error: requiresBiometric.error };
+  const requiresManualReview = booleanField(fields.requiresManualReview, "requiresManualReview");
+  if (typeof requiresManualReview !== "boolean") {
+    return { ok: false, error: requiresManualReview.error };
+  }
+
+  return {
+    ok: true,
+    value: {
+      method,
+      dataFields,
+      documentCount,
+      requiresBiometric,
+      requiresManualReview,
+    },
+  };
+}
+
+// Optional count fields default to 0 when omitted; a present value must be a
+// non-negative integer within the cap. Returns the number or an error object.
+function countField(value: unknown, name: string): number | { error: string } {
+  if (value === undefined) return 0;
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > MAX_COST_ESTIMATE_FIELD_COUNT
+  ) {
+    return {
+      error: `${name} must be an integer between 0 and ${MAX_COST_ESTIMATE_FIELD_COUNT}`,
+    };
+  }
+  return value;
+}
+
+function booleanField(value: unknown, name: string): boolean | { error: string } {
+  if (value === undefined) return false;
+  if (typeof value !== "boolean") return { error: `${name} must be a boolean` };
+  return value;
 }
 
 async function handleCredentialImport(

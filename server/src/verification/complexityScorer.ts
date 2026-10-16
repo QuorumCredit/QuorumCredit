@@ -42,6 +42,23 @@ export interface ComplexityOptimization {
   implementationEffort: "low" | "medium" | "high";
 }
 
+/** The request fields that drive complexity and cost (no identity or timestamps). */
+export type VerificationCostInput = Pick<
+  VerificationRequest,
+  "method" | "dataFields" | "requiresBiometric" | "requiresManualReview" | "documentCount"
+>;
+
+/** Issue #1783: a side-effect-free cost estimate for a prospective verification. */
+export interface VerificationCostEstimate {
+  totalScore: number;
+  methodComplexity: number;
+  dataComplexity: number;
+  processComplexity: number;
+  estimatedCostCents: number;
+  estimatedDurationSeconds: number;
+  optimizationOpportunities: string[];
+}
+
 export class ComplexityScorer {
   private scores: Map<string, ComplexityScore> = new Map();
   private trends: Map<string, ComplexityTrend> = new Map();
@@ -51,27 +68,11 @@ export class ComplexityScorer {
    * Calculate complexity score for a verification request.
    */
   scoreVerification(request: VerificationRequest): ComplexityScore {
-    const methodComplexity = this.calculateMethodComplexity(request.method);
-    const dataComplexity = this.calculateDataComplexity(request);
-    const processComplexity = this.calculateProcessComplexity(request);
-
-    // Weighted average: method (30%), data (40%), process (30%)
-    const totalScore =
-      methodComplexity * 0.3 + dataComplexity * 0.4 + processComplexity * 0.3;
-
-    const estimatedCostCents = this.estimateCost(totalScore, request);
-    const estimatedDurationSeconds = this.estimateDuration(totalScore, request);
-    const optimizations = this.findOptimizations(request, totalScore);
+    const estimate = this.estimateVerificationCost(request);
 
     const score: ComplexityScore = {
       credentialId: request.credentialId,
-      totalScore: Math.round(totalScore * 10) / 10,
-      methodComplexity,
-      dataComplexity,
-      processComplexity,
-      estimatedCostCents,
-      estimatedDurationSeconds,
-      optimizationOpportunities: optimizations,
+      ...estimate,
       scoredAt: Date.now(),
     };
 
@@ -80,6 +81,31 @@ export class ComplexityScorer {
     this.updateTrends(request, score);
 
     return score;
+  }
+
+  /**
+   * Issue #1783: estimate verification cost and complexity without recording
+   * anything. Pure with respect to scorer state, so it is safe to call from
+   * request handlers that must not pollute score history or trends.
+   */
+  estimateVerificationCost(input: VerificationCostInput): VerificationCostEstimate {
+    const methodComplexity = this.calculateMethodComplexity(input.method);
+    const dataComplexity = this.calculateDataComplexity(input);
+    const processComplexity = this.calculateProcessComplexity(input);
+
+    // Weighted average: method (30%), data (40%), process (30%)
+    const totalScore =
+      methodComplexity * 0.3 + dataComplexity * 0.4 + processComplexity * 0.3;
+
+    return {
+      totalScore: Math.round(totalScore * 10) / 10,
+      methodComplexity,
+      dataComplexity,
+      processComplexity,
+      estimatedCostCents: this.estimateCost(totalScore, input),
+      estimatedDurationSeconds: this.estimateDuration(totalScore, input),
+      optimizationOpportunities: this.findOptimizations(input, totalScore),
+    };
   }
 
   /**
@@ -98,7 +124,7 @@ export class ComplexityScorer {
   /**
    * Calculate data complexity score based on number of fields (1-10).
    */
-  private calculateDataComplexity(request: VerificationRequest): number {
+  private calculateDataComplexity(request: VerificationCostInput): number {
     let score = Math.min(1 + request.dataFields * 0.5, 8);
     if (request.documentCount > 3) score = Math.min(score + 1.5, 10);
     return score;
@@ -107,7 +133,7 @@ export class ComplexityScorer {
   /**
    * Calculate process complexity based on review requirements (1-10).
    */
-  private calculateProcessComplexity(request: VerificationRequest): number {
+  private calculateProcessComplexity(request: VerificationCostInput): number {
     let score = 1;
     if (request.requiresManualReview) score += 3;
     if (request.requiresBiometric) score += 2;
@@ -117,7 +143,7 @@ export class ComplexityScorer {
   /**
    * Estimate cost in cents based on complexity.
    */
-  private estimateCost(complexity: number, request: VerificationRequest): number {
+  private estimateCost(complexity: number, request: VerificationCostInput): number {
     // Base cost: 50 cents
     let cost = 50;
 
@@ -144,7 +170,7 @@ export class ComplexityScorer {
   /**
    * Estimate duration in seconds based on complexity.
    */
-  private estimateDuration(complexity: number, request: VerificationRequest): number {
+  private estimateDuration(complexity: number, request: VerificationCostInput): number {
     // Base duration: 30 seconds (automated)
     let duration = 30;
 
@@ -172,7 +198,7 @@ export class ComplexityScorer {
    * Find optimization opportunities.
    */
   private findOptimizations(
-    request: VerificationRequest,
+    request: VerificationCostInput,
     complexity: number
   ): string[] {
     const opportunities: string[] = [];
