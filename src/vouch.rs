@@ -1044,27 +1044,6 @@ pub fn process_withdrawal_batch(env: &Env, borrower: &Address, count: u32) -> u3
     processed
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::DataKey;
-    use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Vec};
-
-    #[allow(dead_code)]
-    fn setup_contract(env: &Env) -> (Address, Address) {
-        let deployer = Address::generate(env);
-        let admin = Address::generate(env);
-        let admins = Vec::from_array(env, [admin.clone()]);
-        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
-        let contract_id = env.register_contract(None, QuorumCreditContract);
-        StellarAssetClient::new(env, &token_id.address()).mint(&contract_id, &10_000_000);
-        let client = QuorumCreditContractClient::new(env, &contract_id);
-        client.initialize(&deployer, &admins, &1, &token_id.address());
-        (contract_id, token_id.address())
-    }
-}
-
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn queue_withdrawal_internal(
