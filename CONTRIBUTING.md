@@ -56,6 +56,12 @@ cargo test -- --nocapture
 
 If you are adding a new feature, please include corresponding test cases in `src/lib.rs`.
 
+## 🗂️ Cache Modules
+
+The canonical cache module is `src/cache.rs`. It is compiled into the contract (`pub mod cache` in `src/lib.rs`) and provides the on-chain yield cache used by `src/loan.rs`.
+
+The duplicate `contracts/slice/src/cache.rs` (a std-only `VerificationCache`) was removed in Issue #1901: it was not part of any crate, could not compile in the `no_std` contract, and nothing referenced it. Its last version is in commit `a26e0a5`, if an off-chain verification cache is needed later. Add new cache code to `src/cache.rs` rather than creating another copy.
+
 ## 🎨 Style Guide
 
 We follow standard Rust formatting conventions. Please run the following before committing:
