@@ -827,4 +827,104 @@ mod tests {
             .unwrap();
         assert_eq!(p.status, TreasuryProposalStatus::Executed);
     }
+
+    // ── Failure-path tests for allocation and execution ─────────────────────
+
+    #[test]
+    fn test_create_proposal_rejects_amount_above_balance() {
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000));
+        let recipient = Address::generate(&env);
+        let result = env.as_contract(&contract_id, || {
+            create_proposal(&env, proposer, recipient, 1_001, String::from_str(&env, "Too big"))
+        });
+        assert_eq!(result, Err(ContractError::InsufficientFunds));
+    }
+
+    #[test]
+    fn test_vote_on_unknown_proposal_returns_not_found() {
+        let (env, contract_id, _) = setup();
+        let voter = Address::generate(&env);
+        let result = env.as_contract(&contract_id, || vote_on_proposal(&env, voter, 999, true));
+        assert_eq!(result, Err(ContractError::ProposalNotFound));
+    }
+
+    #[test]
+    fn test_finalize_unknown_proposal_returns_not_found() {
+        let (env, contract_id, _) = setup();
+        let result = env.as_contract(&contract_id, || finalize_proposal(&env, 999));
+        assert_eq!(result, Err(ContractError::ProposalNotFound));
+    }
+
+    #[test]
+    fn test_finalize_before_voting_ends_is_rejected() {
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(&env, proposer, recipient, 100_000, String::from_str(&env, "Grant"))
+            })
+            .unwrap();
+        let result = env.as_contract(&contract_id, || finalize_proposal(&env, id));
+        assert_eq!(result, Err(ContractError::VotingPeriodEnded));
+    }
+
+    #[test]
+    fn test_finalize_twice_is_rejected() {
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(&env, proposer, recipient, 100_000, String::from_str(&env, "Grant"))
+            })
+            .unwrap();
+        // Two YES votes meet quorum; the proposal then executes once.
+        for _ in 0..2 {
+            let voter = Address::generate(&env);
+            env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
+        }
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        let result = env.as_contract(&contract_id, || finalize_proposal(&env, id));
+        assert_eq!(result, Err(ContractError::ProposalAlreadyFinalized));
+        // The allocation must only be deducted once.
+        let balance = env.as_contract(&contract_id, || get_treasury_balance(&env));
+        assert_eq!(balance, 900_000);
+    }
+
+    #[test]
+    fn test_execution_fails_when_treasury_cannot_cover_allocation() {
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(&env, proposer, recipient, 100_000, String::from_str(&env, "Grant"))
+            })
+            .unwrap();
+        for _ in 0..2 {
+            let voter = Address::generate(&env);
+            env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
+        }
+        // Simulate the treasury being drained after the proposal was created.
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::TreasuryBalance, &0_i128);
+        });
+        env.ledger()
+            .with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+
+        let result = env.as_contract(&contract_id, || finalize_proposal(&env, id));
+        assert_eq!(result, Err(ContractError::InsufficientFunds));
+        // A failed execution must leave the proposal unexecuted.
+        let p = env
+            .as_contract(&contract_id, || get_treasury_proposal(&env, id))
+            .unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Active);
+    }
 }
