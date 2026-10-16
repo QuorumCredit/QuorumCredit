@@ -116,6 +116,8 @@ mod admin_empty_signer_test;
 #[cfg(test)]
 mod slash_result_test;
 #[cfg(test)]
+mod vouch_panic_free_test;
+#[cfg(test)]
 mod contingent_loan_test;
 #[cfg(test)]
 mod loan_tranching_test;
