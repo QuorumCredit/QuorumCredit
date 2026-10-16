@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 /// Lending Pool Composability Module (Issue #1187)
 /// Enables lending pools to integrate with external DeFi protocols,
 /// supporting yield farming and cross-protocol asset management.
@@ -147,8 +149,7 @@ fn touch_pool_last_updated(env: &Env, pool_id: u64, now: u64) {
         .unwrap_or(Vec::new(env));
 
     for i in 0..pools.len() {
-        if pools.get(i).unwrap().pool_id == pool_id {
-            let mut pool = pools.get(i).unwrap();
+        if let Some(mut pool) = pools.get(i).filter(|p| p.pool_id == pool_id) {
             pool.last_updated = now;
             pools.set(i, pool);
             break;
@@ -297,8 +298,7 @@ pub fn record_yield_earning(
 
     let mut touched_pool_id: Option<u64> = None;
     for i in 0..deposits.len() {
-        if deposits.get(i).unwrap().deposit_id == deposit_id {
-            let mut deposit = deposits.get(i).unwrap();
+        if let Some(mut deposit) = deposits.get(i).filter(|d| d.deposit_id == deposit_id) {
             deposit.yield_earned = deposit.yield_earned.saturating_add(amount);
             touched_pool_id = Some(deposit.external_pool_id);
             deposits.set(i, deposit);
@@ -492,8 +492,7 @@ pub fn deactivate_pool(env: &Env, pool_id: u64) -> Result<(), ContractError> {
 
     let mut found = false;
     for i in 0..pools.len() {
-        if pools.get(i).unwrap().pool_id == pool_id {
-            let mut pool = pools.get(i).unwrap();
+        if let Some(mut pool) = pools.get(i).filter(|p| p.pool_id == pool_id) {
             pool.is_active = false;
             pools.set(i, pool);
             found = true;

@@ -26,6 +26,8 @@
 //!   in quick succession to grind `FlashLoanStats` or probe for exploitable
 //!   states.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 extern crate alloc;
 
 use crate::errors::ContractError;
@@ -190,6 +192,16 @@ pub fn flash_loan(
     // The callback must call repay_flash_loan() before transaction completes
     // Note: In production, this would use Soroban's contract invocation system
 
+    // Verify repayment happened (in production, this is implicit in transaction atomicity)
+    // The contract balance check ensures the loan was repaid. This runs before
+    // any bookkeeping is written, so a failed repayment leaves FlashLoanStats,
+    // the loan history, and the per-callback cooldown untouched.
+    let balance_after = token_client(env).balance(&contract_id);
+    if balance_after < balance {
+        // Flash loan was not repaid in full
+        return Err(ContractError::FlashLoanNotRepaid);
+    }
+
     // Record the flash loan for analytics
     let record = FlashLoanRecord {
         borrower: callback_contract.clone(),
@@ -211,14 +223,6 @@ pub fn flash_loan(
         &env.ledger().timestamp(),
     );
 
-    // Verify repayment happened (in production, this is implicit in transaction atomicity)
-    // The contract balance check ensures the loan was repaid
-    let balance_after = token_client(env).balance(&contract_id);
-    if balance_after < balance {
-        // Flash loan was not repaid in full
-        return Err(ContractError::FlashLoanNotRepaid);
-    }
-
     Ok(())
 }
 
@@ -234,14 +238,18 @@ pub fn repay_flash_loan(
     principal: i128,
     fee: i128,
 ) -> Result<(), ContractError> {
-    let cfg = config(env);
-    let total = principal + fee;
-
-    // Validate fee calculation
-    let expected_fee = (principal * FLASH_LOAN_FEE_BPS) / 10_000;
+    // Validate fee calculation. Checked arithmetic keeps an oversized principal
+    // from panicking inside the contract; it is reported as a typed error.
+    let expected_fee = principal
+        .checked_mul(FLASH_LOAN_FEE_BPS)
+        .ok_or(ContractError::ArithmeticError)?
+        / 10_000;
     if fee != expected_fee {
         return Err(ContractError::InvalidFeeAmount);
     }
+    let total = principal
+        .checked_add(fee)
+        .ok_or(ContractError::ArithmeticError)?;
 
     // Transfer repayment from borrower to contract
     let contract_id = env.current_contract_address();
@@ -388,10 +396,22 @@ fn update_flash_loan_stats(env: &Env, amount: i128, fee: i128) -> Result<(), Con
         .get(&DataKey::FlashLoanStats)
         .ok_or(ContractError::NotFound)?;
 
-    stats.total_volume += amount;
-    stats.total_fees += fee;
-    stats.loan_count += 1;
-    stats.period_fees += fee;
+    stats.total_volume = stats
+        .total_volume
+        .checked_add(amount)
+        .ok_or(ContractError::ArithmeticError)?;
+    stats.total_fees = stats
+        .total_fees
+        .checked_add(fee)
+        .ok_or(ContractError::ArithmeticError)?;
+    stats.loan_count = stats
+        .loan_count
+        .checked_add(1)
+        .ok_or(ContractError::ArithmeticError)?;
+    stats.period_fees = stats
+        .period_fees
+        .checked_add(fee)
+        .ok_or(ContractError::ArithmeticError)?;
 
     env.storage()
         .persistent()
@@ -464,6 +484,60 @@ mod tests {
 
         let token_client = soroban_sdk::token::Client::new(&env, &token);
         assert_eq!(token_client.balance(&contract_id), 10_000_000_000);
+    }
+
+    #[test]
+    fn test_failed_repayment_leaves_loan_state_unchanged() {
+        // The callback never repays, so the post-loan balance check fails.
+        // The failure must return a typed error and must not write any loan
+        // bookkeeping: stats, history, or the per-callback cooldown timestamp.
+        let env = Env::default();
+        let (contract_id, admin, _token) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let callback = Address::generate(&env);
+        let callback_data = BytesN::from_array(&env, &[0u8; 32]);
+
+        env.as_contract(&contract_id, || {
+            set_flash_loan_callback_allowed(&env, admin_signers.clone(), callback.clone(), true)
+                .unwrap();
+
+            let err = flash_loan(&env, MIN_FLASH_LOAN_AMOUNT, callback.clone(), callback_data)
+                .unwrap_err();
+            assert_eq!(err, ContractError::FlashLoanNotRepaid);
+
+            let stats = get_flash_loan_stats(&env).unwrap();
+            assert_eq!(stats.loan_count, 0);
+            assert_eq!(stats.total_volume, 0);
+            assert_eq!(stats.total_fees, 0);
+            assert_eq!(stats.period_fees, 0);
+
+            let history: Vec<FlashLoanRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::FlashLoanHistory)
+                .unwrap_or(Vec::new(&env));
+            assert_eq!(history.len(), 0);
+
+            assert!(env
+                .storage()
+                .persistent()
+                .get::<_, u64>(&DataKey::FlashLoanLastTimestamp(callback.clone()))
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn test_repay_rejects_oversized_principal_without_panicking() {
+        // A principal whose fee would overflow i128 must return a typed error
+        // rather than panic.
+        let env = Env::default();
+        let (contract_id, _admin, _token) = setup_contract(&env);
+        let borrower = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            let err = repay_flash_loan(&env, borrower.clone(), i128::MAX, 0).unwrap_err();
+            assert_eq!(err, ContractError::ArithmeticError);
+        });
     }
 
     #[test]
