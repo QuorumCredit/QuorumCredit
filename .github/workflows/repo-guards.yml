@@ -1,0 +1,25 @@
+name: Repo Guards
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  repo-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Reject duplicated source files under contracts/
+        run: python3 scripts/check_duplicate_sources.py
+
+      - name: Verify test file discovery matches src/tests.rs and lib.rs
+        run: python3 scripts/gen_test_includes.py

@@ -1,0 +1,45 @@
+name: WASM Size Budget
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "wasm-size-budget.json"
+      - "scripts/wasm_size_budget.py"
+      - ".github/workflows/wasm-size-budget.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "wasm-size-budget.json"
+      - "scripts/wasm_size_budget.py"
+      - ".github/workflows/wasm-size-budget.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  wasm-size-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Build release WASM
+        run: cargo build --release --target wasm32-unknown-unknown --lib
+
+      - name: Enforce size budget
+        run: >
+          python3 scripts/wasm_size_budget.py
+          target/wasm32-unknown-unknown/release/quorum_credit.wasm

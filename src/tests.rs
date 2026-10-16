@@ -1,3 +1,4 @@
+// BEGIN GENERATED TEST PATHS (scripts/gen_test_includes.py --write)
 #[path = "credit_score_test.rs"]
 mod credit_score_test;
 #[path = "dynamic_rate_oracle_test.rs"]
@@ -6,6 +7,7 @@ mod dynamic_rate_oracle_test;
 mod merkle_tree_test;
 #[path = "relay_test.rs"]
 mod relay_test;
+// END GENERATED TEST PATHS
 
 // API-drifted; excluded so `cargo test --lib` compiles (issue #942):
 //   cross_chain_attestation_test, withdrawal_queue_test
