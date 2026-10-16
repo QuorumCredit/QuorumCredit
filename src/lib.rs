@@ -1630,7 +1630,7 @@ impl QuorumCreditContract {
     }
 
     /// Set the refill window, in seconds, for `holder`'s verification limit.
-    pub fn set_verification_rate_limit_window(
+    pub fn set_rate_limit_window(
         env: Env,
         holder: Address,
         window_secs: u64,
@@ -1653,7 +1653,7 @@ impl QuorumCreditContract {
         credential_rate_limit::consume_verification_attempt(&env, &holder)
     }
 
-    pub fn get_available_verification_attempts(env: Env, holder: Address) -> u32 {
+    pub fn get_remaining_attempts(env: Env, holder: Address) -> u32 {
         credential_rate_limit::get_available_attempts(&env, &holder)
     }
 
