@@ -580,7 +580,7 @@ impl QuorumCreditContract {
             .get(&DataKey::ZkProofCounter)
             .unwrap_or(0u64)
             .checked_add(1)
-            .expect("proof ID overflow");
+            .ok_or(ContractError::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::ZkProofCounter, &proof_id);
@@ -655,9 +655,10 @@ impl QuorumCreditContract {
 
     pub fn slash(env: Env, admin_signers: Vec<Address>, borrower: Address) {
         helpers::require_admin_approval(&env, &admin_signers);
-        helpers::require_not_paused(&env).expect("contract is paused");
+        helpers::require_not_paused(&env).unwrap_or_else(|e| panic_with_error!(&env, e));
 
-        let mut loan = helpers::get_active_loan_record(&env, &borrower).expect("no active loan");
+        let mut loan = helpers::get_active_loan_record(&env, &borrower)
+            .unwrap_or_else(|e| panic_with_error!(&env, e));
 
         if loan.repaid || loan.defaulted {
             panic_with_error!(&env, ContractError::NoActiveLoan);
@@ -844,7 +845,7 @@ impl QuorumCreditContract {
             .storage()
             .persistent()
             .get(&DataKey::Loan(borrower.clone()))
-            .expect("no active loan");
+            .unwrap_or_else(|| panic_with_error!(&env, ContractError::NoActiveLoan));
 
         assert!(!loan.repaid, "loan already repaid");
         assert!(!loan.defaulted, "loan already defaulted");
@@ -898,7 +899,8 @@ impl QuorumCreditContract {
     pub fn claim_expired_loan(env: Env, borrower: Address) {
         borrower.require_auth();
 
-        let mut loan = helpers::get_active_loan_record(&env, &borrower).expect("no active loan");
+        let mut loan = helpers::get_active_loan_record(&env, &borrower)
+            .unwrap_or_else(|e| panic_with_error!(&env, e));
 
         if loan.repaid || loan.defaulted {
             panic_with_error!(&env, ContractError::NoActiveLoan);
@@ -1019,7 +1021,9 @@ impl QuorumCreditContract {
             if i >= borrowers.len() as u64 {
                 break;
             }
-            let borrower = borrowers.get(i as u32).unwrap();
+            let Some(borrower) = borrowers.get(i as u32) else {
+                break;
+            };
             if let Some(loan) = helpers::get_latest_loan_record(&env, &borrower) {
                 result.push_back(loan);
             }
@@ -1096,8 +1100,8 @@ impl QuorumCreditContract {
 
         let mut total_amount: i128 = 0;
         for i in 0..borrowers.len() {
-            let borrower = borrowers.get(i).unwrap();
-            let amount = amounts.get(i).unwrap();
+            let borrower = borrowers.get(i).ok_or(ContractError::PoolLengthMismatch)?;
+            let amount = amounts.get(i).ok_or(ContractError::PoolLengthMismatch)?;
 
             assert!(
                 amount >= cfg.min_loan_amount,
@@ -1124,7 +1128,7 @@ impl QuorumCreditContract {
 
             total_amount = total_amount
                 .checked_add(amount)
-                .expect("pool total_amount overflow");
+                .ok_or(ContractError::ArithmeticOverflow)?;
         }
 
         let token = helpers::token(&env);
@@ -1139,7 +1143,7 @@ impl QuorumCreditContract {
             .get(&DataKey::LoanPoolCounter)
             .unwrap_or(0u64)
             .checked_add(1)
-            .expect("pool ID overflow");
+            .ok_or(ContractError::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::LoanPoolCounter, &pool_id);
@@ -1147,8 +1151,8 @@ impl QuorumCreditContract {
         let empty_purpose = soroban_sdk::String::from_str(&env, "pool");
 
         for i in 0..borrowers.len() {
-            let borrower = borrowers.get(i).unwrap();
-            let amount = amounts.get(i).unwrap();
+            let borrower = borrowers.get(i).ok_or(ContractError::PoolLengthMismatch)?;
+            let amount = amounts.get(i).ok_or(ContractError::PoolLengthMismatch)?;
             let loan_id = helpers::next_loan_id(&env);
 
             env.storage().persistent().set(

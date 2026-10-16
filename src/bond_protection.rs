@@ -20,17 +20,45 @@ const BOND_INSURANCE_FULL_TERM_SECS: u64 = 30 * 24 * 60 * 60;
 /// `refund = premium * (full_term - time_held) / full_term`, clamped to
 /// `[0, premium]`. An immediate release refunds the whole premium; a release
 /// at or after the full term refunds nothing.
-fn prorated_premium_refund(premium_paid: i128, created_at: u64, released_at: u64) -> i128 {
+fn prorated_premium_refund(
+    premium_paid: i128,
+    created_at: u64,
+    released_at: u64,
+) -> Result<i128, ContractError> {
     if premium_paid <= 0 {
-        return 0;
+        return Ok(0);
     }
     let time_held = released_at.saturating_sub(created_at);
     if time_held >= BOND_INSURANCE_FULL_TERM_SECS {
-        return 0;
+        return Ok(0);
     }
     let time_remaining = (BOND_INSURANCE_FULL_TERM_SECS - time_held) as i128;
-    let refund = (premium_paid * time_remaining) / (BOND_INSURANCE_FULL_TERM_SECS as i128);
-    refund.clamp(0, premium_paid)
+    let refund = premium_paid
+        .checked_mul(time_remaining)
+        .ok_or(ContractError::ArithmeticError)?
+        / (BOND_INSURANCE_FULL_TERM_SECS as i128);
+    Ok(refund.clamp(0, premium_paid))
+}
+
+/// Applies a basis-point rate to `amount`. Returns `ArithmeticError` on overflow
+/// instead of panicking, so no caller-supplied amount can abort the coverage path.
+fn apply_bps(amount: i128, bps: i128) -> Result<i128, ContractError> {
+    amount
+        .checked_mul(bps)
+        .map(|scaled| scaled / 10_000)
+        .ok_or(ContractError::ArithmeticError)
+}
+
+/// Utilization of a voucher's bonded capital, in basis points, clamped to `[0, 10_000]`.
+fn utilization_bps(total_used: i128, total_bonded: i128) -> Result<u32, ContractError> {
+    if total_bonded == 0 {
+        return Ok(0);
+    }
+    let bps = total_used
+        .checked_mul(10_000)
+        .ok_or(ContractError::ArithmeticError)?
+        / total_bonded;
+    Ok(bps.clamp(0, 10_000) as u32)
 }
 
 /// Issue #1175: Stake a bond for vouch protection.
@@ -51,7 +79,7 @@ pub fn stake_bond_for_vouch_protection(
     }
 
     // Bond can cover up to 50% of the vouch stake
-    let max_bond = (protected_stake * MAX_BOND_COVERAGE_BPS) / 10_000;
+    let max_bond = apply_bps(protected_stake, MAX_BOND_COVERAGE_BPS)?;
     if bond_amount > max_bond {
         return Err(ContractError::InvalidAmount);
     }
@@ -147,7 +175,7 @@ pub fn purchase_bond_insurance(
     }
 
     // Calculate premium: 3% of bond amount
-    let premium = (bond_amount * BOND_INSURANCE_PREMIUM_BPS) / 10_000;
+    let premium = apply_bps(bond_amount, BOND_INSURANCE_PREMIUM_BPS)?;
 
     // Create insurance record
     let insurance = BondInsuranceRecord {
@@ -213,7 +241,10 @@ pub fn apply_bond_coverage(
         return Err(ContractError::InvalidAmount);
     }
 
-    let available_bond = bond.bond_amount - bond.amount_used;
+    let available_bond = bond
+        .bond_amount
+        .checked_sub(bond.amount_used)
+        .ok_or(ContractError::ArithmeticError)?;
     let bond_used = slash_amount.min(available_bond);
 
     bond.amount_used = bond.amount_used.checked_add(bond_used)
@@ -354,7 +385,7 @@ pub fn release_bond(
                 insurance.premium_paid,
                 insurance.purchased_at,
                 env.ledger().timestamp(),
-            );
+            )?;
         }
 
         if insurance.status == InsuranceStatus::Active {
@@ -426,12 +457,7 @@ pub fn get_bond_stats(env: Env, voucher: Address) -> Result<BondStats, ContractE
 pub fn get_bond_utilization_rate(env: Env, voucher: Address) -> Result<u32, ContractError> {
     let stats = get_bond_stats(env, voucher)?;
 
-    if stats.total_bonded == 0 {
-        return Ok(0);
-    }
-
-    let utilization_bps = (stats.total_used * 10_000) / stats.total_bonded;
-    Ok(utilization_bps.min(10_000) as u32)
+    utilization_bps(stats.total_used, stats.total_bonded)
 }
 
 #[cfg(test)]
@@ -555,5 +581,50 @@ mod tests {
             release_bond(env.clone(), 6, voucher.clone()).unwrap();
             assert!(env.events().all().len() > before, "release emits an event");
         });
+    }
+}
+
+#[cfg(test)]
+mod coverage_math_property_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// No amount/rate pair may panic; overflow must surface as `ArithmeticError`.
+        #[test]
+        fn prop_apply_bps_never_panics(
+            amount in any::<i128>(),
+            bps in prop_oneof![
+                Just(BOND_INSURANCE_PREMIUM_BPS),
+                Just(MAX_BOND_COVERAGE_BPS),
+                any::<i128>(),
+            ],
+        ) {
+            let _ = apply_bps(amount, bps);
+        }
+
+        /// Refunds never panic and always stay within `[0, premium]`.
+        #[test]
+        fn prop_prorated_refund_is_bounded(
+            premium in any::<i128>(),
+            created_at in any::<u64>(),
+            released_at in any::<u64>(),
+        ) {
+            if let Ok(refund) = prorated_premium_refund(premium, created_at, released_at) {
+                prop_assert!(refund >= 0);
+                prop_assert!(refund <= premium.max(0));
+            }
+        }
+
+        /// Utilization never panics and is always a valid basis-point value.
+        #[test]
+        fn prop_utilization_never_panics_and_is_capped(
+            total_used in any::<i128>(),
+            total_bonded in any::<i128>(),
+        ) {
+            if let Ok(bps) = utilization_bps(total_used, total_bonded) {
+                prop_assert!(bps <= 10_000);
+            }
+        }
     }
 }

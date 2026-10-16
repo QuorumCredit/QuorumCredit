@@ -473,18 +473,18 @@ pub fn execute_pending_slash(env: Env, borrower: Address) -> Result<(), Contract
 
 // â”€â”€ Internal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-fn next_slash_id(env: &Env) -> u64 {
+fn next_slash_id(env: &Env) -> Result<u64, ContractError> {
     let id = env
         .storage()
         .instance()
         .get(&DataKey::SlashRecordCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("slash ID overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
     env.storage()
         .instance()
         .set(&DataKey::SlashRecordCounter, &id);
-    id
+    Ok(id)
 }
 
 pub fn get_slash_record(env: Env, slash_id: u64) -> Option<SlashRecord> {
@@ -673,7 +673,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         .set(&DataKey::Vouches(borrower.clone()), &remaining_vouches);
     }
 
-    let slash_id = next_slash_id(env);
+    let slash_id = next_slash_id(env)?;
     let record = SlashRecord {
         slash_id,
         borrower: borrower.clone(),
@@ -750,7 +750,7 @@ pub fn propose_slash(
         .get(&DataKey::TimelockCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal ID overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let eta = env.ledger().timestamp() + delay_secs;
 
@@ -1068,7 +1068,7 @@ pub fn propose_slash_threshold(
         .get::<DataKey, u64>(&DataKey::SlashThresholdProposalCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal id overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let proposal = SlashThresholdProposal {
         id: proposal_id,
@@ -1349,7 +1349,7 @@ pub fn propose_admin_removal(
         .get::<DataKey, u64>(&DataKey::AdminRemovalProposalCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal id overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let proposal = AdminRemovalProposal {
         id: proposal_id,
@@ -1837,7 +1837,7 @@ pub fn propose_risk_threshold(
         .get(&DataKey::RiskThresholdCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal ID overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let proposal = crate::types::RiskThresholdProposal {
         id: proposal_id,
@@ -1885,12 +1885,12 @@ pub fn vote_risk_threshold(
     let vote_weight = 1_000_i128;  // Default vote weight
 
     if approve {
-        proposal.votes_for = proposal.votes_for.checked_add(vote_weight).expect("vote overflow");
+        proposal.votes_for = proposal.votes_for.checked_add(vote_weight).ok_or(ContractError::ArithmeticOverflow)?;
     } else {
         proposal.votes_against = proposal
             .votes_against
             .checked_add(vote_weight)
-            .expect("vote overflow");
+            .ok_or(ContractError::ArithmeticOverflow)?;
     }
 
     env.storage()
@@ -1934,7 +1934,7 @@ pub fn propose_fee_structure(
         .get(&DataKey::FeeStructureCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal ID overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let proposal = crate::types::FeeStructureProposal {
         id: proposal_id,
@@ -1988,12 +1988,12 @@ pub fn vote_fee_structure(
     let vote_weight = 1_000_i128;
 
     if approve {
-        proposal.votes_for = proposal.votes_for.checked_add(vote_weight).expect("vote overflow");
+        proposal.votes_for = proposal.votes_for.checked_add(vote_weight).ok_or(ContractError::ArithmeticOverflow)?;
     } else {
         proposal.votes_against = proposal
             .votes_against
             .checked_add(vote_weight)
-            .expect("vote overflow");
+            .ok_or(ContractError::ArithmeticOverflow)?;
     }
 
     env.storage()
@@ -2037,7 +2037,7 @@ pub fn queue_withdrawal(
         .get(&DataKey::WithdrawalTimelockCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("lock ID overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let timelock = crate::types::WithdrawalTimelock {
         id: lock_id,
@@ -2125,7 +2125,7 @@ pub fn initiate_cross_chain_sync(
         .get(&DataKey::CrossChainSyncCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("sync ID overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let votes_required = target_chains.len() as u32;
 
@@ -2180,7 +2180,7 @@ pub fn vote_cross_chain_sync(
         sync.votes_received = sync
             .votes_received
             .checked_add(1)
-            .expect("vote overflow");
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         // Execute if quorum reached
         if sync.votes_received >= sync.votes_required {
@@ -2227,7 +2227,7 @@ pub fn propose_config_change(
         .get(&DataKey::TimelockCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal ID overflow");
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     let eta = env.ledger().timestamp() + crate::types::CONFIG_TIMELOCK_SECONDS;
 
