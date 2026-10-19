@@ -78,6 +78,10 @@ export function buildApiKeyStore(
  * Falls back to an empty store (all keys rejected) when the variable is absent.
  */
 export function loadApiKeyStore(env: NodeJS.ProcessEnv = process.env): ApiKeyStore {
+  // An empty store in production would run with no valid keys at all.
+  if (env.NODE_ENV === "production" && !env.API_KEY_HASHES?.trim()) {
+    throw new Error("API_KEY_HASHES must be set when NODE_ENV=production");
+  }
   let tiers: Record<string, "free" | "pro" | "enterprise"> = {};
   if (env.API_KEY_TIERS) {
     const parsed: unknown = JSON.parse(env.API_KEY_TIERS);
