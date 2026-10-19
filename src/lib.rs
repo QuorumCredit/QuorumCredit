@@ -144,6 +144,14 @@ mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
 #[cfg(test)]
+mod security_fixes_test;
+#[cfg(test)]
+mod input_validation_test;
+#[cfg(test)]
+mod paused_state_test;
+#[cfg(test)]
+mod loan_overwrite_protection_test;
+#[cfg(test)]
 mod chaos_test;
 #[cfg(test)]
 mod concurrent_operations_test;
