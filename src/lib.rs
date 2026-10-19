@@ -143,6 +143,16 @@ mod repay_validation_test;
 mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
+#[cfg(all(test, feature = "mainnet-tests"))]
+mod mainnet_deployment_test;
+#[cfg(test)]
+mod full_lifecycle_test;
+#[cfg(test)]
+mod initialize_test;
+#[cfg(test)]
+mod monitoring_setup_test;
+#[cfg(test)]
+mod operations_runbook_test;
 
 pub use errors::ContractError;
 pub use types::*;
