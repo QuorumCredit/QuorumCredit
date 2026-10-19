@@ -51,6 +51,15 @@ export class ComplexityScorer {
    * Calculate complexity score for a verification request.
    */
   scoreVerification(request: VerificationRequest): ComplexityScore {
+    for (const [name, value] of [
+      ["dataFields", request.dataFields],
+      ["documentCount", request.documentCount],
+    ] as const) {
+      if (!Number.isFinite(value) || value < 0) {
+        throw new Error(`${name} must be a non-negative number`);
+      }
+    }
+
     const methodComplexity = this.calculateMethodComplexity(request.method);
     const dataComplexity = this.calculateDataComplexity(request);
     const processComplexity = this.calculateProcessComplexity(request);
