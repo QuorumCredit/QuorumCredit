@@ -5,6 +5,7 @@
  * Supports multiple formats (JSON, CSV, PDF) and scheduled report generation.
  */
 
+import { randomUUID } from "node:crypto";
 import type { BatchVerification } from "./batchVerificationStore.js";
 
 export type ReportFormat = "json" | "csv" | "pdf";
@@ -124,9 +125,7 @@ export class AuditReportGenerator {
         : 0;
     const averageFailureRate = 100 - averageSuccessRate;
 
-    const reportId = `report_${Date.now()}_${Math.random()
-      .toString(36)
-      .substr(2, 9)}`;
+    const reportId = `report_${randomUUID()}`;
 
     const report: VerificationAuditReport = {
       reportId,
@@ -262,9 +261,7 @@ export class AuditReportGenerator {
     frequency: "daily" | "weekly" | "monthly",
     recipients: string[]
   ): ReportSchedule {
-    const scheduleId = `schedule_${Date.now()}_${Math.random()
-      .toString(36)
-      .substr(2, 9)}`;
+    const scheduleId = `schedule_${randomUUID()}`;
 
     const schedule: ReportSchedule = {
       scheduleId,
