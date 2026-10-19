@@ -144,6 +144,10 @@ mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
 #[cfg(test)]
+mod chaos_test;
+#[cfg(test)]
+mod concurrent_operations_test;
+#[cfg(test)]
 mod vouch_audit_trail_test;
 #[cfg(test)]
 mod vouch_reputation_test;
