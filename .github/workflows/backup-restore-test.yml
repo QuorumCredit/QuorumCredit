@@ -35,7 +35,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: bash -n syntax check
         run: |
@@ -59,7 +59,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install stellar CLI and jq
         run: |
@@ -71,7 +71,7 @@ jobs:
 
       - name: Find previous completed drill
         id: previous
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
@@ -104,7 +104,7 @@ jobs:
 
       - name: Restore verification history
         if: steps.previous.outputs.run_id != ''
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: backup-verification-history
           run-id: ${{ steps.previous.outputs.run_id }}
@@ -124,7 +124,7 @@ jobs:
 
       - name: Upload cumulative verification history
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backup-verification-history
           path: backups/test-results/history.jsonl
@@ -133,7 +133,7 @@ jobs:
 
       - name: Upload backup archive
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: backup-restore-drill-${{ github.run_id }}
           path: backups/backup_*.tar.gz
@@ -142,7 +142,7 @@ jobs:
 
       - name: Alert on verification failure
         if: failure()
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const title = 'Automated backup verification failed';
@@ -173,7 +173,7 @@ jobs:
 
       - name: Resolve verification alert after recovery
         if: success()
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const title = 'Automated backup verification failed';
