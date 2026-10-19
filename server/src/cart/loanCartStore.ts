@@ -69,6 +69,24 @@ export class LoanCartStore {
     return cart;
   }
 
+  /** Removes the item at `index`. Returns the cart, or null when there is no such item. */
+  removeItem(borrower: string, index: number): LoanCart | null {
+    const cart = this.carts.get(borrower);
+    if (!cart || index < 0 || index >= cart.items.length) return null;
+    cart.items.splice(index, 1);
+    cart.lastUpdatedAt = Date.now();
+    return cart;
+  }
+
+  /** Replaces the item at `index`. Returns the cart, or null when there is no such item. */
+  updateItem(borrower: string, index: number, amount: number, tenureSeconds: number): LoanCart | null {
+    const cart = this.carts.get(borrower);
+    if (!cart || index < 0 || index >= cart.items.length) return null;
+    cart.items[index] = { ...cart.items[index]!, amount, tenureSeconds };
+    cart.lastUpdatedAt = Date.now();
+    return cart;
+  }
+
   getCart(borrower: string): LoanCart | null {
     return this.carts.get(borrower) ?? null;
   }
