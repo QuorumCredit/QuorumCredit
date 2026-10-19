@@ -188,6 +188,7 @@ impl QuorumCreditContract {
                 grace_period: 0,
                 vouch_cooldown_secs: DEFAULT_VOUCH_COOLDOWN_SECS,
                 min_yield_stake: DEFAULT_MIN_YIELD_STAKE,
+                min_stake: DEFAULT_MIN_STAKE,
                 min_vouch_age_secs: DEFAULT_MIN_VOUCH_AGE_SECS,
                 prepayment_penalty_bps: 0,
                 liquidity_mining_rate_bps: DEFAULT_LIQUIDITY_MINING_RATE_BPS,
@@ -3678,6 +3679,38 @@ mod lib_tests {
             final_balance > initial_balance - 1_000_000,
             "voucher should receive stake + yield"
         );
+    }
+
+    /// Issue #1997: The default `min_stake` written by `initialize` must be the
+    /// documented 50-stroop floor, so yield is never truncated to zero.
+    #[test]
+    fn test_default_min_stake_is_50_stroops() {
+        let env = Env::default();
+        let (contract_id, _, _, _, _) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        assert_eq!(client.get_min_stake(), 50);
+    }
+
+    /// Issue #1997: Boundary — a stake of exactly `min_stake` is accepted.
+    #[test]
+    fn test_vouch_at_exact_min_stake_accepted() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &50, &token_addr, &None);
+        assert_eq!(client.get_vouch(&voucher, &borrower).unwrap().stake, 50);
+    }
+
+    /// Issue #1997: Boundary — a stake one stroop below `min_stake` is rejected.
+    #[test]
+    fn test_vouch_below_min_stake_rejected() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let result = client.try_vouch(&voucher, &borrower, &49, &token_addr, &None);
+        assert_eq!(result, Err(Ok(ContractError::StakeTooLow)));
     }
 
     #[test]

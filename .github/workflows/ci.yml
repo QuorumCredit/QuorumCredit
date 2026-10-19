@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  server-tests:
+    name: Server Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run coverage
+
+  dashboard-tests:
+    name: Dashboard Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run coverage
+
+  rust-coverage:
+    name: Rust Coverage
+    runs-on: ubuntu-latest
+    # Coverage floors (ratchet these upward over time as coverage improves):
+    #   - Line coverage floor:   70%
+    #   - Branch coverage floor: 60%
+    # The job fails if either floor is not met. Update the values below and in
+    # the enforcement step together when ratcheting.
+    env:
+      LINE_COVERAGE_FLOOR: "70"
+      BRANCH_COVERAGE_FLOOR: "60"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Run coverage
+        run: |
+          cargo llvm-cov --workspace --all-features \
+            --lcov --output-path lcov.info \
+            --json --output-path coverage.json
+      - name: Print coverage summary
+        run: cargo llvm-cov report --summary-only
+      - name: Enforce coverage floors
+        run: |
+          LINE=$(jq -r '.data[0].totals.lines.percent' coverage.json)
+          BRANCH=$(jq -r '.data[0].totals.branches.percent' coverage.json)
+          echo "Line coverage:   ${LINE}% (floor: ${LINE_COVERAGE_FLOOR}%)"
+          echo "Branch coverage: ${BRANCH}% (floor: ${BRANCH_COVERAGE_FLOOR}%)"
+          FAIL=0
+          if awk "BEGIN { exit !(${LINE} < ${LINE_COVERAGE_FLOOR}) }"; then
+            echo "::error::Line coverage ${LINE}% is below the floor of ${LINE_COVERAGE_FLOOR}%"
+            FAIL=1
+          fi
+          if awk "BEGIN { exit !(${BRANCH} < ${BRANCH_COVERAGE_FLOOR}) }"; then
+            echo "::error::Branch coverage ${BRANCH}% is below the floor of ${BRANCH_COVERAGE_FLOOR}%"
+            FAIL=1
+          fi
+          exit ${FAIL}
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage
+          path: |
+            lcov.info
+            coverage.json

@@ -92,9 +92,9 @@ QuorumCredit/
 |---|---|
 | `initialize(deployer, admin, token)` | One-time setup — deployer must sign; sets admin and XLM token address |
 | `vouch(voucher, borrower, stake)` | Stake XLM to back a borrower |
-| `request_loan(borrower, amount, threshold)` | Disburse loan if stake threshold is met |
+| `request_loan(borrower, amount, threshold, loan_purpose, token)` | Disburse loan if stake threshold is met |
 | `repay(borrower)` | Repay loan; vouchers receive 2% yield |
-| `slash(borrower)` | Admin marks default; 50% of voucher stakes burned |
+| `slash(env, admin_signers, borrower)` | Admin marks default; 50% of voucher stakes burned |
 | `get_loan(borrower)` | Read a borrower's active loan record |
 | `get_vouches(borrower)` | Read all vouches for a borrower |
 
@@ -106,9 +106,9 @@ QuorumCredit/
 |---|---|---|---|
 | `initialize` | **Deployer** | One-time setup of Admin and Token addresses. | Sets security foundation. |
 | `vouch` | **Voucher** | Stake XLM to back a borrower. | Increases borrower trust score. |
-| `request_loan` | **Borrower** | Withdraw loan funds to borrower wallet. | Disburses capital. |
+| `request_loan(borrower, amount, threshold, loan_purpose, token)` | **Borrower** | Withdraw loan funds to borrower wallet. | Disburses capital. |
 | `repay` | **Borrower** | Clear debt and distribute yield to vouchers. | Restores trust and rewards vouchers. |
-| `slash` | **Admin** | Signal default and burn 50% of voucher stakes. | Penalizes default; enforces risk. |
+| `slash(env, admin_signers, borrower)` | **Admin** | Signal default and burn 50% of voucher stakes. | Penalizes default; enforces risk. |
 | `get_loan` | **Anyone** | Read active loan records. | Transparency. |
 | `get_vouches` | **Anyone** | Read voucher lists for a borrower. | Transparency. |
 
