@@ -79,6 +79,12 @@ export class ExportStore {
     return this.exports.get(exportId);
   }
 
+  /** Returns the export only when `credentialId` owns it, so one holder cannot read another's export. */
+  getExportFor(exportId: string, credentialId: string): ExportRequest | undefined {
+    const request = this.exports.get(exportId);
+    return request && request.credentialId === credentialId ? request : undefined;
+  }
+
   /**
    * Get all exports for a credential holder.
    */
