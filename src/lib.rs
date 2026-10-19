@@ -144,6 +144,12 @@ mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
 #[cfg(test)]
+mod vouch_audit_trail_test;
+#[cfg(test)]
+mod vouch_reputation_test;
+#[cfg(test)]
+mod batch_stake_test;
+#[cfg(test)]
 mod min_loan_amount_test;
 #[cfg(test)]
 mod request_loan_yield_test;
