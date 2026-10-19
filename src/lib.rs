@@ -143,6 +143,10 @@ mod repay_validation_test;
 mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
+#[cfg(test)]
+mod min_loan_amount_test;
+#[cfg(test)]
+mod request_loan_yield_test;
 
 pub use errors::ContractError;
 pub use types::*;
