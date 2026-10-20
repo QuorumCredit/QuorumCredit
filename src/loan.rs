@@ -962,7 +962,9 @@ pub fn remove_co_borrower(
     let idx = loan.co_borrowers.iter().position(|cb| cb == co_borrower);
     match idx {
         Some(i) => {
-            loan.co_borrowers.remove(i as u32);
+            // Issue #1925: checked conversion instead of a truncating `as u32`.
+            let idx = u32::try_from(i).map_err(|_| ContractError::ArithmeticError)?;
+            loan.co_borrowers.remove(idx);
             env.storage()
                 .persistent()
                 .set(&DataKey::Loan(loan.id), &loan);
@@ -1224,7 +1226,10 @@ pub fn refinance_quote(
 
     let breakeven_days = if estimated_annual_savings > 0 {
         let daily_savings = (estimated_annual_savings / 365).max(1);
-        Some((refinance_fee / daily_savings) as u64)
+        // Issue #1925: checked conversion — a truncating `as u64` would wrap
+        // an out-of-range (or, if refinance_fee were ever negative, negative)
+        // result into a plausible-looking but wrong day count.
+        u64::try_from(refinance_fee / daily_savings).ok()
     } else {
         None
     };
@@ -1980,7 +1985,8 @@ pub fn calculate_dynamic_rate(
         Some(cs) => {
             let rewards = crate::credit_score::get_tier_rewards(env.clone(), cs.tier);
             if rewards.yield_bonus_bps > 0 {
-                rewards.yield_bonus_bps as u32
+                // Issue #1925: checked conversion instead of a truncating `as u32`.
+                u32::try_from(rewards.yield_bonus_bps).unwrap_or(0)
             } else {
                 0
             }
