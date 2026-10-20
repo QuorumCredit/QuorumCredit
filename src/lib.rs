@@ -92,6 +92,9 @@ pub mod sbt_insurance;
 // Issue #1736 — SBT Marketplace Integration
 pub mod sbt_marketplace;
 
+// Issue #1617 — Quorum Slice Transparency Index
+pub mod transparency;
+
 #[cfg(test)]
 mod governance_test;
 #[cfg(test)]
@@ -4974,5 +4977,27 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_analytics::AttestorLocation> {
         attestor_analytics::get_attestor_location(&env, &attestor)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #1928: Quorum Slice Transparency Index Reporting
+    // ─────────────────────────────────────────────────────────────────────────
+
+    pub fn report_transparency_score(env: Env, slice_id: Address) -> u32 {
+        transparency::get_transparency_score(&env, &slice_id)
+    }
+
+    pub fn report_transparency_history(
+        env: Env,
+        slice_id: Address,
+    ) -> Vec<(u64, u32, u32)> {
+        transparency::get_transparency_history(&env, &slice_id)
+    }
+
+    pub fn recalculate_transparency_index(
+        env: Env,
+        slice_id: Address,
+    ) -> Result<u32, ContractError> {
+        transparency::calculate_transparency_index(&env, &slice_id)
     }
 }
