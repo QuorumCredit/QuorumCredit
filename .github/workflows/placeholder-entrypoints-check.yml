@@ -1,0 +1,44 @@
+# Issue #1937: CI check that flags public entrypoints returning hardcoded placeholder values.
+#
+# A `pub fn` in src/lib.rs is flagged as a placeholder when its body:
+#   * contains a TODO comment, or
+#   * is a single literal return (e.g., Ok(0), None, false).
+#
+# All flagged entrypoints must be listed in scripts/placeholder_entrypoints.allowlist
+# with their tracking issue number. A new flagged entrypoint without an allowlist
+# entry causes the build to fail.
+
+name: Placeholder Entrypoints Check
+
+on:
+  push:
+    paths:
+      - "src/lib.rs"
+      - "scripts/check_placeholder_entrypoints.py"
+      - "scripts/placeholder_entrypoints.allowlist"
+      - ".github/workflows/placeholder-entrypoints-check.yml"
+  pull_request:
+    paths:
+      - "src/lib.rs"
+      - "scripts/check_placeholder_entrypoints.py"
+      - "scripts/placeholder_entrypoints.allowlist"
+      - ".github/workflows/placeholder-entrypoints-check.yml"
+
+jobs:
+  check:
+    name: Verify no unlisted placeholder entrypoints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Check for placeholder entrypoints
+        run: python3 scripts/check_placeholder_entrypoints.py
+
+      - name: List flagged entrypoints (debug)
+        if: always()
+        run: python3 scripts/check_placeholder_entrypoints.py --list

@@ -1,4 +1,4 @@
-.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test
+.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test check-placeholders
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -58,3 +58,7 @@ indexer:
 ## Run the event indexer tests
 indexer-test:
 	cargo test -p quorum-credit-indexer
+
+## Check that all placeholder entrypoints have allowlist entries with issue numbers
+check-placeholders:
+	python3 scripts/check_placeholder_entrypoints.py
