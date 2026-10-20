@@ -1,7 +1,7 @@
 /**
  * Loan Forecast Route for QuorumCredit
  *
- * Implements GET /loans/{id}/forecast (#1XXX) and the accuracy-tracking
+ * Implements GET /loans/{id}/forecast (#1206) and the accuracy-tracking
  * endpoint used to compare forecasted vs. actual payments over time.
  */
 
