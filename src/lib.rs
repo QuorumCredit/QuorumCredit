@@ -151,6 +151,14 @@ mod attestor_analytics_test;
 mod quorum_slice_migration_test;
 #[cfg(test)]
 mod quorum_slice_rebalancing_test;
+#[cfg(test)]
+mod repay_nonexistent_loan_test;
+#[cfg(test)]
+mod repay_overpayment_test;
+#[cfg(test)]
+mod repay_protocol_fee_test;
+#[cfg(test)]
+mod partial_repay_test;
 
 pub use errors::ContractError;
 pub use types::*;
