@@ -30,7 +30,6 @@ pub mod helpers;
 pub mod insurance;
 pub mod insurance_marketplace;
 pub mod loan;
-pub mod maturity;
 pub mod merkle_tree;
 pub mod metadata_encryption;
 pub mod multitoken_support;
