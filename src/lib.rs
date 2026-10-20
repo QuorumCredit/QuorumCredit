@@ -94,6 +94,8 @@ pub mod sbt_marketplace;
 
 // Issue #1617 — Quorum Slice Transparency Index
 pub mod transparency;
+// Issue #1633 — Credential Audit Trail Compression
+pub mod audit_trail_compression;
 
 #[cfg(test)]
 mod governance_test;
@@ -4999,5 +5001,39 @@ impl QuorumCreditContract {
         slice_id: Address,
     ) -> Result<u32, ContractError> {
         transparency::calculate_transparency_index(&env, &slice_id)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #1930: Audit Trail Compression with Retention Bounds Enforcement
+    // ─────────────────────────────────────────────────────────────────────────
+
+    pub fn get_retention_config(
+        env: Env,
+        credential_id: Address,
+    ) -> Option<audit_trail_compression::RetentionConfig> {
+        audit_trail_compression::get_retention_config(&env, &credential_id)
+    }
+
+    pub fn get_compression_history(
+        env: Env,
+        credential_id: Address,
+    ) -> Vec<(u64, u32, u32)> {
+        audit_trail_compression::get_compression_history(&env, &credential_id)
+    }
+
+    pub fn verify_archive_integrity(
+        env: Env,
+        credential_id: Address,
+        archive_id: u32,
+    ) -> Result<bool, ContractError> {
+        audit_trail_compression::verify_archive_integrity(&env, &credential_id, archive_id)
+    }
+
+    pub fn compress_audit_trail_archival(
+        env: Env,
+        credential_id: Address,
+        older_than_timestamp: u64,
+    ) -> Result<u32, ContractError> {
+        audit_trail_compression::compress_audit_trail(&env, &credential_id, older_than_timestamp)
     }
 }
