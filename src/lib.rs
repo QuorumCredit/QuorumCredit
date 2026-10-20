@@ -46,6 +46,8 @@ pub mod vouch_syndication;
 pub mod loan_tokenization;
 pub mod pool_composability;
 pub mod quorum_slice_healing;
+pub mod quorum_slice_migration;
+pub mod quorum_slice_rebalancing;
 pub mod vouch_milestones;
 pub mod recurring_payment;
 pub mod loan_priority;
@@ -145,6 +147,10 @@ mod repay_validation_test;
 mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
+#[cfg(test)]
+mod quorum_slice_migration_test;
+#[cfg(test)]
+mod quorum_slice_rebalancing_test;
 
 pub use errors::ContractError;
 pub use types::*;
