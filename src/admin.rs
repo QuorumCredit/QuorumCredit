@@ -66,7 +66,8 @@ pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Addr
         .admins
         .iter()
         .position(|a| a == admin_to_remove)
-        .expect("address is not an admin") as u32;
+        .unwrap_or_else(|| panic_with_error!(&env, ContractError::AdminNotFound))
+        as u32;
 
     cfg.admins.remove(idx);
 
@@ -107,7 +108,8 @@ pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, n
         .admins
         .iter()
         .position(|a| a == old_admin)
-        .expect("old admin not found") as u32;
+        .unwrap_or_else(|| panic_with_error!(&env, ContractError::AdminNotFound))
+        as u32;
 
     cfg.admins.set(idx, new_admin.clone());
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -180,7 +182,8 @@ pub fn remove_from_admin_whitelist(env: Env, admin_signers: Vec<Address>, addres
         .admin_whitelist
         .iter()
         .position(|a| a == address)
-        .expect("address not in whitelist") as u32;
+        .unwrap_or_else(|| panic_with_error!(&env, ContractError::AddressNotInWhitelist))
+        as u32;
 
     cfg.admin_whitelist.remove(idx);
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -229,7 +232,8 @@ pub fn remove_from_admin_blacklist(env: Env, admin_signers: Vec<Address>, addres
         .admin_blacklist
         .iter()
         .position(|a| a == address)
-        .expect("address not in blacklist") as u32;
+        .unwrap_or_else(|| panic_with_error!(&env, ContractError::AddressNotInBlacklist))
+        as u32;
 
     cfg.admin_blacklist.remove(idx);
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -354,7 +358,7 @@ pub fn begin_thaw(env: Env, admin_signers: Vec<Address>) {
         .storage()
         .instance()
         .get(&DataKey::ThawState)
-        .expect("pause state not found");
+        .unwrap_or_else(|| panic_with_error!(&env, ContractError::PauseStateNotFound));
     thaw.thaw_start_timestamp = now;
 
     env.storage().instance().set(&DataKey::PauseMode, &crate::types::PauseMode::Thawing);
@@ -428,19 +432,22 @@ pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
 }
 
 pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
-    require_not_paused(&env).expect("contract paused");
+    if let Err(err) = require_not_paused(&env) {
+        panic_with_error!(&env, err);
+    }
     require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::SetConfig) {
         panic_with_error!(&env, err);
     }
-    validate_admin_config(
+    if let Err(err) = validate_admin_config(
         &env,
         &config.admins,
         config.admin_threshold,
         &config.admin_whitelist,
         &config.admin_blacklist,
-    )
-    .expect("invalid admin config");
+    ) {
+        panic_with_error!(&env, err);
+    }
     if config.yield_bps < 0 || config.yield_bps > 10_000 {
         panic_with_error!(&env, ContractError::InvalidBps);
     }
@@ -478,7 +485,9 @@ pub fn update_config(
     yield_bps: Option<i128>,
     slash_bps: Option<i128>,
 ) {
-    require_not_paused(&env).expect("contract paused");
+    if let Err(err) = require_not_paused(&env) {
+        panic_with_error!(&env, err);
+    }
     require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
@@ -522,7 +531,9 @@ pub fn batch_update_config(
     grace_period: Option<u64>,
     liquidity_mining_rate_bps: Option<u32>,
 ) {
-    require_not_paused(&env).expect("contract paused");
+    if let Err(err) = require_not_paused(&env) {
+        panic_with_error!(&env, err);
+    }
     require_admin_approval(&env, &admin_signers);
     if let Err(err) = crate::rbac::require_admin_approval_for_action(&env, &admin_signers, crate::rbac::AdminAction::UpdateConfig) {
         panic_with_error!(&env, err);
@@ -892,7 +903,8 @@ pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Addres
         .allowed_tokens
         .iter()
         .position(|t| t == token)
-        .expect("token not in allowed list") as u32;
+        .unwrap_or_else(|| panic_with_error!(&env, ContractError::TokenNotInAllowedList))
+        as u32;
     cfg.allowed_tokens.remove(idx);
     env.storage().instance().set(&DataKey::Config, &cfg);
 }
@@ -1112,7 +1124,7 @@ pub fn propose_admin_action(
         .get(&DataKey::AdminActionCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("action ID overflow");
+        .ok_or(ContractError::CounterOverflow)?;
 
     let proposal = AdminActionProposal {
         id: action_id,
@@ -1238,7 +1250,7 @@ pub fn propose_config_update(
         .get::<DataKey, u64>(&DataKey::ConfigUpdateProposalCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal id overflow");
+        .ok_or(ContractError::CounterOverflow)?;
 
     let proposal = ConfigUpdateProposal {
         id: proposal_id,
@@ -1666,7 +1678,7 @@ pub fn propose_governance_action(
         .get(&DataKey::GovernanceProposalCounter)
         .unwrap_or(0u64)
         .checked_add(1)
-        .expect("proposal ID overflow");
+        .ok_or(ContractError::CounterOverflow)?;
 
     // Calculate timelock and expiry
     let executable_at = now + queue_config.timelock_delay;
@@ -1955,7 +1967,7 @@ fn execute_governance_action_internal(
                 .allowed_tokens
                 .iter()
                 .position(|t| t == *token)
-                .expect("token not in allowed list") as u32;
+                .ok_or(ContractError::TokenNotInAllowedList)? as u32;
             cfg.allowed_tokens.remove(idx);
             env.storage().instance().set(&DataKey::Config, &cfg);
         }
@@ -2041,7 +2053,7 @@ fn execute_governance_action_internal(
                 .admins
                 .iter()
                 .position(|a| a == *admin_to_remove)
-                .expect("address is not an admin") as u32;
+                .ok_or(ContractError::AdminNotFound)? as u32;
             cfg.admins.remove(idx);
             if cfg.admins.is_empty() {
                 return Err(ContractError::UnauthorizedCaller);
@@ -2064,7 +2076,7 @@ fn execute_governance_action_internal(
                 .admins
                 .iter()
                 .position(|a| a == *old_admin)
-                .expect("old admin not found") as u32;
+                .ok_or(ContractError::AdminNotFound)? as u32;
             cfg.admins.set(idx, new_admin.clone());
             env.storage().instance().set(&DataKey::Config, &cfg);
         }
@@ -2330,7 +2342,7 @@ pub fn revoke_admin(
     let total_admins = cfg.admins.len();
     let required = total_admins
         .checked_sub(1)
-        .expect("no admins to revoke from");
+        .ok_or(ContractError::NoAdminsConfigured)?;
 
     // Must have at least 1 remaining admin after revocation
     if required == 0 {
@@ -2362,7 +2374,7 @@ pub fn revoke_admin(
         .admins
         .iter()
         .position(|a| a == target_admin)
-        .expect("target admin must be in list") as u32;
+        .ok_or(ContractError::AdminNotFound)? as u32;
     updated_cfg.admins.remove(idx);
 
     // 6. Adjust threshold if it now exceeds the remaining admin count

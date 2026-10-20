@@ -261,4 +261,17 @@ EmergencyBypassNotAuthorised = 131,
     /// A large-loan approval was proposed for an amount at or below the
     /// configured large-loan threshold, so it does not require multi-sig.
     BelowLargeLoanThreshold = 186,
+    /// Issue #1907: an address was not found in the admin whitelist (e.g. on removal).
+    AddressNotInWhitelist = 187,
+    /// Issue #1907: an address was not found in the admin blacklist (e.g. on removal).
+    AddressNotInBlacklist = 188,
+    /// Issue #1907: no ThawState was found when one was expected to exist.
+    PauseStateNotFound = 189,
+    /// Issue #1907: a token was not found in the allowed-tokens list (e.g. on removal).
+    TokenNotInAllowedList = 190,
+    /// Issue #1907: an admin-management operation requires at least one
+    /// configured admin, but the admin list is empty.
+    NoAdminsConfigured = 191,
+    /// Issue #1907: a monotonic ID counter would overflow u64 on increment.
+    CounterOverflow = 192,
 }
