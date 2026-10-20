@@ -735,4 +735,8 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1736: SBT Marketplace Integration ──────────────────────────────
     /// No marketplace listing found for the requested sbt_id.
     SbtMarketplaceListingNotFound = 242,
+
+    // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
+    /// An invalid field permission value (must be 0-3) was supplied.
+    InvalidPermission = 243,
 }

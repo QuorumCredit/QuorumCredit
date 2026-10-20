@@ -1102,6 +1102,14 @@ pub enum DataKey {
     SbtMarketplaceIndex,
     /// Global marketplace statistics: SbtMarketplaceStats
     SbtMarketplaceStats,
+
+    // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
+    /// (credential_id, field) → u32 permission level
+    FieldPermission(Address, soroban_sdk::Bytes),
+    /// credential_id → FieldPermissionMatrix
+    FieldPermissionMatrix(Address),
+    /// (credential_id, field) → Vec<(timestamp, old_permission, new_permission)>
+    FieldPermissionHistory(Address, soroban_sdk::Bytes),
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.
