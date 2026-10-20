@@ -159,39 +159,34 @@ pub fn calculate_diversification_score(
                 borrowers_set.push_back(borrower.clone());
             }
 
-            // Get the loan to extract sector and region information
-            if let Ok(loan_option) = env
-                .storage()
-                .persistent()
-                .get::<_, Option<LoanRecord>>(&DataKey::Loan(0)) // TODO: Implement proper loan lookup
-            {
-                if let Some(loan) = loan_option {
-                    let sector = extract_sector_from_purpose(&env, &loan.loan_purpose);
-                    let region = extract_region_from_loan(&env, &loan);
+            // Get this borrower's own loan (not a hardcoded loan_id) to extract
+            // sector and region information.
+            if let Some(loan) = crate::helpers::get_latest_loan_record(env, &borrower) {
+                let sector = extract_sector_from_purpose(&env, &loan.loan_purpose);
+                let region = extract_region_from_loan(&env, &loan);
 
-                    // Add sector to unique set
-                    let mut sector_already_counted = false;
-                    for existing_sector in sectors_set.iter() {
-                        if existing_sector == sector {
-                            sector_already_counted = true;
-                            break;
-                        }
+                // Add sector to unique set
+                let mut sector_already_counted = false;
+                for existing_sector in sectors_set.iter() {
+                    if existing_sector == sector {
+                        sector_already_counted = true;
+                        break;
                     }
-                    if !sector_already_counted {
-                        sectors_set.push_back(sector);
-                    }
+                }
+                if !sector_already_counted {
+                    sectors_set.push_back(sector);
+                }
 
-                    // Add region to unique set
-                    let mut region_already_counted = false;
-                    for existing_region in regions_set.iter() {
-                        if existing_region == region {
-                            region_already_counted = true;
-                            break;
-                        }
+                // Add region to unique set
+                let mut region_already_counted = false;
+                for existing_region in regions_set.iter() {
+                    if existing_region == region {
+                        region_already_counted = true;
+                        break;
                     }
-                    if !region_already_counted {
-                        regions_set.push_back(region);
-                    }
+                }
+                if !region_already_counted {
+                    regions_set.push_back(region);
                 }
             }
         }
