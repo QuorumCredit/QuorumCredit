@@ -12,6 +12,8 @@ import { metrics } from "../http/metricsRegistry.js";
 
 export interface LoanSocketServerOptions {
   httpServer: HttpServer;
+  /** Browser origins allowed to connect. Anything else gets no CORS grant. */
+  allowedOrigins?: string[];
   bus: PubSubBus;
   store: EventStore;
   authSecret: string;
@@ -91,7 +93,7 @@ export const WS_CLOSE_IDLE_TIMEOUT = 4008;
  */
 export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOServer {
   const io = new SocketIOServer(opts.httpServer, {
-    cors: { origin: "*" },
+    cors: { origin: opts.allowedOrigins ?? [] },
   });
 
   const projector = new LoanProjector();

@@ -89,6 +89,7 @@ async function main(): Promise<void> {
     httpServer,
     bus,
     store,
+    allowedOrigins: config.wsAllowedOrigins,
     authSecret: config.authSecret,
     connectionQueueMax: config.connectionQueueMax,
     redisUrl: config.redisUrl,

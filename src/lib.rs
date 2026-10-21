@@ -204,6 +204,39 @@ mod repay_overpayment_test;
 mod repay_protocol_fee_test;
 #[cfg(test)]
 mod partial_repay_test;
+mod guarantor_test;
+#[cfg(test)]
+mod attestor_specialization_test;
+#[cfg(test)]
+mod attestor_performance_contracts_test;
+#[cfg(test)]
+mod credential_features_test;
+#[cfg(test)]
+mod factor_report_sector_region_test;
+#[cfg(test)]
+mod interest_test;
+#[cfg(test)]
+mod gamification_test;
+#[cfg(test)]
+mod get_loan_none_test;
+#[cfg(test)]
+mod is_eligible_token_filter_test;
+#[cfg(test)]
+mod api_contract_test;
+#[cfg(test)]
+mod api_reference_test;
+#[cfg(test)]
+mod features_test;
+#[cfg(all(test, feature = "mainnet-tests"))]
+mod mainnet_deployment_test;
+#[cfg(test)]
+mod full_lifecycle_test;
+#[cfg(test)]
+mod initialize_test;
+#[cfg(test)]
+mod monitoring_setup_test;
+#[cfg(test)]
+mod operations_runbook_test;
 
 pub use errors::ContractError;
 pub use types::*;

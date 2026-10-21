@@ -15,6 +15,8 @@ export interface ServerConfig {
   /** How long a bridge leader lock is held before it must be renewed. */
   leaderLockTtlMs: number;
   instanceId: string;
+  /** Origins allowed to open the loan socket feed (WS_ALLOWED_ORIGINS, comma-separated). */
+  wsAllowedOrigins: string[];
   /** Deployed version identifier, surfaced on /health for canary release monitoring
    * (issue #1231) — e.g. a git SHA or semver tag set by the deploy pipeline. */
   serviceVersion: string;
@@ -125,6 +127,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     port: envInt("PORT", 4000),
     redisUrl: env.REDIS_URL,
     indexerDbPath: env.INDEXER_DB_PATH ?? "indexer.db",
+    wsAllowedOrigins: (env.WS_ALLOWED_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean),
     authSecret,
     tokenTtlSeconds: envInt("TOKEN_TTL_SECONDS", 300),
     apiRateLimits: {
