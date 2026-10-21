@@ -3,6 +3,39 @@
 //! This module provides comprehensive loan covenant monitoring functionality.
 //! Covenants are financial and operational requirements that borrowers must maintain
 //! throughout the loan lifecycle. Violations trigger escalation protocols to protect lenders.
+//!
+//! # Enforced Covenants
+//!
+//! The following covenant types are enforced by this module:
+//!
+//! - [`CovenantType::LoanToValue`] — loan principal must not exceed the configured
+//!   LTV ratio (`ltv_ratio_bps`). Checked per monitoring period during an active loan.
+//! - [`CovenantType::DebtToIncome`] — borrower debt must not exceed the configured
+//!   DTI ratio (`dti_ratio_bps`). Checked per monitoring period during an active loan.
+//! - [`CovenantType::PaymentSchedule`] — the loan must not be past its maturity
+//!   timestamp without repayment. Checked per monitoring period during an active loan.
+//! - [`CovenantType::ActivityRequirement`] — the borrower must maintain at least
+//!   `min_activity_per_period` recorded payments. Checked per monitoring period during
+//!   an active loan.
+//! - [`CovenantType::CollateralMaintenance`] — collateral value must remain above the
+//!   configured maintenance threshold (`collateral_maintenance_bps`). Checked per
+//!   monitoring period during an active loan.
+//! - [`CovenantType::CrossDefault`] — cross-default attestations are evaluated (framework
+//!   only; full detection tracked separately). Checked per monitoring period during an
+//!   active loan.
+//!
+//! # Lifecycle Stages
+//!
+//! - **Initialization**: [`initialize_loan_covenants`] is called when a loan is set up.
+//!   It stores the [`LoanCovenantConfig`] (which covenant types are active and their
+//!   thresholds) and initializes [`LoanCovenantStatus`] at [`EscalationStage::Warning`].
+//!   No covenant is evaluated at this stage; it only records what will be enforced.
+//! - **Active loan (per-period evaluation)**: [`monitor_loan_covenants`] is called while
+//!   the loan is active. It evaluates every covenant type listed in the loan's config,
+//!   but only once per `monitoring_period_secs`; calls within the same period return the
+//!   cached status. Breaches are recorded and, when the configured `breach_tolerance` is
+//!   exceeded (or for critical covenants), escalation advances through
+//!   Warning → UnderReview → PendingAcceleration → Accelerated.
 
 use crate::errors::ContractError;
 use crate::helpers::{config, get_active_loan_record};
@@ -15,6 +48,14 @@ use soroban_sdk::{symbol_short, Address, Env, String as SorobanString, Vec};
 /// Initialize covenant monitoring for a loan.
 ///
 /// Sets up monitoring configuration with covenant requirements.
+///
+/// This is the **initialization** lifecycle stage. It records which covenant types
+/// ([`CovenantType::LoanToValue`], [`CovenantType::DebtToIncome`],
+/// [`CovenantType::PaymentSchedule`], [`CovenantType::ActivityRequirement`],
+/// [`CovenantType::CollateralMaintenance`], [`CovenantType::CrossDefault`]) are active
+/// for the loan along with their thresholds, and initializes the covenant status at
+/// [`EscalationStage::Warning`] with a zero breach count. No covenant is evaluated here;
+/// evaluation happens later via [`monitor_loan_covenants`] while the loan is active.
 pub fn initialize_loan_covenants(
     env: &Env,
     loan_id: u64,
@@ -79,8 +120,15 @@ pub fn initialize_loan_covenants(
 
 /// Monitor loan covenants and return compliance status.
 ///
-/// This function checks if the loan meets all covenant requirements and triggers
-/// escalation if violations are detected.
+/// This is the **active loan (per-period evaluation)** lifecycle stage. It checks every
+/// covenant type configured for the loan — [`CovenantType::LoanToValue`],
+/// [`CovenantType::DebtToIncome`], [`CovenantType::PaymentSchedule`],
+/// [`CovenantType::ActivityRequirement`], [`CovenantType::CollateralMaintenance`] and
+/// [`CovenantType::CrossDefault`] — and triggers escalation if violations are detected.
+///
+/// Evaluation is rate-limited by `monitoring_period_secs`: if less than one monitoring
+/// period has elapsed since the previously stored `last_check_timestamp`, the cached
+/// status is returned without re-running the checks.
 pub fn monitor_loan_covenants(
     env: &Env,
     loan_id: u64,
@@ -99,16 +147,17 @@ pub fn monitor_loan_covenants(
         .get(&DataKey::LoanCovenantStatus(loan_id))
         .ok_or(ContractError::InvalidStateTransition)?;
 
-    // Update last check timestamp
+    // Check if monitoring period has elapsed, using the previously stored timestamp
+    // before it is overwritten below.
     let current_time = env.ledger().timestamp();
-    covenant_status.last_check_timestamp = current_time;
-
-    // Check if monitoring period has elapsed
     let last_check = covenant_status.last_check_timestamp;
     if current_time.saturating_sub(last_check) < covenant_config.monitoring_period_secs {
         // Return cached status if within monitoring period
         return Ok(covenant_status);
     }
+
+    // Update last check timestamp now that a fresh evaluation will run
+    covenant_status.last_check_timestamp = current_time;
 
     // Get the active loan record for covenant verification
     let _loan_record = get_active_loan_record(env, loan_id)?;
@@ -150,7 +199,10 @@ pub fn monitor_loan_covenants(
     Ok(covenant_status)
 }
 
-/// Check Loan-to-Value (LTV) covenant
+/// Check Loan-to-Value (LTV) covenant.
+///
+/// Enforces [`CovenantType::LoanToValue`]: the current LTV ratio must not exceed the
+/// configured `ltv_ratio_bps`. Evaluated per monitoring period during an active loan.
 fn check_ltv_covenant(
     env: &Env,
     loan_id: u64,
@@ -189,7 +241,10 @@ fn check_ltv_covenant(
     Ok(())
 }
 
-/// Check Debt-to-Income (DTI) covenant
+/// Check Debt-to-Income (DTI) covenant.
+///
+/// Enforces [`CovenantType::DebtToIncome`]: the current DTI ratio must not exceed the
+/// configured `dti_ratio_bps`. Evaluated per monitoring period during an active loan.
 fn check_dti_covenant(
     env: &Env,
     loan_id: u64,
@@ -225,7 +280,11 @@ fn check_dti_covenant(
     Ok(())
 }
 
-/// Check payment schedule covenant
+/// Check payment schedule covenant.
+///
+/// Enforces [`CovenantType::PaymentSchedule`]: the loan must not be past its maturity
+/// timestamp. A breach escalates immediately. Evaluated per monitoring period during an
+/// active loan.
 fn check_payment_schedule_covenant(
     env: &Env,
     loan_id: u64,
@@ -254,7 +313,11 @@ fn check_payment_schedule_covenant(
     Ok(())
 }
 
-/// Check activity requirement covenant
+/// Check activity requirement covenant.
+///
+/// Enforces [`CovenantType::ActivityRequirement`]: the number of recorded payments must
+/// be at least `min_activity_per_period`. Evaluated per monitoring period during an
+/// active loan.
 fn check_activity_covenant(
     env: &Env,
     loan_id: u64,
@@ -290,7 +353,11 @@ fn check_activity_covenant(
     Ok(())
 }
 
-/// Check collateral maintenance covenant
+/// Check collateral maintenance covenant.
+///
+/// Enforces [`CovenantType::CollateralMaintenance`]: collateral value must remain above
+/// the threshold derived from `collateral_maintenance_bps`. A breach escalates
+/// immediately. Evaluated per monitoring period during an active loan.
 fn check_collateral_covenant(
     env: &Env,
     loan_id: u64,
@@ -322,7 +389,11 @@ fn check_collateral_covenant(
     Ok(())
 }
 
-/// Check cross-default covenant
+/// Check cross-default covenant.
+///
+/// Enforces [`CovenantType::CrossDefault`]: cross-default attestations are evaluated
+/// (framework only; full detection tracked separately). Evaluated per monitoring period
+/// during an active loan.
 fn check_cross_default_covenant(
     env: &Env,
     loan_id: u64,
@@ -443,7 +514,10 @@ fn escalate_covenant_breach(
     Ok(())
 }
 
-/// Get covenant status for a loan
+/// Get covenant status for a loan.
+///
+/// Returns the stored [`LoanCovenantStatus`] (escalation stage, breach count, and
+/// acceleration state) for the given loan. Does not itself evaluate any covenant.
 pub fn get_covenant_status(
     env: &Env,
     loan_id: u64,

@@ -74,6 +74,16 @@ pub mod webhook_retry;
 pub mod webhook_registry;
 // Issues #1607, #1609, #1610, #1611 — attestor analytics and quorum slice monitoring
 pub mod attestor_analytics;
+// Issue #2001 — loan covenant monitoring (LTV, DTI, payment schedule, activity,
+// collateral maintenance, cross-default). Enforced on loan initialization and on
+// each `monitor_loan_covenants` call during the loan lifecycle.
+pub mod covenant_monitoring;
+// Issue #2002 — migration of borrowers/credentials between quorum slices.
+pub mod quorum_slice_migration;
+// Issue #2003 — dynamic rebalancing of quorum slices (admin/keeper triggered).
+pub mod quorum_slice_rebalancing;
+// Issue #2004 — attestor specialization records, written on registration.
+pub mod attestor_specialization;
 
 // ── Issues #1738–#1741: SBT features ─────────────────────────────────────────
 // Issue #1738 — SBT Reputation System
@@ -4809,5 +4819,149 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_analytics::AttestorLocation> {
         attestor_analytics::get_attestor_location(&env, &attestor)
+    }
+
+    // ── Issue #2001: Loan Covenant Monitoring ─────────────────────────────────
+
+    /// Issue #2001: Initialize the covenant set for a borrower's loan.
+    ///
+    /// Enforced covenants: `Ltv` (loan-to-value), `Dti` (debt-to-income),
+    /// `PaymentSchedule`, `ActivityRequirement`, `CollateralMaintenance` and
+    /// `CrossDefault`. Covenants are checked when a loan is initialized (via this
+    /// entrypoint) and on every subsequent `monitor_loan_covenants` call made
+    /// during the loan lifecycle. A breach is recorded and surfaced by
+    /// `monitor_loan_covenants`.
+    pub fn initialize_loan_covenants(
+        env: Env,
+        borrower: Address,
+        loan_amount: i128,
+        collateral_value: i128,
+        income: i128,
+    ) -> Result<(), ContractError> {
+        covenant_monitoring::initialize_loan_covenants(
+            &env,
+            &borrower,
+            loan_amount,
+            collateral_value,
+            income,
+        )
+    }
+
+    /// Issue #2001: Re-evaluate all covenants for a borrower's active loan.
+    ///
+    /// Should be called periodically (or by a keeper) during the loan lifecycle.
+    /// Returns the list of covenant breaches detected; an empty list means all
+    /// covenants (LTV, DTI, PaymentSchedule, ActivityRequirement,
+    /// CollateralMaintenance, CrossDefault) are satisfied.
+    pub fn monitor_loan_covenants(
+        env: Env,
+        borrower: Address,
+    ) -> Result<Vec<covenant_monitoring::CovenantBreach>, ContractError> {
+        covenant_monitoring::monitor_loan_covenants(&env, &borrower)
+    }
+
+    // ── Issue #2002: Quorum Slice Migration ───────────────────────────────────
+
+    /// Issue #2002: Migrate a borrower's credential from its current quorum slice
+    /// to `target_slice`. Admin approval is required.
+    pub fn migrate_credential_slice(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        target_slice: u64,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        quorum_slice_migration::migrate_credential_slice(&env, &borrower, target_slice)
+    }
+
+    /// Issue #2002: Run the full slice migration protocol for a borrower.
+    /// Admin approval is required.
+    pub fn implement_slice_migration_protocol(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+        target_slice: u64,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        quorum_slice_migration::implement_slice_migration_protocol(&env, &borrower, target_slice)
+    }
+
+    /// Issue #2002: Read the quorum slice a borrower's credential currently lives in.
+    pub fn get_credential_current_slice(env: Env, borrower: Address) -> Option<u64> {
+        quorum_slice_migration::get_credential_current_slice(&env, &borrower)
+    }
+
+    /// Issue #2002: Number of completed migrations recorded for a borrower.
+    pub fn get_migration_history_count(env: Env, borrower: Address) -> u32 {
+        quorum_slice_migration::get_migration_history_count(&env, &borrower)
+    }
+
+    // ── Issue #2003: Quorum Slice Rebalancing ─────────────────────────────────
+
+    /// Issue #2003: Enable dynamic rebalancing of quorum slices.
+    ///
+    /// Trigger policy: rebalancing may only be triggered by an admin (or a
+    /// keeper holding admin approval). Admin approval is required.
+    pub fn enable_dynamic_rebalancing(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        quorum_slice_rebalancing::enable_dynamic_rebalancing(&env)
+    }
+
+    /// Issue #2003: Disable dynamic rebalancing. Admin approval is required.
+    pub fn disable_dynamic_rebalancing(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        quorum_slice_rebalancing::disable_dynamic_rebalancing(&env)
+    }
+
+    /// Issue #2003: Execute a rebalancing pass over live slices.
+    ///
+    /// Trigger policy: admin/keeper only — admin approval is required.
+    pub fn execute_rebalancing(
+        env: Env,
+        admin_signers: Vec<Address>,
+    ) -> Result<(), ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
+        quorum_slice_rebalancing::execute_rebalancing(&env)
+    }
+
+    /// Issue #2003: Whether dynamic rebalancing is currently enabled.
+    pub fn is_rebalancing_enabled(env: Env) -> bool {
+        quorum_slice_rebalancing::is_rebalancing_enabled(&env)
+    }
+
+    /// Issue #2003: Number of rebalancing events recorded so far.
+    pub fn get_rebalancing_event_count(env: Env) -> u32 {
+        quorum_slice_rebalancing::get_rebalancing_event_count(&env)
+    }
+
+    // ── Issue #2004: Attestor Specialization ──────────────────────────────────
+
+    /// Issue #2004: Record a specialization for an attestor. The attestor must
+    /// authorize the call.
+    pub fn register_attestor_specialization(
+        env: Env,
+        attestor: Address,
+        specialization: attestor_specialization::AttestorSpecialization,
+    ) -> Result<(), ContractError> {
+        attestor.require_auth();
+        attestor_specialization::register_attestor_specialization(
+            &env,
+            &attestor,
+            specialization,
+        )
+    }
+
+    /// Issue #2004: Read back a registered attestor's specialization.
+    pub fn get_attestor_specialization(
+        env: Env,
+        attestor: Address,
+    ) -> Option<attestor_specialization::AttestorSpecialization> {
+        attestor_specialization::get_attestor_specialization(&env, &attestor)
     }
 }

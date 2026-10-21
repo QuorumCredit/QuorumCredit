@@ -117,4 +117,24 @@ mod attestor_specialization_tests {
             assert_eq!(matched.len(), 0);
         });
     }
+
+    /// Issue #2004: Register an attestor through the contract entrypoint with a
+    /// specialization, then read it back through the contract getter.
+    #[test]
+    fn test_contract_register_attestor_records_specialization() {
+        let (env, contract_id) = setup();
+        let attestor = Address::generate(&env);
+        let spec = Bytes::new(&env, &[7, 8, 9, 10]);
+
+        env.as_contract(&contract_id, || {
+            crate::QuorumCreditContractClient::new(&env, &contract_id)
+                .register_attestor(&attestor, &spec);
+        });
+
+        env.as_contract(&contract_id, || {
+            let retrieved = crate::QuorumCreditContractClient::new(&env, &contract_id)
+                .get_attestor_specialization(&attestor);
+            assert_eq!(retrieved, Some(spec));
+        });
+    }
 }

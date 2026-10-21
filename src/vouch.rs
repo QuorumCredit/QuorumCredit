@@ -1063,6 +1063,25 @@ mod tests {
         client.initialize(&deployer, &admins, &1, &token_id.address());
         (contract_id, token_id.address())
     }
+
+    #[test]
+    fn test_register_attestor_records_specialization() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, _token) = setup_contract(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let attestor = Address::generate(&env);
+        let spec = soroban_sdk::Bytes::from_slice(&env, &[1u8, 2, 3, 4]);
+
+        client.register_attestor(&attestor, &spec);
+
+        let stored = crate::attestor_specialization::get_attestor_specialization(
+            &env,
+            &attestor,
+        );
+        assert_eq!(stored, Some(spec));
+    }
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -2080,6 +2099,34 @@ pub fn vouch_with_sector(
     _token: Address,
     _sector: soroban_sdk::String,
 ) -> Result<(), ContractError> {
+    Ok(())
+}
+
+// ── Attestor specialization (Issue #2004) ─────────────────────────────────────
+
+/// Register `attestor` together with its specialization bytes, persisting the
+/// specialization via `attestor_specialization` so it can be read back later.
+/// The attestor must authorize the call before any specialization data is
+/// recorded.
+pub fn register_attestor(
+    env: Env,
+    attestor: Address,
+    spec: soroban_sdk::Bytes,
+) -> Result<(), ContractError> {
+    attestor.require_auth();
+    require_not_thawing(&env)?;
+
+    crate::attestor_specialization::register_attestor_specialization(
+        &env,
+        &attestor,
+        &spec,
+    );
+
+    env.events().publish(
+        (symbol_short!("att"), symbol_short!("spec")),
+        (attestor, spec),
+    );
+
     Ok(())
 }
 

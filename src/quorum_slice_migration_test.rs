@@ -155,6 +155,52 @@ mod quorum_slice_migration_tests {
         });
     }
 
+    /// Issue #2002: Migrating a borrower's credential between slices must not
+    /// invalidate an existing active loan.
+    #[test]
+    fn test_migrate_borrower_slice_preserves_active_loan() {
+        use crate::types::LoanStatus;
+
+        let (env, contract_id) = setup();
+        let borrower = Address::generate(&env);
+        let slice_a = Address::generate(&env);
+        let slice_b = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // (1) Create a borrower with an active loan.
+            let loan_id = crate::storage::next_loan_id(&env);
+            let loan = crate::types::Loan {
+                id: loan_id,
+                borrower: borrower.clone(),
+                amount: 1_000,
+                status: LoanStatus::Active,
+            };
+            crate::storage::set_loan(&env, &loan);
+
+            // (2) Migrate the borrower's credential from slice A to slice B.
+            quorum_slice_migration::set_slice_compatibility(&env, &slice_b, true).unwrap();
+            quorum_slice_migration::implement_slice_migration_protocol(
+                &env,
+                &borrower,
+                &slice_a,
+                &slice_b,
+            )
+            .unwrap();
+
+            // (3) The loan must still be retrievable and valid.
+            let stored = crate::storage::get_loan(&env, loan_id).expect("loan must survive migration");
+            assert_eq!(stored.id, loan_id);
+            assert_eq!(stored.amount, 1_000);
+            assert_eq!(stored.borrower, borrower);
+            assert_eq!(stored.status, LoanStatus::Active);
+
+            assert_eq!(
+                quorum_slice_migration::get_credential_current_slice(&env, &borrower),
+                Some(slice_b)
+            );
+        });
+    }
+
     /// Issue #1713: Chain migrations maintain history.
     #[test]
     fn test_chain_migrations_maintain_history() {

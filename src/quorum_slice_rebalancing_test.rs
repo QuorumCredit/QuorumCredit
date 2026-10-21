@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod quorum_slice_rebalancing_tests {
     use crate::quorum_slice_rebalancing;
-    use soroban_sdk::{testutils::Address as _, Bytes, Env, Address};
+    use crate::QuorumCreditContractClient;
+    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, Vec};
 
     fn setup() -> (Env, Address) {
         let env = Env::default();
@@ -171,6 +172,72 @@ mod quorum_slice_rebalancing_tests {
             quorum_slice_rebalancing::enable_dynamic_rebalancing(&env, &slice_id, params2.clone()).unwrap();
 
             assert_eq!(quorum_slice_rebalancing::get_rebalancing_parameters(&env, &slice_id), Some(params2));
+        });
+    }
+
+    /// Issue #2003: An authorized admin signer can trigger rebalancing through the
+    /// contract entrypoint and the event count increments.
+    #[test]
+    fn test_execute_rebalancing_authorized_admin_succeeds() {
+        let (env, contract_id) = setup();
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let slice_id = Address::generate(&env);
+        let params = Bytes::new(&env, &[1, 2, 3]);
+
+        env.as_contract(&contract_id, || {
+            quorum_slice_rebalancing::enable_dynamic_rebalancing(&env, &slice_id, params).unwrap();
+        });
+
+        let mut signers = Vec::new(&env);
+        signers.push_back(admin.clone());
+
+        client.execute_rebalancing(&slice_id, &signers);
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                quorum_slice_rebalancing::get_rebalancing_event_count(&env, &slice_id),
+                1
+            );
+        });
+    }
+
+    /// Issue #2003: A caller without an admin signer is rejected with
+    /// `UnauthorizedCaller` and no rebalancing event is recorded.
+    #[test]
+    fn test_execute_rebalancing_unauthorized_caller_rejected() {
+        let (env, contract_id) = setup();
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let slice_id = Address::generate(&env);
+        let params = Bytes::new(&env, &[1, 2, 3]);
+
+        env.as_contract(&contract_id, || {
+            quorum_slice_rebalancing::enable_dynamic_rebalancing(&env, &slice_id, params).unwrap();
+        });
+
+        // Empty signer list.
+        let empty_signers: Vec<Address> = Vec::new(&env);
+        let result = client.try_execute_rebalancing(&slice_id, &empty_signers);
+        assert_eq!(
+            result,
+            Err(Ok(crate::ContractError::UnauthorizedCaller))
+        );
+
+        // Non-admin signer list.
+        let stranger = Address::generate(&env);
+        let mut signers = Vec::new(&env);
+        signers.push_back(stranger);
+        let result = client.try_execute_rebalancing(&slice_id, &signers);
+        assert_eq!(
+            result,
+            Err(Ok(crate::ContractError::UnauthorizedCaller))
+        );
+
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                quorum_slice_rebalancing::get_rebalancing_event_count(&env, &slice_id),
+                0
+            );
         });
     }
 }

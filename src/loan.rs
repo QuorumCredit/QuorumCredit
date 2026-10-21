@@ -144,7 +144,12 @@ pub fn calculate_dynamic_yield(env: &Env, borrower: &Address) -> i128 {
     (base_bps + (credit_score / 100) - (default_count * 50)).max(0)
 }
 
-/// Request loan
+/// Request loan.
+///
+/// Covenant enforcement (Issue #2001): after the loan is persisted and
+/// disbursed, `covenant_monitoring::monitor_loan_covenants` is invoked so the
+/// borrower's covenant config is initialized and the first check runs. A
+/// covenant violation propagates as a `ContractError` and aborts the request.
 pub fn request_loan(
     env: Env,
     borrower: Address,
@@ -316,6 +321,15 @@ pub fn request_loan(
     // Issue #1288: Maintain running on-chain TVL / active-loan-count counters.
     crate::helpers::increment_tvl_counters(&env, amount);
 
+    // Issue #2001: Run covenant enforcement now that the loan is live. This
+    // initializes the borrower's covenant config (if not already present) and
+    // performs the first check; a violation aborts the request.
+    let stage = crate::covenant_monitoring::monitor_loan_covenants(&env, loan_id)?;
+    env.events().publish(
+        (symbol_short!("cov"), symbol_short!("check")),
+        (loan_id, stage),
+    );
+
     env.events().publish(
         (symbol_short!("loan"), symbol_short!("created")),
         (borrower, amount),
@@ -397,6 +411,10 @@ pub fn apply_slash_recovery(env: &Env, borrower: &Address) -> Result<(), Contrac
 /// ```
 ///
 /// A payment is valid when `0 < payment ≤ (total_owed - amount_repaid)`.
+///
+/// Covenant enforcement (Issue #2001): `covenant_monitoring::monitor_loan_covenants`
+/// runs on every repayment before the payment is applied. A covenant violation
+/// propagates as a `ContractError`, so a violating loan cannot proceed.
 /// Repay loan (active or defaulted).
 pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractError> {
     borrower.require_auth();
@@ -431,6 +449,14 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     if payment <= 0 {
         panic_with_error!(&env, ContractError::InvalidAmount);
     }
+
+    // Issue #2001: Enforce covenants before accepting the payment. A violation
+    // aborts the repayment so a non-compliant loan cannot progress.
+    let cov_stage = crate::covenant_monitoring::monitor_loan_covenants(&env, loan.id)?;
+    env.events().publish(
+        (symbol_short!("cov"), symbol_short!("check")),
+        (loan.id, cov_stage),
+    );
 
     // ── Step 1: Accrue compound interest ─────────────────────────────────────
     let now = env.ledger().timestamp();
