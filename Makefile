@@ -1,4 +1,7 @@
-.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test
+.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test check-contract-dups
+
+check-contract-dups:
+	python3 scripts/check_contract_duplicate_fns.py src/lib.rs
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
