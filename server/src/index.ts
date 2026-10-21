@@ -1,3 +1,4 @@
+import { logger } from "./logging/logger.js";
 import { createServer } from "node:http";
 import { loadConfig } from "./config.js";
 import { LocalBus } from "./pubsub/LocalBus.js";
@@ -114,10 +115,11 @@ async function main(): Promise<void> {
   regionHealthChecker.start();
 
   httpServer.listen(config.port, () => {
-    console.log(
-      `[quorum-credit-broadcast-server] instance=${config.instanceId} listening on :${config.port} ` +
-        `(redis=${config.redisUrl ? "on" : "off"})`
-    );
+    logger.info("broadcast server listening", {
+      instance: config.instanceId,
+      port: config.port,
+      redis: config.redisUrl ? "on" : "off",
+    });
   });
 
   const shutdown = async (): Promise<void> => {

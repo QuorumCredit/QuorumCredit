@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { logger } from "../logging/logger.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { issueToken } from "../auth/tokens.js";
 import { loadApiKeyStore, type ApiKeyStore } from "../auth/apiKeyStore.js";
@@ -2435,9 +2436,7 @@ async function submitOnChainRecurringPayment(loanId: string, ctx: RouteContext):
 
     if (result.ok) {
       metrics.incCounter("qc_recurring_payments_chain_success_total");
-      console.log(
-        `[quorum-credit] execute_recurring_payment succeeded for loan=${loanId} tx=${result.txHash}`
-      );
+      logger.info("execute_recurring_payment succeeded", { loanId, txHash: result.txHash });
       return true;
     } else {
       metrics.incCounter("qc_recurring_payments_chain_failed_total");
