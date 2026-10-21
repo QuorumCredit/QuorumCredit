@@ -1,7 +1,19 @@
 use crate::errors::ContractError;
 use crate::helpers::{config, require_admin_approval};
 use crate::types::{AdminPermission, AdminRole, DataKey};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
+
+/// Returns the first admin signer, or aborts with `ContractError::EmptySignerList`
+/// when the caller supplied an empty `admin_signers` vector.
+///
+/// Admin entrypoints use this instead of `get(0).unwrap()` so an empty signer
+/// list fails with a typed contract error rather than a generic panic (Issue #1908).
+pub(crate) fn first_admin_signer(env: &Env, admin_signers: &Vec<Address>) -> Address {
+    match admin_signers.get(0) {
+        Some(signer) => signer,
+        None => panic_with_error!(env, ContractError::EmptySignerList),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdminAction {
