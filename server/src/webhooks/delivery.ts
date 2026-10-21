@@ -1,7 +1,7 @@
 /**
  * Webhook Delivery Service for QuorumCredit
  *
- * #1XXX: Real-time webhook delivery with retry + delivery-rate tracking.
+ * #1589: Real-time webhook delivery with retry + delivery-rate tracking.
  *
  * Third-party integrators previously had to poll REST endpoints for loan
  * status changes. This module pushes events to registered subscriber URLs

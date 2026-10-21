@@ -30,7 +30,6 @@ pub mod helpers;
 pub mod insurance;
 pub mod insurance_marketplace;
 pub mod loan;
-pub mod maturity;
 pub mod merkle_tree;
 pub mod metadata_encryption;
 pub mod multitoken_support;
@@ -110,6 +109,11 @@ pub mod lazy_default_detection;
 pub mod diversification;
 // Issue #1631 / #1929 — credential field-level permissions
 pub mod field_permissions;
+
+// Issue #1617 — Quorum Slice Transparency Index
+pub mod transparency;
+// Issue #1633 — Credential Audit Trail Compression
+pub mod audit_trail_compression;
 
 #[cfg(test)]
 mod governance_test;
@@ -5093,5 +5097,59 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_specialization::AttestorSpecialization> {
         attestor_specialization::get_attestor_specialization(&env, &attestor)
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #1928: Quorum Slice Transparency Index Reporting
+    // ─────────────────────────────────────────────────────────────────────────
+
+    pub fn report_transparency_score(env: Env, slice_id: Address) -> u32 {
+        transparency::get_transparency_score(&env, &slice_id)
+    }
+
+    pub fn report_transparency_history(
+        env: Env,
+        slice_id: Address,
+    ) -> Vec<(u64, u32, u32)> {
+        transparency::get_transparency_history(&env, &slice_id)
+    }
+
+    pub fn recalculate_transparency_index(
+        env: Env,
+        slice_id: Address,
+    ) -> Result<u32, ContractError> {
+        transparency::calculate_transparency_index(&env, &slice_id)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Issue #1930: Audit Trail Compression with Retention Bounds Enforcement
+    // ─────────────────────────────────────────────────────────────────────────
+
+    pub fn get_retention_config(
+        env: Env,
+        credential_id: Address,
+    ) -> Option<audit_trail_compression::RetentionConfig> {
+        audit_trail_compression::get_retention_config(&env, &credential_id)
+    }
+
+    pub fn get_compression_history(
+        env: Env,
+        credential_id: Address,
+    ) -> Vec<(u64, u32, u32)> {
+        audit_trail_compression::get_compression_history(&env, &credential_id)
+    }
+
+    pub fn verify_archive_integrity(
+        env: Env,
+        credential_id: Address,
+        archive_id: u32,
+    ) -> Result<bool, ContractError> {
+        audit_trail_compression::verify_archive_integrity(&env, &credential_id, archive_id)
+    }
+
+    pub fn compress_audit_trail_archival(
+        env: Env,
+        credential_id: Address,
+        older_than_timestamp: u64,
+    ) -> Result<u32, ContractError> {
+        audit_trail_compression::compress_audit_trail(&env, &credential_id, older_than_timestamp)
     }
 }

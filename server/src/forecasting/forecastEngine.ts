@@ -1,7 +1,7 @@
 /**
  * Loan Forecasting Engine for QuorumCredit
  *
- * #1XXX: Borrowers can't predict loan outcomes today — this module produces
+ * #1206: Borrowers can't predict loan outcomes today — this module produces
  * an amortization schedule plus scenario analysis (base/optimistic/
  * pessimistic) and early-repayment interest-savings estimates for the
  * GET /loans/{id}/forecast endpoint (server/src/http/forecastRoutes.ts).

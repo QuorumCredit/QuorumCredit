@@ -2,6 +2,7 @@
 
 check-contract-dups:
 	python3 scripts/check_contract_duplicate_fns.py src/lib.rs
+.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test check-placeholders
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -61,3 +62,7 @@ indexer:
 ## Run the event indexer tests
 indexer-test:
 	cargo test -p quorum-credit-indexer
+
+## Check that all placeholder entrypoints have allowlist entries with issue numbers
+check-placeholders:
+	python3 scripts/check_placeholder_entrypoints.py

@@ -1,0 +1,42 @@
+# Placeholder public contract entrypoints.
+# Format: function_name #issue_number
+#
+# Each flagged function must appear here with its tracking issue.
+# Issue #0000 entries below need to be assigned real issue numbers.
+
+# Maturity bonus and interest (issue #1177, closed)
+get_vouch_maturity #1177
+get_vouch_maturity_bonus #1177
+get_vouch_total_interest_bonus #1177
+
+# Success stories (issue #1176)
+set_success_story_consent #1176
+submit_success_story #1176
+publish_success_story #1176
+get_success_story #1176
+get_borrower_success_stories #1176
+get_retention_metrics #1176
+find_similar_borrowers #1176
+
+# Vouch groups (no issue assigned yet)
+create_vouch_group #0000
+get_vouch_group #0000
+
+# Pool and liquidity (no issue assigned yet)
+auto_rebalance_pools #0000
+get_pool_liquidity #0000
+
+# Insurance (no issue assigned yet)
+is_voucher_insured #0000
+get_insurance_coverage_bps_pub #0000
+get_insurance_fee_bps_pub #0000
+purchase_slash_insurance #0000
+
+# Periodic payments (no issue assigned yet)
+get_periodic_payment_config #0000
+get_periodic_payment_status #0000
+
+# Yield streaming (no issue assigned yet)
+get_voucher_yield_claim #0000
+claim_streamed_yield #0000
+get_yield_stream_state #0000
