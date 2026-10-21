@@ -104,6 +104,12 @@ variable "eks_disk_size" {
 }
 
 # RDS Configuration
+variable "db_username" {
+  description = "Master username for RDS database"
+  type        = string
+  sensitive   = true
+}
+
 variable "db_password" {
   description = "Master password for RDS database"
   type        = string

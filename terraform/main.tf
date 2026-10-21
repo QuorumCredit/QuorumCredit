@@ -148,8 +148,10 @@ module "rds" {
   engine                     = "postgres"
   engine_version             = "15.4"
   db_name                    = "quorum"
-  username                   = "admin"
+  username                   = var.db_username
   password                   = var.db_password  # From environment/secrets
+  deletion_protection        = true
+  final_snapshot_identifier  = "quorum-credit-${var.environment}-final-snapshot"
 
   instance_class             = var.db_instance_class
   allocated_storage           = var.db_allocated_storage
