@@ -328,6 +328,10 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
         ContractError::LoanNotExpired => (
             String::from_str(env, "LoanNotExpired"),
             String::from_str(env, "The loan has not reached its deadline yet."),
+        ContractError::NotInitialized => (
+            String::from_str(env, "NotInitialized"),
+            String::from_str(env, "Contract has not been initialized. Call initialize() first."),
+        ),
         ),
         _ => (
             String::from_str(env, "UnknownError"),
@@ -773,4 +777,7 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
     /// An invalid field permission value (must be 0-3) was supplied.
     InvalidPermission = 252,
+    // ── Unwrap removal: typed errors for panic-prone helpers ─────────────────
+    /// The contract instance has no `Config` entry; `initialize()` has not run.
+    NotInitialized = 253,
 }
