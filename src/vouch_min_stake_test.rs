@@ -149,6 +149,55 @@ fn test_min_stake_rejection_leaves_no_state() {
     );
 }
 
+// ── Test 6: min_stake boundary protects non-zero yield ───────────────────────
+
+#[test]
+fn test_min_stake_boundary_yield_is_non_zero() {
+    let env = Env::default();
+    let (contract_id, token_addr, admin, borrower, voucher) = setup(&env);
+    let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+    // Use a small, non-zero min_stake so the boundary is easy to reason about.
+    let min_stake: i128 = 50;
+    client.set_min_stake(&admin_signers(&env, &admin), &min_stake);
+
+    // min_stake - 1 must be rejected.
+    let below = client.try_vouch(&voucher, &borrower, &(min_stake - 1), &token_addr, &None);
+    assert_eq!(
+        below,
+        Err(Ok(ContractError::MinStakeNotMet)),
+        "Stake of min_stake - 1 must be rejected with MinStakeNotMet"
+    );
+
+    // Exactly min_stake must be accepted, and the resulting yield must be non-zero.
+    let at = client.try_vouch(&voucher, &borrower, &min_stake, &token_addr, &None);
+    assert!(
+        at.is_ok(),
+        "Stake equal to min_stake must be accepted, got: {:?}",
+        at
+    );
+    let at_yield = at.unwrap().unwrap();
+    assert!(
+        at_yield > 0,
+        "Yield at exactly min_stake must be non-zero, got: {}",
+        at_yield
+    );
+
+    // min_stake + 1 must be accepted, and the resulting yield must be non-zero.
+    let above = client.try_vouch(&voucher, &borrower, &(min_stake + 1), &token_addr, &None);
+    assert!(
+        above.is_ok(),
+        "Stake of min_stake + 1 must be accepted, got: {:?}",
+        above
+    );
+    let above_yield = above.unwrap().unwrap();
+    assert!(
+        above_yield > 0,
+        "Yield at min_stake + 1 must be non-zero, got: {}",
+        above_yield
+    );
+}
+
 // ── Test 5: tier-discounted effective_min_stake allows a lower stake ──────────
 
 #[test]

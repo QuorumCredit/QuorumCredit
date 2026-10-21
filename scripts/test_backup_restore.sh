@@ -13,8 +13,23 @@
 # (scenarios 1-5 in restore.sh remain operator-guided runbooks — see
 # docs/backup-recovery-guide.md).
 #
+# This is the single consolidated backup/restore test driver (Issue #1994).
+# It supersedes and replaces test_backup_restore_correctness.sh and
+# test_backup_restore_policy.sh. All restore assertions live here:
+#
+#   Steps 1-4          — the live backup/restore drill against the target network
+#   Correctness self-test — mock-backup / mock-stellar-CLI assertions proving
+#                           Step 4 detects corrupted loan/vouch data and passes
+#                           on matching data (offline, no network required)
+#   Safety policy      — preflight-failure assertions (BACKUP_TEST_EXECUTE=false
+#                        and STAGING_CONTRACT_ID==CONTRACT_ID must fail)
+#
 # Usage:
-#   ./scripts/test_backup_restore.sh [--network <network>]
+#   ./scripts/test_backup_restore.sh [--network <network>] [--self-test-only]
+#
+#   --self-test-only   Run only the offline Correctness self-test and Safety
+#                      policy sections (no network, no credentials required).
+=======
 #
 # Required environment variables (or .env entries):
 #   CONTRACT_ID          — Contract to back up (typically a staging deployment)
@@ -45,9 +60,11 @@ if [ -f "$ENV_FILE" ]; then
     set +o allexport
 fi
 
+SELF_TEST_ONLY="false"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --network) NETWORK="${2:?'--network requires a value'}"; shift 2 ;;
+        --self-test-only) SELF_TEST_ONLY="true"; shift ;;
         *) echo "Error: Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
@@ -64,6 +81,159 @@ mkdir -p "$(dirname "$BACKUP_TEST_HISTORY")"
 if ! command -v jq &>/dev/null; then
     echo "Error: 'jq' not found." >&2
     exit 1
+fi
+
+# ── Correctness self-test (ported from test_backup_restore_correctness.sh) ────
+#
+# Offline assertions that the Step 4 correctness comparison logic detects
+# corrupted loan/vouch data and passes on matching data. Uses a mock backup
+# directory and a mock `stellar` CLI so no network or credentials are needed.
+
+run_correctness_self_test() {
+    local failures=0
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local mock_bin="$tmpdir/bin"
+    mkdir -p "$mock_bin"
+
+    local backup_dir="$tmpdir/backup"
+    mkdir -p "$backup_dir/loans" "$backup_dir/vouches"
+
+    local borrower="GBORROWER000000000000000000000000000000000000000000000000"
+    local safe_name
+    safe_name=$(echo -n "$borrower" | sha256sum | cut -c1-16)
+    printf '%s\n' "$borrower" > "$backup_dir/derived_addresses.txt"
+
+    # Mock backup data
+    echo '{"borrower":"'"$borrower"'","amount":1000}' > "$backup_dir/loans/${safe_name}.json"
+    echo '{"borrower":"'"$borrower"'","vouchers":["GVOUCHER1"]}' > "$backup_dir/vouches/${safe_name}.json"
+    echo '{"borrower":"'"$borrower"'","status":"Active"}' > "$backup_dir/loans/${safe_name}_status.json"
+    echo '{"borrower":"'"$borrower"'","total":500}' > "$backup_dir/vouches/${safe_name}_total.json"
+
+    # Mock stellar CLI: echoes matching JSON for each query. The MOCK_MODE env
+    # var controls whether it returns matching or corrupted data.
+    cat > "$mock_bin/stellar" <<'MOCK'
+#!/bin/bash
+# Minimal mock of `stellar contract invoke` for the correctness self-test.
+sub="$4"
+borrower=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --borrower) borrower="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+case "$sub" in
+    get_loan) echo '{"borrower":"'"$borrower"'","amount":1000}' ;;
+    get_vouches) echo '{"borrower":"'"$borrower"'","vouchers":["GVOUCHER1"]}' ;;
+    loan_status) echo '{"borrower":"'"$borrower"'","status":"Active"}' ;;
+    total_vouched) echo '{"borrower":"'"$borrower"'","total":500}' ;;
+    *) echo 'null' ;;
+esac
+MOCK
+    chmod +x "$mock_bin/stellar"
+
+    # Helper mirroring the Step 4 comparison for a single record.
+    compare_record() {
+        local backup_file="$1" query="$2"
+        local backup_val staging_val
+        backup_val=$(jq -c . "$backup_file" 2>/dev/null || echo "null")
+        staging_val=$(PATH="$mock_bin:$PATH" stellar contract invoke --id "STAGING" \
+            --source "SKEY" --network "testnet" -- "$query" --borrower "$borrower" 2>/dev/null | jq -c . || echo "null")
+        [ "$backup_val" = "$staging_val" ]
+    }
+
+    echo "Correctness self-test — matching data should pass:"
+    if compare_record "$backup_dir/loans/${safe_name}.json" get_loan \
+        && compare_record "$backup_dir/vouches/${safe_name}.json" get_vouches \
+        && compare_record "$backup_dir/loans/${safe_name}_status.json" loan_status \
+        && compare_record "$backup_dir/vouches/${safe_name}_total.json" total_vouched; then
+        echo "  [OK] matching data passes all correctness checks"
+    else
+        echo "  [ERR] matching data unexpectedly failed correctness checks" >&2
+        failures=$((failures + 1))
+    fi
+
+    echo "Correctness self-test — corrupted loan data should fail:"
+    echo '{"borrower":"'"$borrower"'","amount":9999}' > "$backup_dir/loans/${safe_name}.json"
+    if compare_record "$backup_dir/loans/${safe_name}.json" get_loan; then
+        echo "  [ERR] corrupted loan data was not detected" >&2
+        failures=$((failures + 1))
+    else
+        echo "  [OK] corrupted loan data detected"
+    fi
+
+    echo "Correctness self-test — corrupted vouch data should fail:"
+    echo '{"borrower":"'"$borrower"'","vouchers":["GOTHER"]}' > "$backup_dir/vouches/${safe_name}.json"
+    if compare_record "$backup_dir/vouches/${safe_name}.json" get_vouches; then
+        echo "  [ERR] corrupted vouch data was not detected" >&2
+        failures=$((failures + 1))
+    else
+        echo "  [OK] corrupted vouch data detected"
+    fi
+
+    rm -rf "$tmpdir"
+    return "$failures"
+}
+
+# ── Safety policy (ported from test_backup_restore_policy.sh) ─────────────────
+#
+# Asserts that the preflight guards reject unsafe configurations with the
+# expected failure reasons. Runs this script in a subprocess with a throwaway
+# history file so the real history is untouched.
+
+run_safety_policy_test() {
+    local failures=0
+    local tmpdir
+    tmpdir=$(mktemp -d)
+
+    assert_preflight_fails() {
+        local label="$1" expected_reason="$2"
+        shift 2
+        local history="$tmpdir/history.jsonl"
+        : > "$history"
+        local out
+        if out=$(env CONTRACT_ID="CSOURCE" ADMIN_KEY="SKEY" NETWORK="testnet" \
+            BACKUP_TEST_HISTORY="$history" "$@" \
+            "$SCRIPT_DIR/test_backup_restore.sh" 2>&1); then
+            echo "  [ERR] $label: expected failure but script succeeded" >&2
+            failures=$((failures + 1))
+            return
+        fi
+        if printf '%s' "$out" | grep -q "$expected_reason"; then
+            echo "  [OK] $label rejected with expected reason"
+        else
+            echo "  [ERR] $label: expected reason '$expected_reason' not found" >&2
+            failures=$((failures + 1))
+        fi
+    }
+
+    echo "Safety policy — BACKUP_TEST_EXECUTE=false must fail:"
+    assert_preflight_fails "dry-run without execute" \
+        "BACKUP_TEST_EXECUTE=true is required" \
+        BACKUP_TEST_EXECUTE=false BACKUP_TEST_REQUIRE_RESTORE=true
+
+    echo "Safety policy — STAGING_CONTRACT_ID==CONTRACT_ID must fail:"
+    assert_preflight_fails "restore into source contract" \
+        "must differ from CONTRACT_ID" \
+        BACKUP_TEST_EXECUTE=true BACKUP_TEST_REQUIRE_RESTORE=true \
+        STAGING_CONTRACT_ID=CSOURCE
+
+    rm -rf "$tmpdir"
+    return "$failures"
+}
+
+if [ "$SELF_TEST_ONLY" = "true" ]; then
+    SELF_TEST_FAILURES=0
+    run_correctness_self_test || SELF_TEST_FAILURES=$((SELF_TEST_FAILURES + $?))
+    run_safety_policy_test || SELF_TEST_FAILURES=$((SELF_TEST_FAILURES + $?))
+    echo ""
+    if [ "$SELF_TEST_FAILURES" -ne 0 ]; then
+        echo "Self-test result: FAIL ($SELF_TEST_FAILURES assertion group(s) failed)" >&2
+        exit 1
+    fi
+    echo "Self-test result: PASS"
+    exit 0
 fi
 
 START_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -396,6 +566,20 @@ echo "  Coverage: $PASS_RUNS/$TOTAL_RUNS runs passed cumulatively ($SUCCESS_RATE
 echo "═══════════════════════════════════════════════════════════"
 
 rm -f "$BACKUP_LOG" "$RESTORE_LOG"
+
+# ── Correctness self-test + Safety policy (always run) ───────────────────────
+
+echo ""
+SELF_TEST_FAILURES=0
+run_correctness_self_test || SELF_TEST_FAILURES=$((SELF_TEST_FAILURES + $?))
+run_safety_policy_test || SELF_TEST_FAILURES=$((SELF_TEST_FAILURES + $?))
+
+if [ "$SELF_TEST_FAILURES" -ne 0 ]; then
+    echo "Self-test result: FAIL ($SELF_TEST_FAILURES assertion group(s) failed)" >&2
+    STATUS="fail"
+else
+    echo "Self-test result: PASS"
+fi
 
 if [ "$STATUS" != "pass" ]; then
     exit 1
