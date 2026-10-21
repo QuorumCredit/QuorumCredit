@@ -55,3 +55,19 @@ export function applyExpirationGracePeriod(expiresAt: number, graceSeconds: numb
     isInGracePeriod: now > expiresAt && now <= graceEndsAt,
   };
 }
+
+/**
+ * Returns a copy of a record for `viewerId`. Listed fields are set to null unless the viewer
+ * is the owner, so third parties never see them.
+ */
+export function redactForViewer<T extends Record<string, unknown>>(
+  record: T,
+  ownerId: string,
+  viewerId: string,
+  sensitiveFields: ReadonlyArray<keyof T & string>
+): T {
+  if (viewerId === ownerId) return { ...record };
+  const copy: Record<string, unknown> = { ...record };
+  for (const field of sensitiveFields) copy[field] = null;
+  return copy as T;
+}
