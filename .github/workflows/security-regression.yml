@@ -1,0 +1,22 @@
+name: Security Regression
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  security-regression:
+    name: Security Regression Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run security regression modules
+        run: |
+          for t in security_fixes_test input_validation_test paused_state_test loan_overwrite_protection_test; do
+            cargo test --lib "$t"
+          done

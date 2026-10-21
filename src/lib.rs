@@ -149,6 +149,28 @@ mod repay_validation_test;
 mod unimplemented_stubs_test;
 #[cfg(test)]
 mod attestor_analytics_test;
+#[cfg(test)]
+mod security_fixes_test;
+#[cfg(test)]
+mod input_validation_test;
+#[cfg(test)]
+mod paused_state_test;
+#[cfg(test)]
+mod loan_overwrite_protection_test;
+#[cfg(test)]
+mod chaos_test;
+#[cfg(test)]
+mod concurrent_operations_test;
+#[cfg(test)]
+mod vouch_audit_trail_test;
+#[cfg(test)]
+mod vouch_reputation_test;
+#[cfg(test)]
+mod batch_stake_test;
+#[cfg(test)]
+mod min_loan_amount_test;
+#[cfg(test)]
+mod request_loan_yield_test;
 
 pub use errors::ContractError;
 pub use types::*;
