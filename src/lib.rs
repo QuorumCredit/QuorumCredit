@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, BytesN, Env,
-    Vec,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Bytes,
+    BytesN, Env, Vec,
 };
 
 pub mod admin;
@@ -46,6 +46,8 @@ pub mod vouch_syndication;
 pub mod loan_tokenization;
 pub mod pool_composability;
 pub mod quorum_slice_healing;
+pub mod quorum_slice_migration;
+pub mod quorum_slice_rebalancing;
 pub mod vouch_milestones;
 pub mod recurring_payment;
 pub mod loan_priority;
@@ -106,6 +108,8 @@ pub mod sbt_marketplace;
 pub mod lazy_default_detection;
 // Issue #1931 — vouch diversification scoring (#1181), now actually wired in
 pub mod diversification;
+// Issue #1631 / #1929 — credential field-level permissions
+pub mod field_permissions;
 
 #[cfg(test)]
 mod governance_test;
@@ -185,6 +189,17 @@ mod batch_stake_test;
 mod min_loan_amount_test;
 #[cfg(test)]
 mod request_loan_yield_test;
+mod quorum_slice_migration_test;
+#[cfg(test)]
+mod quorum_slice_rebalancing_test;
+#[cfg(test)]
+mod repay_nonexistent_loan_test;
+#[cfg(test)]
+mod repay_overpayment_test;
+#[cfg(test)]
+mod repay_protocol_fee_test;
+#[cfg(test)]
+mod partial_repay_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -3072,6 +3087,65 @@ impl QuorumCreditContract {
         voucher: Address,
     ) -> Result<diversification::DiversificationScore, ContractError> {
         diversification::calculate_diversification_score(&env, &voucher)
+    // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
+
+    /// Set the access permission (0=Public, 1=Private, 2=ReadOnly, 3=Hidden) for a
+    /// single field of a credential.
+    pub fn set_field_permission(
+        env: Env,
+        credential_id: Address,
+        field: Bytes,
+        permission: u32,
+    ) -> Result<(), ContractError> {
+        field_permissions::set_field_permissions(&env, &credential_id, &field, permission)
+    }
+
+    /// Get the effective permission for a field, resolving inheritance from a parent
+    /// credential if the field has no explicit override.
+    pub fn get_field_permission(
+        env: Env,
+        credential_id: Address,
+        field: Bytes,
+    ) -> Result<u32, ContractError> {
+        field_permissions::get_field_permission(&env, &credential_id, &field)
+    }
+
+    /// Check whether `caller` is permitted to read `field` on a credential owned by `owner`.
+    pub fn check_field_permission(
+        env: Env,
+        credential_id: Address,
+        field: Bytes,
+        caller: Address,
+        owner: Address,
+    ) -> Result<bool, ContractError> {
+        field_permissions::check_field_permission(&env, &credential_id, &field, &caller, &owner)
+    }
+
+    /// Set the parent credential a child credential inherits unconfigured field
+    /// permissions from. Rejects circular inheritance chains.
+    pub fn set_field_permission_inheritance(
+        env: Env,
+        credential_id: Address,
+        parent_credential_id: Address,
+    ) -> Result<(), ContractError> {
+        field_permissions::set_field_permission_inheritance(&env, &credential_id, &parent_credential_id)
+    }
+
+    /// Get the full field-permission matrix for a credential, if one has been configured.
+    pub fn get_field_permission_matrix(
+        env: Env,
+        credential_id: Address,
+    ) -> Option<field_permissions::FieldPermissionMatrix> {
+        field_permissions::get_field_permission_matrix(&env, &credential_id)
+    }
+
+    /// Set the default permission applied to fields with no explicit override.
+    pub fn set_default_field_permission(
+        env: Env,
+        credential_id: Address,
+        permission: u32,
+    ) -> Result<(), ContractError> {
+        field_permissions::set_default_field_permission(&env, &credential_id, permission)
     }
 }
 

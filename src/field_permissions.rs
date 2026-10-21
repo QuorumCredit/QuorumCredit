@@ -6,7 +6,7 @@
 
 extern crate alloc;
 
-use soroban_sdk::{Address, Env, Vec, Bytes};
+use soroban_sdk::{contracttype, Address, Env, Vec, Bytes};
 use crate::errors::ContractError;
 use crate::types::DataKey;
 
@@ -35,6 +35,7 @@ pub fn permission_from_u32(value: u32) -> Option<FieldPermission> {
 }
 
 /// Represents field-level permissions for a credential.
+#[contracttype]
 #[derive(Clone)]
 pub struct FieldPermissionMatrix {
     /// Credential ID this matrix applies to.
@@ -315,8 +316,10 @@ mod tests {
             let credential_id = Address::generate(&env);
             let field = Bytes::from_slice(&env, b"field_name");
 
-            set_field_permissions(&env, &credential_id, &field, 1).unwrap();
-            let perm = get_field_permission(&env, &credential_id, &field).unwrap();
+            set_field_permissions(&env, &credential_id, &field, 1)
+                .expect("setting a valid permission should succeed");
+            let perm = get_field_permission(&env, &credential_id, &field)
+                .expect("reading back a set permission should succeed");
             assert_eq!(perm, 1);
         });
     }
@@ -346,13 +349,16 @@ mod tests {
             let field = Bytes::from_slice(&env, b"field_name");
 
             // Set permission on parent
-            set_field_permissions(&env, &parent_id, &field, 2).unwrap();
+            set_field_permissions(&env, &parent_id, &field, 2)
+                .expect("setting a valid permission on the parent should succeed");
 
             // Set inheritance on child
-            set_field_permission_inheritance(&env, &child_id, &parent_id).unwrap();
+            set_field_permission_inheritance(&env, &child_id, &parent_id)
+                .expect("setting non-circular inheritance should succeed");
 
             // Child should inherit parent's permission
-            let perm = get_field_permission(&env, &child_id, &field).unwrap();
+            let perm = get_field_permission(&env, &child_id, &field)
+                .expect("reading an inherited permission should succeed");
             assert_eq!(perm, 2);
         });
     }
