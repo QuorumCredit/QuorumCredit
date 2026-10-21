@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "QuorumCredit Event Indexer Service",
   "main": "indexer.ts",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "ts-node indexer.ts",
     "dev": "nodemon --exec ts-node indexer.ts",

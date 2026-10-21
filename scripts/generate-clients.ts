@@ -15,10 +15,19 @@ interface GeneratedClient {
 }
 
 /**
+ * Canonical OpenAPI specification path.
+ *
+ * #1992: `docs/openapi.yaml` is the single authoritative spec. The former
+ * root-level `openapi.yaml` has been removed to avoid two diverging copies.
+ * SDK generation must always read from this path.
+ */
+const CANONICAL_OPENAPI_PATH = join("docs", "openapi.yaml");
+
+/**
  * Read and parse the OpenAPI spec
  */
 function readOpenAPISpec(): Record<string, unknown> {
-  const specPath = join(process.cwd(), "openapi.yaml");
+  const specPath = join(process.cwd(), CANONICAL_OPENAPI_PATH);
   const content = readFileSync(specPath, "utf-8");
 
   // Basic YAML to JSON conversion (simplified for this implementation)

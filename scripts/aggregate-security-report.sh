@@ -71,6 +71,42 @@ EOF
   fi
 fi
 
+# Process base image EOL results
+cat >> "$REPORTS_DIR/README.md" <<'EOF'
+
+### Container Base Images (EOL Check)
+
+EOF
+
+if [ -f "$REPO_ROOT/security/reports/base-image-eol.json" ]; then
+  if command -v jq &> /dev/null; then
+    eol_count=$(jq '[.images[]? | select(.eol == true)] | length' "$REPO_ROOT/security/reports/base-image-eol.json" 2>/dev/null || echo 0)
+
+    if [ "$eol_count" -gt 0 ]; then
+      cat >> "$REPORTS_DIR/README.md" <<EOF
+- **End-of-life base images detected**: $eol_count
+
+EOF
+
+      jq -r '.images[]? | select(.eol == true) | "- **\(.image)** (\(.file // "unknown file")): \(.message // "end-of-life base image")"' \
+        "$REPO_ROOT/security/reports/base-image-eol.json" >> "$REPORTS_DIR/README.md" 2>/dev/null || true
+
+      echo "" >> "$REPORTS_DIR/README.md"
+      echo "CRITICAL" > "$REPORTS_DIR/CRITICAL_FOUND"
+    else
+      cat >> "$REPORTS_DIR/README.md" <<'EOF'
+- No end-of-life base images detected
+
+EOF
+    fi
+  fi
+else
+  cat >> "$REPORTS_DIR/README.md" <<'EOF'
+- Base image EOL report not found
+
+EOF
+fi
+
 # Add remediation guidance
 cat >> "$REPORTS_DIR/README.md" <<'EOF'
 

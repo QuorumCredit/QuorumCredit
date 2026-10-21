@@ -5,7 +5,7 @@
   "description": "Multi-instance-safe real-time event broadcast backend for the QuorumCredit dashboard (issue #1142). Tails the tools/indexer SQLite event log and fans events out over Redis pub/sub to socket.io (loans) and raw WebSocket (metrics) clients, with resumable cursors, bounded per-connection queues, and auth-token refresh.",
   "type": "module",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

@@ -21,7 +21,7 @@ This service indexes on-chain events emitted by the QuorumCredit contract and pr
 
 ### Prerequisites
 
-- Node.js 18+
+- Node.js 22+
 - npm or yarn
 
 ### Installation
@@ -430,6 +430,8 @@ If upgrading from the previous indexer (without cursor):
 ### Two Implementations
 
 This repository contains **two independent indexer implementations**:
+
+> **Note (#1993):** A stale, unreferenced `indexer.ts` previously lived at the repository root. It was a duplicate of this service's implementation and nothing imported or ran it, so it has been deleted. `services/indexer/indexer.ts` is the **only** Node/TypeScript indexer implementation in the repository — do not add another copy at the root.
 
 1. **TypeScript/Node Indexer** (`services/indexer/`)
    - Purpose: Production REST API for event queries
