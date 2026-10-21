@@ -135,10 +135,14 @@ indexer's decoder about the complete LoanRecord ABI — a Rust change to
 ```bash
 npm test                    # fast, hermetic unit tests (LocalBus, no external services)
 npm run test:multi-instance # spawns two real OS processes, proves cross-instance
-                             # delivery + asserts p99 < 200ms (kept out of `npm test`
-                             # since it's heavier; see multiInstance.test.ts docstring
-                             # for why it uses a relay stand-in instead of real Redis
-                             # in this sandbox, and how to re-run against real Redis)
+                             # delivery + asserts p99 < 200ms, plus a shared lock test
+                             # (kept out of `npm test` since it's heavier). Without
+                             # REDIS_URL it uses a test-only relay stand-in for Redis.
+REDIS_URL=redis://127.0.0.1:6379 npm run test:multi-instance
+                             # same suite against real Redis (RedisBus), plus the
+                             # cross-instance WS aggregate rate-limiter test. This is
+                             # what CI runs (.github/workflows/server-multi-instance.yml)
+                             # on changes under server/src/ws or server/src/pubsub.
 npm run loadtest -- --connections 200   # smoke-scale; see scripts/loadtest.ts for
                                          # how to run the full 5k-10k target
 ```
