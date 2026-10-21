@@ -290,8 +290,8 @@ pub fn request_loan(
     };
 
     env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
-    // Issue #1429: index this loan under the borrower's history so future
-    // pre-checks can iterate every loan they have ever opened.
+    // Issue #1429 / #2005: index this loan under the borrower's history so
+    // future pre-checks can iterate every loan they have ever opened.
     crate::lazy_default_detection::record_borrower_loan_id(&env, &borrower, loan_id);
     env.storage()
         .persistent()
@@ -814,7 +814,16 @@ pub fn release_slash_escrow(
 
 pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
     if let Ok(loan) = get_active_loan_record(&env, &borrower) {
-        return Some(loan);
+        // Issue #2005: lazily flag a past-deadline unpaid loan as Defaulted on
+        // read, so defaults are detected through the normal read path rather
+        // than only via the manual slash path. `NoActiveLoan` just means the
+        // loan was already settled/closed; any other error is ignored so a
+        // read never fails because of the lazy check.
+        let _ = crate::lazy_default_detection::check_and_mark_default(&env, loan.id);
+        if let Ok(refreshed) = get_active_loan_record(&env, &borrower) {
+            return Some(refreshed);
+        }
+        return get_latest_loan_record(&env, &borrower);
     }
     get_latest_loan_record(&env, &borrower)
 }
@@ -830,6 +839,9 @@ pub fn loan_status_extended(env: Env, borrower: Address) -> LoanStatusEx {
 }
 
 pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
+    // Issue #2005: run the lazy default check before returning so a
+    // past-deadline unpaid loan is flagged as Defaulted on read.
+    let _ = crate::lazy_default_detection::check_and_mark_default(&env, loan_id);
     env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
 

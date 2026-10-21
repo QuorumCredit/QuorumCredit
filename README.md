@@ -35,11 +35,10 @@ This platform is designed for developers building on Stellar, fintech teams targ
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/QuorumCredit.git
+git clone https://github.com/ndifreke000/QuorumCredit.git
 cd QuorumCredit
 
 # Build the contract
-cd QuorumCredit
 cargo build --target wasm32-unknown-unknown --release
 
 # Run tests

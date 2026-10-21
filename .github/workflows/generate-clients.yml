@@ -29,6 +29,38 @@ jobs:
       - name: Generate clients
         run: cd server && npm run generate-clients
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python client test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          if [ -f generated/python-client/requirements.txt ]; then
+            python -m pip install -r generated/python-client/requirements.txt
+          fi
+
+      - name: Verify Python client is not empty
+        run: |
+          if [ ! -d generated/python-client/quorum_credit_client ]; then
+            echo "::error::generated/python-client/quorum_credit_client/ was not generated"
+            exit 1
+          fi
+          if [ -z "$(find generated/python-client/quorum_credit_client -type f -name '*.py' -print -quit)" ]; then
+            echo "::error::generated/python-client/quorum_credit_client/ contains no Python modules"
+            exit 1
+          fi
+
+      - name: Run Python client smoke import test
+        working-directory: generated/python-client
+        run: |
+          python -c 'import quorum_credit_client'
+          if [ -d tests ]; then
+            python -m pytest tests
+          fi
+
       - name: Check for changes
         id: verify
         run: |

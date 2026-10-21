@@ -8,7 +8,9 @@ setup(
     author_email="info@quorumcredit.xyz",
     url="https://github.com/QuorumCredit/QuorumCredit",
     license="MIT",
-    packages=find_packages(),
+    packages=find_packages(include=["quorum_credit_client", "quorum_credit_client.*"]),
+    package_dir={"quorum_credit_client": "quorum_credit_client"},
+    include_package_data=True,
     install_requires=[
         "requests>=2.31.0",
     ],

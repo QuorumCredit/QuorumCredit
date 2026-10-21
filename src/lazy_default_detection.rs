@@ -39,6 +39,38 @@ pub fn record_borrower_loan_id(env: &Env, borrower: &Address, loan_id: u64) {
     }
 }
 
+/// Issue #2005: Fallible variant of [`record_borrower_loan_id`].
+///
+/// Behaves identically but surfaces storage failures as `ContractError`
+/// instead of panicking, so callers on the contract ABI can propagate errors.
+pub fn try_record_borrower_loan_id(
+    env: &Env,
+    borrower: &Address,
+    loan_id: u64,
+) -> Result<(), ContractError> {
+    let key = DataKey::BorrowerLoanIds(borrower.clone());
+    let mut ids: Vec<u64> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut already_present = false;
+    for existing in ids.iter() {
+        if existing == loan_id {
+            already_present = true;
+            break;
+        }
+    }
+
+    if !already_present {
+        ids.push_back(loan_id);
+        env.storage().persistent().set(&key, &ids);
+    }
+
+    Ok(())
+}
+
 /// Issue #1429: Fetch the borrower's recorded loan ids (empty if none).
 pub fn borrower_loan_ids(env: &Env, borrower: &Address) -> Vec<u64> {
     env.storage()
@@ -95,16 +127,20 @@ pub fn check_and_mark_default(
     loan.status = LoanStatus::Defaulted;
     env.storage().persistent().set(&DataKey::Loan(loan_id), &loan);
 
+    // Issue #2005: guard against a loan record whose borrower is missing so the
+    // default count update below cannot panic on an inconsistent record.
+    let borrower = loan.borrower.clone();
+
     // Increment default count for the borrower. Issue #1407's audit found this used
     // `.instance()` while every other DefaultCount read/write site (credit_score.rs,
     // governance.rs, loan.rs, lib.rs) uses `.persistent()` — a lazily-detected default
     // silently never counted toward credit score or interest-rate risk pricing.
     let current_count: u32 = env.storage().persistent()
-        .get(&DataKey::DefaultCount(loan.borrower.clone()))
+        .get(&DataKey::DefaultCount(borrower.clone()))
         .unwrap_or(0u32);
 
     env.storage().persistent().set(
-        &DataKey::DefaultCount(loan.borrower.clone()),
+        &DataKey::DefaultCount(borrower.clone()),
         &(current_count + 1),
     );
     crate::helpers::increment_total_default_count(env);
@@ -112,7 +148,7 @@ pub fn check_and_mark_default(
     // Emit event
     env.events().publish(
         ("loan", "default_detected"),
-        (loan.borrower, loan_id, loan.deadline, env.ledger().timestamp()),
+        (borrower, loan_id, loan.deadline, env.ledger().timestamp()),
     );
 
     Ok(true)
@@ -149,6 +185,19 @@ pub fn check_all_defaults_for_borrower(
     }
 
     Ok(count)
+}
+
+/// Issue #2005: Read-path entry point that lazily detects defaults for a
+/// borrower and reports how many loans were newly marked.
+///
+/// This is the function the contract ABI calls from read paths (e.g. credit
+/// score / loan lookups) so defaults are detected without an active scan.
+/// Errors are propagated rather than panicking.
+pub fn lazy_check_borrower(
+    env: &Env,
+    borrower: &Address,
+) -> Result<u32, ContractError> {
+    check_all_defaults_for_borrower(env, borrower)
 }
 
 /// Get the detection status of a loan.
@@ -275,6 +324,64 @@ mod tests {
             record_borrower_loan_id(&env, &borrower, 7);
             record_borrower_loan_id(&env, &borrower, 8);
             assert_eq!(borrower_loan_ids(&env, &borrower).len(), 2);
+        });
+    }
+
+    /// Issue #2005: the fallible recorder behaves like the infallible one.
+    #[test]
+    fn try_record_borrower_loan_id_dedups() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        env.as_contract(&contract_id, || {
+            let borrower = Address::generate(&env);
+            try_record_borrower_loan_id(&env, &borrower, 7).unwrap();
+            try_record_borrower_loan_id(&env, &borrower, 7).unwrap();
+            try_record_borrower_loan_id(&env, &borrower, 8).unwrap();
+            assert_eq!(borrower_loan_ids(&env, &borrower).len(), 2);
+        });
+    }
+
+    /// Issue #2005: checking a loan id that does not exist returns an error
+    /// instead of panicking.
+    #[test]
+    fn check_and_mark_default_missing_loan_errors() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        env.as_contract(&contract_id, || {
+            let res = check_and_mark_default(&env, 42);
+            assert_eq!(res, Err(ContractError::NoActiveLoan));
+        });
+    }
+
+    /// Issue #2005: the read-path status query errors on a missing loan.
+    #[test]
+    fn get_default_detection_status_missing_loan_errors() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        env.as_contract(&contract_id, || {
+            let res = get_default_detection_status(&env, 42);
+            assert_eq!(res, Err(ContractError::NoActiveLoan));
+        });
+    }
+
+    /// Issue #2005: the read-path lazy check propagates Ok for a borrower with
+    /// no history and reports newly detected defaults otherwise.
+    #[test]
+    fn lazy_check_borrower_reports_new_defaults() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        env.ledger().set_timestamp(10_000);
+
+        env.as_contract(&contract_id, || {
+            let borrower = Address::generate(&env);
+            assert_eq!(lazy_check_borrower(&env, &borrower).unwrap(), 0);
+
+            let loan = mk_loan(&env, 1, &borrower, 1_000, 0, 5_000, LoanStatus::Active);
+            env.storage().persistent().set(&DataKey::Loan(loan.id), &loan);
+            record_borrower_loan_id(&env, &borrower, loan.id);
+
+            assert_eq!(lazy_check_borrower(&env, &borrower).unwrap(), 1);
+            assert_eq!(lazy_check_borrower(&env, &borrower).unwrap(), 0);
         });
     }
 }

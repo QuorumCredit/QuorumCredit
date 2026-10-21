@@ -1,11 +1,24 @@
 # QuorumCredit Python Client
 
-Auto-generated Python client library for the QuorumCredit API.
+Python client library for the QuorumCredit API.
+
+> **Note:** This package is **generated** from the canonical
+> [`openapi.yaml`](../../openapi.yaml) specification by the generator wired
+> into CI. Do not edit the generated sources by hand — changes will be
+> overwritten on the next generation run. To change the client, update
+> `openapi.yaml` or the generator templates instead.
+>
+> The package is **not yet published to PyPI**. Until generation is wired into
+> CI and a release is cut, `pip install quorum-credit-client` will not work.
+> Install from a local checkout instead (see below).
 
 ## Installation
 
+From a local checkout of this repository:
+
 ```bash
-pip install quorum-credit-client
+cd generated/python-client
+pip install -e .
 ```
 
 ## Usage
@@ -50,6 +63,18 @@ webhook = client.register_webhook(
 - Automatic request signing support
 - Built-in error handling
 - Configurable timeout and custom headers
+
+## Generation and Testing
+
+The client is produced from `openapi.yaml` by the generator invoked in CI.
+The generated package is validated with a smoke import test that ensures the
+`quorum_credit_client` module and its public entry points (`QuorumCreditClient`,
+`ClientConfig`) can be imported and instantiated. Run it locally with:
+
+```bash
+cd generated/python-client
+python -m pytest tests/test_smoke_import.py
+```
 
 ## API Reference
 

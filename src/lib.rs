@@ -92,6 +92,8 @@ pub mod sbt_privacy_modes;
 pub mod sbt_insurance;
 // Issue #1736 — SBT Marketplace Integration
 pub mod sbt_marketplace;
+// Issue #2005 — Lazy default detection wired into the contract ABI
+pub mod lazy_default_detection;
 
 #[cfg(test)]
 mod governance_test;
