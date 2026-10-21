@@ -104,6 +104,8 @@ pub mod sbt_insurance;
 pub mod sbt_marketplace;
 // Issue #2005 — Lazy default detection wired into the contract ABI
 pub mod lazy_default_detection;
+// Issue #1931 — vouch diversification scoring (#1181), now actually wired in
+pub mod diversification;
 
 #[cfg(test)]
 mod governance_test;
@@ -3058,6 +3060,18 @@ impl QuorumCreditContract {
         );
 
         true
+    }
+
+    // ── Issue #1931: Vouch Diversification Scoring (#1181) ───────────────────
+
+    /// Read-only diversification score for `voucher`, computed from the
+    /// voucher's actual vouched borrowers and each borrower's own latest loan
+    /// (not a hardcoded loan_id).
+    pub fn get_diversification_score(
+        env: Env,
+        voucher: Address,
+    ) -> Result<diversification::DiversificationScore, ContractError> {
+        diversification::calculate_diversification_score(&env, &voucher)
     }
 }
 
