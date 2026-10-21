@@ -35,13 +35,13 @@ jobs:
       security-events: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build server image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: ./server
           file: ./server/Dockerfile
@@ -52,7 +52,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@6abccf398f78b4c337599c0656f933d91efb91a0 # master
         with:
           input: 'quorum-credit-server:${{ github.sha }}'
           format: 'sarif'
@@ -61,21 +61,21 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@b8d3b6e8af63cde30bdc382c0bc28114f4346c88 # v2
         if: always()
         with:
           sarif_file: 'server-trivy-results.sarif'
           category: 'trivy-server'
 
       - name: Scan image with Grype
-        uses: anchore/scan-action@v3
+        uses: anchore/scan-action@3343887d815d7b07465f6fdcd395bd66508d486a # v3
         with:
           path: 'quorum-credit-server:${{ github.sha }}'
           fail-build: false
           severity-cutoff: medium
 
       - name: Upload Grype results
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@b8d3b6e8af63cde30bdc382c0bc28114f4346c88 # v2
         if: always()
         with:
           sarif_file: ${{ steps.scan.outputs.sarif }}
@@ -98,7 +98,7 @@ jobs:
 
       - name: Comment PR with vulnerability summary
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const fs = require('fs');
@@ -160,13 +160,13 @@ jobs:
       security-events: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build indexer image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: ./services/indexer
           file: ./services/indexer/Dockerfile
@@ -177,7 +177,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@6abccf398f78b4c337599c0656f933d91efb91a0 # master
         with:
           input: 'quorum-credit-indexer:${{ github.sha }}'
           format: 'sarif'
@@ -186,14 +186,14 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@b8d3b6e8af63cde30bdc382c0bc28114f4346c88 # v2
         if: always()
         with:
           sarif_file: 'indexer-trivy-results.sarif'
           category: 'trivy-indexer'
 
       - name: Scan image with Grype
-        uses: anchore/scan-action@v3
+        uses: anchore/scan-action@3343887d815d7b07465f6fdcd395bd66508d486a # v3
         with:
           path: 'quorum-credit-indexer:${{ github.sha }}'
           fail-build: false
@@ -211,7 +211,7 @@ jobs:
 
       - name: Comment PR with vulnerability summary
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const fs = require('fs');
@@ -261,7 +261,7 @@ jobs:
     if: always()
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check for critical vulnerabilities
         run: |
@@ -285,7 +285,7 @@ jobs:
 
       - name: Upload vulnerability reports
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: vulnerability-reports
           path: reports/
