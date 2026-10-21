@@ -13,7 +13,9 @@ on:
       - "src/errors.rs"
       - "src/invariants_test.rs"
       - "src/differential_testing.rs"
+      - "src/gas_cost_regression.rs"
       - "Cargo.toml"
+      - "tests/gas_cost_regression.rs"
       - ".github/workflows/invariants.yml"
   push:
     branches: [main]
@@ -28,7 +30,9 @@ on:
       - "src/errors.rs"
       - "src/invariants_test.rs"
       - "src/differential_testing.rs"
+      - "src/gas_cost_regression.rs"
       - "Cargo.toml"
+      - "tests/gas_cost_regression.rs"
       - ".github/workflows/invariants.yml"
 
 jobs:
@@ -73,6 +77,9 @@ jobs:
           cargo test prop_invariants_hold_under_random_ops -- --nocapture 2>&1
         env:
           PROPTEST_CASES: 256
+
+      - name: Run gas cost regression tests
+        run: cargo test --test gas_cost_regression
 
       - name: Run full test suite
         run: cargo test --lib 2>&1

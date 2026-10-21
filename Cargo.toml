@@ -27,6 +27,10 @@ path = "tests/api_integration.rs"
 name = "compliance_validation"
 path = "tests/compliance_validation.rs"
 
+[[test]]
+name = "gas_cost_regression"
+path = "tests/gas_cost_regression.rs"
+
 [profile.coverage]
 inherits = "test"
 
