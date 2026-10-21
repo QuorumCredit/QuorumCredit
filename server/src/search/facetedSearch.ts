@@ -8,6 +8,7 @@
  * pattern analytics.
  */
 
+import { randomUUID } from "node:crypto";
 import type { IndexedEvent } from "../types.js";
 import type { EventStore } from "../bridge/eventStore.js";
 
@@ -63,7 +64,7 @@ export class FacetedSearchService {
    * by category and action to produce facets. Tracks the search pattern for analytics.
    */
   search(query: SearchQuery): FacetedSearchResult {
-    const searchId = `search_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const searchId = `search_${randomUUID()}`;
     const executedAt = Date.now();
 
     this.trackSearchPattern(query);
