@@ -14,6 +14,8 @@ export const Logo: React.FC<LogoProps> = ({ size = 32, className = "" }) => {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
+      role="img"
+      aria-label="QuorumCredit logo"
     >
       {/* Outer circle - trust network */}
       <circle cx="64" cy="64" r="60" fill="none" stroke="#2563eb" strokeWidth="2" opacity="0.2" />
