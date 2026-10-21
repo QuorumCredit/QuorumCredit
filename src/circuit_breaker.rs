@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 /// Issue #1070: Circuit Breaker for Rapid Default Cascade
 ///
 /// When multiple borrowers default simultaneously, the protocol could enter a death spiral.
@@ -269,6 +271,12 @@ pub fn acknowledge_circuit_breaker(
         return Err(ContractError::InvalidStateTransition);
     }
 
+    // Resolve the acknowledging signer before writing any state so a missing
+    // signer cannot leave the acknowledgement half-recorded.
+    let acknowledger = admin_signers
+        .get(0)
+        .ok_or(ContractError::UnauthorizedCaller)?;
+
     env.storage()
         .instance()
         .set(&DataKey::CircuitBreakerAcknowledged, &true);
@@ -276,7 +284,7 @@ pub fn acknowledge_circuit_breaker(
     let now = env.ledger().timestamp();
     env.events().publish(
         ("circuit_breaker", "acknowledged"),
-        (crate::rbac::first_admin_signer(&env, &admin_signers), now, last_triggered),
+        (acknowledger, now, last_triggered),
     );
 
     Ok(())
@@ -438,6 +446,60 @@ mod tests {
 
                 acknowledge_circuit_breaker(&env, admins.clone()).unwrap();
                 assert!(is_circuit_breaker_acknowledged(&env));
+            });
+        }
+
+        #[test]
+        fn test_trip_and_reset_with_corrupt_history() {
+            let (env, contract_id, admins) = setup();
+            env.ledger().set_timestamp(1_000_000);
+            env.as_contract(&contract_id, || {
+                let mut cfg = crate::helpers::config(&env);
+                cfg.default_rate_threshold = 1_000; // 10%
+                env.storage().instance().set(&DataKey::Config, &cfg);
+
+                // Seed an oversized history with nonsensical values (future
+                // timestamps, u32::MAX counts, zero loan total), as a corrupt or
+                // legacy log might contain. It must not block or panic a trip.
+                let mut corrupt: Vec<CircuitBreakerTrigger> = Vec::new(&env);
+                for i in 0..(CIRCUIT_BREAKER_HISTORY_LIMIT * 2) {
+                    corrupt.push_back(CircuitBreakerTrigger {
+                        timestamp: u64::MAX - i as u64,
+                        default_count: u32::MAX,
+                        total_loan_count: 0,
+                        rate_bps: u32::MAX,
+                    });
+                }
+                env.storage()
+                    .instance()
+                    .set(&DataKey::CircuitBreakerHistory, &corrupt);
+
+                // Trip on top of the corrupt log.
+                assert_eq!(try_trigger_circuit_breaker(&env, &cfg, 20, 100), Ok(true));
+                let history = get_circuit_breaker_history(&env);
+                assert_eq!(history.len(), CIRCUIT_BREAKER_HISTORY_LIMIT);
+                let last = history.get(history.len() - 1).unwrap();
+                assert_eq!(last.timestamp, 1_000_000);
+                assert_eq!(last.rate_bps, 2_000);
+                assert!(!is_circuit_breaker_acknowledged(&env));
+
+                // Within the cooldown window a second trip is suppressed.
+                assert_eq!(try_trigger_circuit_breaker(&env, &cfg, 20, 100), Ok(false));
+
+                // Reset: admin acknowledges, then the breaker can fire again once
+                // the cooldown has elapsed.
+                acknowledge_circuit_breaker(&env, admins.clone()).unwrap();
+                assert!(is_circuit_breaker_acknowledged(&env));
+
+                env.ledger().set_timestamp(
+                    1_000_000 + circuit_breaker_cooldown_secs(&env) + 1,
+                );
+                assert_eq!(try_trigger_circuit_breaker(&env, &cfg, 20, 100), Ok(true));
+                assert_eq!(
+                    get_circuit_breaker_history(&env).len(),
+                    CIRCUIT_BREAKER_HISTORY_LIMIT
+                );
+                assert!(!is_circuit_breaker_acknowledged(&env));
             });
         }
     }

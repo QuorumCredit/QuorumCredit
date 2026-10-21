@@ -517,7 +517,7 @@ pub fn increase_stake(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
@@ -599,7 +599,7 @@ pub fn decrease_stake(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
@@ -699,7 +699,7 @@ pub fn withdraw_vouch(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     let vouch_stake = vouch_rec.stake;
@@ -783,7 +783,7 @@ pub fn request_withdrawal(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
@@ -843,7 +843,7 @@ pub fn partial_withdraw(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
@@ -915,9 +915,10 @@ pub fn process_withdrawal_queue(env: &Env, borrower: &Address) {
 
     // Process each queued withdrawal: transfer the stake back to the voucher
     for queued in queue.iter() {
-        let idx_opt = vouches.iter().position(|v| v.voucher == queued.voucher);
-        if let Some(idx) = idx_opt {
-            let idx_u32 = idx as u32;
+        // Search by Vec index (u32), so no usize-to-u32 cast is needed.
+        let idx_opt = (0..vouches.len())
+            .find(|&i| vouches.get(i).is_some_and(|v| v.voucher == queued.voucher));
+        if let Some(idx_u32) = idx_opt {
             let vouch_rec = vouches.get(idx_u32).unwrap_or_else(|| panic_with_error!(env, ContractError::VoucherNotFound));
             let token_client = require_allowed_token(env, &vouch_rec.token).ok();
             if let Some(tc) = token_client {
@@ -1019,8 +1020,8 @@ pub fn process_withdrawal_batch(env: &Env, borrower: &Address, count: u32) -> u3
     // Queue is pre-sorted by priority_fee (DESC) and requested_at (ASC).
     // Process the first `count` entries, keep the rest.
     for i in 0..queue.len() {
-        let queued = queue.get(i as u32).unwrap_or_else(|| panic_with_error!(env, ContractError::WithdrawalNotQueued));
-        if (i as u32) < process_count {
+        let queued = queue.get(i).unwrap_or_else(|| panic_with_error!(env, ContractError::WithdrawalNotQueued));
+        if i < process_count {
             env.events().publish(
                 (symbol_short!("wq"), symbol_short!("processed")),
                 (queued.voucher.clone(), borrower.clone()),
@@ -1082,9 +1083,42 @@ mod tests {
         );
         assert_eq!(stored, Some(spec));
     }
+
+    #[test]
+    fn test_to_u32_index_rejects_index_above_u32_max() {
+        assert_eq!(to_u32_index(0), Ok(0));
+        assert_eq!(to_u32_index(u32::MAX as usize), Ok(u32::MAX));
+
+        // One past u32::MAX must fail rather than wrap to a small index.
+        let above = (u32::MAX as usize) + 1;
+        assert_eq!(to_u32_index(above), Err(ContractError::ArithmeticError));
+    }
+
+    #[test]
+    fn test_bps_to_u32_clamps_to_valid_range() {
+        assert_eq!(bps_to_u32(0), 0);
+        assert_eq!(bps_to_u32(5_000), 5_000);
+        assert_eq!(bps_to_u32(BPS_DENOMINATOR), 10_000);
+        assert_eq!(bps_to_u32(-1), 0);
+        assert_eq!(bps_to_u32(i128::MAX), 10_000);
+    }
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Convert a `usize` index to the `u32` that `soroban_sdk::Vec` is indexed by.
+///
+/// An out-of-range value fails with `ArithmeticError` instead of being
+/// truncated, which would silently point at the wrong voucher.
+fn to_u32_index(index: usize) -> Result<u32, ContractError> {
+    u32::try_from(index).map_err(|_| ContractError::ArithmeticError)
+}
+
+/// Convert a basis-point share to `u32`. The value is clamped to
+/// `[0, BPS_DENOMINATOR]` first, so the conversion cannot truncate.
+fn bps_to_u32(bps: i128) -> u32 {
+    u32::try_from(bps.clamp(0, BPS_DENOMINATOR)).unwrap_or_default()
+}
 
 fn queue_withdrawal_internal(
     env: &Env,
@@ -1143,7 +1177,7 @@ fn queue_withdrawal_internal(
     if insert_idx >= queue.len() {
         queue.push_back(new_entry);
     } else {
-        queue.insert(insert_idx as u32, new_entry);
+        queue.insert(insert_idx, new_entry);
     }
 
     env.storage()
@@ -1221,7 +1255,7 @@ pub fn transfer_vouch(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == from)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     // Check no duplicate vouch for the target voucher
     for v in vouches.iter() {
@@ -1261,7 +1295,7 @@ pub fn transfer_vouch(
     if !has_other_vouch {
         let pos = from_history.iter().position(|b| b == borrower);
         if let Some(p) = pos {
-            from_history.remove(p as u32);
+            from_history.remove(to_u32_index(p)?);
         }
         env.storage()
             .persistent()
@@ -1327,7 +1361,7 @@ fn detect_circular_delegation(
                             return Err(ContractError::CircularDelegation);
                         }
                         if !visited.iter().any(|a| a == next_delegate) {
-                            if visited.len() as u32 >= MAX_DEPTH {
+                            if visited.len() >= MAX_DEPTH {
                                 return Ok(());
                             }
                             visited.push_back(next_delegate.clone());
@@ -1367,7 +1401,7 @@ pub fn delegate_vouch(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher && v.token == token)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     vouch_rec.delegate = Some(delegate.clone());
@@ -1423,7 +1457,7 @@ pub fn revoke_delegation(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher && v.token == token)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     vouch_rec.delegate = None;
@@ -1460,7 +1494,7 @@ pub fn set_vouch_expiry(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher && v.token == token)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let mut vouch_rec = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     let now = env.ledger().timestamp();
@@ -2070,7 +2104,7 @@ pub fn estimate_sybil_attack_cost(
         1u32
     } else {
         let n = (total_weighted_stake + min_stake_per_address - 1) / min_stake_per_address;
-        n.min(i128::from(u32::MAX)) as u32
+        u32::try_from(n.min(i128::from(u32::MAX))).unwrap_or(u32::MAX)
     };
 
     let min_stake_stroops = (addresses_required as i128)
@@ -2176,7 +2210,7 @@ pub fn split_vouch(
     let idx = vouches
         .iter()
         .position(|v| v.voucher == voucher)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     let original = vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
 
@@ -2330,7 +2364,7 @@ pub fn rotate_to_new_borrower(
     let idx = old_vouches
         .iter()
         .position(|v| v.voucher == voucher)
-        .ok_or(ContractError::VoucherNotFound)? as u32;
+        .ok_or(ContractError::VoucherNotFound).and_then(to_u32_index)?;
 
     if has_active_loan(&env, &old_borrower) {
         return Err(ContractError::ActiveLoanExists);
@@ -2378,7 +2412,7 @@ pub fn rotate_to_new_borrower(
         .unwrap_or(Vec::new(&env));
     if !old_vouches.iter().any(|v| v.voucher == voucher) {
         if let Some(p) = history.iter().position(|b| b == old_borrower) {
-            history.remove(p as u32);
+            history.remove(to_u32_index(p)?);
         }
     }
     if !history.iter().any(|b| b == new_borrower) {
@@ -2532,10 +2566,11 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
             pct_bps: 0, // filled in below once total_stake is known
         });
 
-        match token_addrs.iter().position(|t| t == v.token) {
+        // Range search yields u32 indices directly, so no cast is needed.
+        match (0..token_addrs.len()).find(|&i| token_addrs.get(i).is_some_and(|t| t == v.token)) {
             Some(i) => {
-                let updated = token_stakes.get(i as u32).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)).saturating_add(v.stake);
-                token_stakes.set(i as u32, updated);
+                let updated = token_stakes.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)).saturating_add(v.stake);
+                token_stakes.set(i, updated);
             }
             None => {
                 token_addrs.push_back(v.token.clone());
@@ -2543,10 +2578,10 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
             }
         }
 
-        match chain_ids.iter().position(|c| c == v.chain_id) {
+        match (0..chain_ids.len()).find(|&i| chain_ids.get(i).is_some_and(|c| c == v.chain_id)) {
             Some(i) => {
-                let updated = chain_stakes.get(i as u32).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)).saturating_add(v.stake);
-                chain_stakes.set(i as u32, updated);
+                let updated = chain_stakes.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound)).saturating_add(v.stake);
+                chain_stakes.set(i, updated);
             }
             None => {
                 chain_ids.push_back(v.chain_id);
@@ -2561,7 +2596,7 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
     let mut final_borrowers: Vec<BorrowerExposure> = Vec::new(&env);
     for b in borrower_breakdown.iter() {
         let pct_bps: u32 = if total_stake > 0 {
-            (b.stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
+            bps_to_u32(b.stake.saturating_mul(BPS_DENOMINATOR) / total_stake)
         } else {
             0
         };
@@ -2577,7 +2612,7 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
     for i in 0..token_addrs.len() {
         let stake = token_stakes.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound));
         let pct_bps: u32 = if total_stake > 0 {
-            (stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
+            bps_to_u32(stake.saturating_mul(BPS_DENOMINATOR) / total_stake)
         } else {
             0
         };
@@ -2592,7 +2627,7 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
     for i in 0..chain_ids.len() {
         let stake = chain_stakes.get(i).unwrap_or_else(|| panic_with_error!(&env, ContractError::NotFound));
         let pct_bps: u32 = if total_stake > 0 {
-            (stake.saturating_mul(BPS_DENOMINATOR) / total_stake) as u32
+            bps_to_u32(stake.saturating_mul(BPS_DENOMINATOR) / total_stake)
         } else {
             0
         };
@@ -2651,7 +2686,7 @@ pub fn get_portfolio_risk(env: Env, voucher: Address) -> PortfolioRiskReport {
         borrower_breakdown: final_borrowers,
         token_breakdown,
         chain_breakdown,
-        concentration_hhi_bps: concentration_hhi_bps as u32,
+        concentration_hhi_bps: bps_to_u32(concentration_hhi_bps),
         estimated_loss_1pct,
         estimated_loss_5pct,
         estimated_loss_10pct,

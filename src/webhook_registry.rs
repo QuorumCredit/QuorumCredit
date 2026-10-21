@@ -14,6 +14,8 @@
 //!
 //! See also: `docs/webhook-signature-verification-guide.md`.
 
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 use crate::types::DataKey;
 
@@ -191,14 +193,18 @@ impl WebhookRegistry {
     /// Must be called by an admin (caller must separately enforce auth before
     /// invoking this helper).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `limit` is 0.
-    pub fn set_limit(env: &Env, limit: u32) {
-        assert!(limit > 0, "webhook limit must be at least 1");
+    /// Returns `Err(InvalidLimit)` if `limit` is 0. The stored limit is left
+    /// unchanged in that case.
+    pub fn set_limit(env: &Env, limit: u32) -> Result<(), WebhookRegistryError> {
+        if limit == 0 {
+            return Err(WebhookRegistryError::InvalidLimit);
+        }
         env.storage()
             .instance()
             .set(&DataKey::WebhookLimit, &limit);
+        Ok(())
     }
 }
 
@@ -216,6 +222,8 @@ pub enum WebhookRegistryError {
     DuplicateUrl,
     /// No matching active subscription found.
     NotFound,
+    /// A per-subject limit of 0 was requested; the limit must be at least 1.
+    InvalidLimit,
 }
 
 #[cfg(test)]
@@ -311,7 +319,7 @@ mod tests {
         let subject = String::from_str(&env, "borrower_events");
 
         // Set a lower limit of 2
-        WebhookRegistry::set_limit(&env, 2);
+        WebhookRegistry::set_limit(&env, 2).unwrap();
         assert_eq!(WebhookRegistry::get_limit(&env), 2);
 
         WebhookRegistry::register(
@@ -337,5 +345,17 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, WebhookRegistryError::LimitExceeded);
+    }
+
+    #[test]
+    fn test_set_limit_rejects_zero_and_keeps_previous_limit() {
+        let env = Env::default();
+        WebhookRegistry::set_limit(&env, 3).unwrap();
+
+        assert_eq!(
+            WebhookRegistry::set_limit(&env, 0),
+            Err(WebhookRegistryError::InvalidLimit)
+        );
+        assert_eq!(WebhookRegistry::get_limit(&env), 3);
     }
 }
