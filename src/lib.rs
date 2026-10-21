@@ -1125,6 +1125,7 @@ impl QuorumCreditContract {
                 .iter()
                 .map(|v| v.stake)
                 .sum();
+            // Issue #1924: widening cast (u32 -> i128), always safe.
             let max_allowed = total_stake * cfg.max_loan_to_stake_ratio as i128 / 100;
             assert!(
                 amount <= max_allowed,
@@ -1820,6 +1821,9 @@ impl QuorumCreditContract {
                 status: status.clone(),
             });
 
+            // Issue #1924: LoanStatus is a small C-like enum (a handful of
+            // variants), so casting its discriminant to u32 for the event
+            // payload can never truncate.
             env.events().publish(
                 (symbol_short!("bloan"), symbol_short!("query")),
                 (borrower.clone(), status as u32),
@@ -3027,6 +3031,9 @@ impl QuorumCreditContract {
         {
             if current_time < last_window + window_secs {
                 if count >= max_requests {
+                    // Issue #1924: UserRole is a small C-like enum, so casting
+                    // its discriminant to u32 for the event payload can never
+                    // truncate.
                     env.events().publish(
                         (symbol_short!("ratelim"), symbol_short!("exceeded")),
                         (user, role as u32, count),
@@ -3043,6 +3050,8 @@ impl QuorumCreditContract {
             env.storage().persistent().set(&rate_key, &(current_time, 1));
         }
 
+        // Issue #1924: UserRole is a small C-like enum, so casting its
+        // discriminant to u32 for the event payload can never truncate.
         env.events().publish(
             (symbol_short!("ratelim"), symbol_short!("ok")),
             (user, role as u32),

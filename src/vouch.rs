@@ -1724,7 +1724,12 @@ pub fn vouch_reputation_weight(env: &Env, voucher: &Address) -> i128 {
         // Zero yield (total_yield_earned == 0) → no meaningful history → no boost.
         // This handles both new vouchers and Sybil rings with trivial micro-vouches.
         0
-    };
+    }
+    // Issue #1923: nothing upstream guarantees total_yield_earned is
+    // non-negative. A negative effective_yield cast to u64 below would wrap
+    // to a huge value and saturate the reputation weight instead of
+    // correctly granting no boost, so clamp at zero first.
+    .max(0);
 
     if effective_yield == 0 {
         // No meaningful history → base multiplier only

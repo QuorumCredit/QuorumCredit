@@ -757,4 +757,17 @@ EmergencyBypassNotAuthorised = 131,
     GracePeriodNotPassed = 244,
     /// `claim_expired_loan` was called before the loan's deadline has passed.
     LoanNotExpired = 245,
+    /// Issue #1907: an address was not found in the admin whitelist (e.g. on removal).
+    AddressNotInWhitelist = 246,
+    /// Issue #1907: an address was not found in the admin blacklist (e.g. on removal).
+    AddressNotInBlacklist = 247,
+    /// Issue #1907: no ThawState was found when one was expected to exist.
+    PauseStateNotFound = 248,
+    /// Issue #1907: a token was not found in the allowed-tokens list (e.g. on removal).
+    TokenNotInAllowedList = 249,
+    /// Issue #1907: an admin-management operation requires at least one
+    /// configured admin, but the admin list is empty.
+    NoAdminsConfigured = 250,
+    /// Issue #1907: a monotonic ID counter would overflow u64 on increment.
+    CounterOverflow = 251,
 }
