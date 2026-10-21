@@ -34,6 +34,8 @@ export class CredentialStore {
    * per distinct issuer instead of once per credential. */
   private issuerIndex = new Map<string, Set<string>>();
   private statusListeners = new Set<CredentialStatusListener>();
+  /** Issue #1775: listeners notified after a credential is issued (used to keep the metadata index current). */
+  private issueListeners = new Set<(credential: Credential) => void>();
   private verifications = new Map<string, VerificationRecord>();
   private credentialCounter = 0;
   private verificationCounter = 0;
@@ -68,7 +70,24 @@ export class CredentialStore {
     }
     ids.add(credentialId);
     this.emitStatusChange(credential);
+    this.emitIssue(credential);
     return credential;
+  }
+
+  /** Issue #1775: subscribe to newly issued credentials. Returns an unsubscribe fn. */
+  onIssue(listener: (credential: Credential) => void): () => void {
+    this.issueListeners.add(listener);
+    return () => this.issueListeners.delete(listener);
+  }
+
+  private emitIssue(credential: Credential): void {
+    for (const listener of this.issueListeners) {
+      try {
+        listener(credential);
+      } catch (err) {
+        console.error("[credentialStore] issue listener failed", err);
+      }
+    }
   }
 
   /**

@@ -5,6 +5,16 @@
  */
 
 import { createHash } from "node:crypto";
+import { assessFraudRisk, type FraudAssessment } from "../verification/fraudModel.js";
+
+/** Issue #1776: holder and issuer activity supplied by the caller. Omitted values count as zero. */
+export interface VerificationFraudContext {
+  now?: number;
+  issuerCredentialsLast24h?: number;
+  holderCredentialsLast24h?: number;
+  holderTotalCredentials?: number;
+  holderRevokedCredentials?: number;
+}
 
 export interface DocumentVerification {
   documentType: "passport" | "driver_license" | "national_id" | "utility_bill" | "bank_statement";
@@ -14,6 +24,9 @@ export interface DocumentVerification {
   issuer?: string;
   metadata: Record<string, unknown>;
 }
+
+/** Issue #1776: a document verification returned together with its advisory fraud assessment. */
+export type ScoredDocumentVerification = DocumentVerification & { fraudRisk: FraudAssessment };
 
 export interface VerificationChallenge {
   challengeId: string;
@@ -38,6 +51,8 @@ class IdentityVerificationService {
   private documentVerifications = new Map<string, DocumentVerification[]>();
   private verificationChallenges = new Map<string, VerificationChallenge>();
   private reVerificationSchedules = new Map<string, ReVerificationSchedule>();
+  /** Issue #1776: latest advisory fraud assessment per credential. */
+  private fraudAssessments = new Map<string, FraudAssessment>();
   private challengeCounter = 0;
 
   /**
@@ -55,8 +70,9 @@ class IdentityVerificationService {
     documentType: DocumentVerification["documentType"],
     documentHash: string,
     expiresAt: number,
-    metadata?: Record<string, unknown>
-  ): DocumentVerification {
+    metadata?: Record<string, unknown>,
+    fraudContext?: VerificationFraudContext
+  ): ScoredDocumentVerification {
     const verification: DocumentVerification = {
       documentType,
       documentHash,
@@ -74,7 +90,35 @@ class IdentityVerificationService {
     // Create re-verification schedule
     this.scheduleReVerification(credentialId, "annual");
 
-    return verification;
+    // Issue #1776: score the verification. Scoring is advisory and does not change its status.
+    const fraudRisk = assessFraudRisk({
+      now: fraudContext?.now ?? verification.verifiedAt ?? Math.floor(Date.now() / 1000),
+      expiresAt,
+      issuerCredentialsLast24h: fraudContext?.issuerCredentialsLast24h ?? 0,
+      holderCredentialsLast24h: fraudContext?.holderCredentialsLast24h ?? 0,
+      holderTotalCredentials: fraudContext?.holderTotalCredentials ?? 0,
+      holderRevokedCredentials: fraudContext?.holderRevokedCredentials ?? 0,
+      metadata: verification.metadata,
+      documentHashReuseCount: this.countOtherCredentialsWithHash(credentialId, documentHash),
+    });
+    this.fraudAssessments.set(credentialId, fraudRisk);
+
+    return { ...verification, fraudRisk };
+  }
+
+  /** Issue #1776: how many credentials other than `credentialId` have verified this document hash. */
+  private countOtherCredentialsWithHash(credentialId: string, documentHash: string): number {
+    let count = 0;
+    for (const [otherId, verifications] of this.documentVerifications) {
+      if (otherId === credentialId) continue;
+      if (verifications.some((v) => v.documentHash === documentHash)) count++;
+    }
+    return count;
+  }
+
+  /** Issue #1776: latest advisory fraud assessment for a credential, if it has been verified. */
+  getFraudAssessment(credentialId: string): FraudAssessment | undefined {
+    return this.fraudAssessments.get(credentialId);
   }
 
   /**
@@ -249,6 +293,8 @@ class IdentityVerificationService {
     );
     const score = this.getVerificationScore(credentialId);
     const isReVerificationDue = this.isReVerificationDue(credentialId);
+    // Issue #1776: advisory only. A high-risk assessment is surfaced for review, not applied to the status.
+    const fraudRisk = this.fraudAssessments.get(credentialId) ?? null;
 
     return {
       credentialId,
@@ -258,6 +304,8 @@ class IdentityVerificationService {
       verificationScore: score,
       isReVerificationDue,
       status: score >= 80 ? "verified" : score >= 50 ? "at_risk" : "failed",
+      fraudRisk,
+      requiresReview: fraudRisk?.riskLevel === "high",
       lastUpdated: Math.floor(Date.now() / 1000),
     };
   }
