@@ -62,6 +62,29 @@ The canonical cache module is `src/cache.rs`. It is compiled into the contract (
 
 The duplicate `contracts/slice/src/cache.rs` (a std-only `VerificationCache`) was removed in Issue #1901: it was not part of any crate, could not compile in the `no_std` contract, and nothing referenced it. Its last version is in commit `a26e0a5`, if an off-chain verification cache is needed later. Add new cache code to `src/cache.rs` rather than creating another copy.
 
+### Test file discovery
+
+Test files named `src/*_test.rs` or `src/*_tests.rs` run only if something compiles them. Each one must be listed in exactly one of these places:
+
+1. **`src/lib.rs`**: a `#[cfg(test)] mod <name>;` declaration. This is the default for new test files.
+2. **`src/tests.rs`**: a `#[path]` entry in the block between the `BEGIN GENERATED TEST PATHS` and `END GENERATED TEST PATHS` markers. Do not edit that block by hand. To add a file, add its name to `INCLUDED` in `scripts/gen_test_includes.py`, then run:
+
+   ```bash
+   python3 scripts/gen_test_includes.py --write
+   ```
+
+3. **`scripts/test_orphans.txt`**: a file that nothing compiles yet. Do not add new entries for new work. Fix the file and move it to option 1 or 2, or delete it.
+
+A file must not appear in both 1 and 2, because it would compile twice.
+
+Run the check before pushing:
+
+```bash
+python3 scripts/gen_test_includes.py
+```
+
+The `Repo Guards` workflow runs the same check on every pull request and fails on drift, an undeclared test file, or a stale orphan entry.
+
 ## 🎨 Style Guide
 
 We follow standard Rust formatting conventions. Please run the following before committing:
