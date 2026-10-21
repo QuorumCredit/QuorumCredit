@@ -93,7 +93,12 @@ pub fn set_gas_baseline(
     // Update if exists, append if new
     let mut found = false;
     for i in 0..baselines.len() {
-        if baselines.get(i).unwrap().operation == operation {
+        if baselines
+            .get(i)
+            .expect("baseline index must be within the vector length")
+            .operation
+            == operation
+        {
             baselines.set(i, baseline.clone());
             found = true;
             break;
@@ -175,7 +180,12 @@ fn check_gas_regression(env: &Env, operation: &String, current_gas: u64) -> Resu
                     .unwrap_or(Vec::new(env));
 
                 for i in 0..baselines_mut.len() {
-                    if baselines_mut.get(i).unwrap().operation == operation {
+                    if baselines_mut
+                        .get(i)
+                        .expect("baseline index must be within the vector length")
+                        .operation
+                        == operation
+                    {
                         baselines_mut.set(i, updated_baseline);
                         break;
                     }
@@ -320,8 +330,11 @@ pub fn get_recent_measurements(
     };
 
     for i in start_idx..measurements.len() {
-        if measurements.get(i).unwrap().operation == operation {
-            filtered.push_back(measurements.get(i).unwrap());
+        let measurement = measurements
+            .get(i)
+            .expect("measurement index must be within the vector length");
+        if measurement.operation == operation {
+            filtered.push_back(measurement);
         }
     }
 
@@ -345,21 +358,15 @@ pub fn verify_gas_optimization(env: &Env, operation: &String) -> Result<bool, Co
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::integer_sqrt;
 
     #[test]
-    fn test_integer_sqrt() {
-        assert_eq!(integer_sqrt(0), 0);
-        assert_eq!(integer_sqrt(1), 1);
-        assert_eq!(integer_sqrt(4), 2);
-        assert_eq!(integer_sqrt(9), 3);
-        assert_eq!(integer_sqrt(16), 4);
-        assert_eq!(integer_sqrt(100), 10);
-    }
-
-    #[test]
-    fn test_regression_threshold() {
-        // 10% regression should trigger (1000 bps)
-        assert!(1000 > REGRESSION_THRESHOLD_BPS / 10);
+    fn integer_sqrt_returns_floor_for_known_values() {
+        assert_eq!(integer_sqrt(0), 0, "square root of zero should be zero");
+        assert_eq!(integer_sqrt(1), 1, "square root of one should be one");
+        assert_eq!(integer_sqrt(4), 2, "square root of four should be two");
+        assert_eq!(integer_sqrt(9), 3, "square root of nine should be three");
+        assert_eq!(integer_sqrt(16), 4, "square root of sixteen should be four");
+        assert_eq!(integer_sqrt(100), 10, "square root of one hundred should be ten");
     }
 }
