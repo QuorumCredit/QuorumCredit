@@ -1,4 +1,5 @@
 import type { Notification } from "./notificationStore.js";
+import { logger } from "../logging/logger.js";
 
 /**
  * Issue #1583: Notification delivery service for sending credential holder
@@ -80,11 +81,11 @@ export class NotificationDelivery {
   ): Promise<void> {
     // In production, this would integrate with a real email service (SendGrid, AWS SES, etc.)
     // For now, we'll simulate the send
-    console.log(
-      `[notifications:email] Sending email to ${recipientEmail}`,
-      `Subject: ${notification.title}`,
-      `Message: ${notification.message}`
-    );
+    logger.info("email send started", {
+      notificationId: notification.id,
+      recipient: recipientEmail,
+      subject: notification.title,
+    });
 
     // Simulate email delivery
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -96,9 +97,7 @@ export class NotificationDelivery {
     // 4. Send and wait for confirmation
     // 5. Handle bounces and complaints
 
-    console.log(
-      `[notifications:email] Successfully queued email for ${recipientEmail}`
-    );
+    logger.info("email queued", { notificationId: notification.id, recipient: recipientEmail });
   }
 
   /**
@@ -109,11 +108,11 @@ export class NotificationDelivery {
     recipientPushToken: string
   ): Promise<void> {
     // In production, this would integrate with FCM, APNs, or another push service
-    console.log(
-      `[notifications:push] Sending push notification to token ${recipientPushToken.substring(0, 20)}...`,
-      `Title: ${notification.title}`,
-      `Message: ${notification.message}`
-    );
+    logger.info("push send started", {
+      notificationId: notification.id,
+      tokenPrefix: recipientPushToken.substring(0, 20),
+      title: notification.title,
+    });
 
     // Simulate push delivery
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -125,9 +124,10 @@ export class NotificationDelivery {
     // 4. Send and handle delivery receipts
     // 5. Track opens and clicks
 
-    console.log(
-      `[notifications:push] Successfully queued push notification for token ${recipientPushToken.substring(0, 20)}...`
-    );
+    logger.info("push queued", {
+      notificationId: notification.id,
+      tokenPrefix: recipientPushToken.substring(0, 20),
+    });
   }
 
   /**

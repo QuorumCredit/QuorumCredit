@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   InsuranceProvider,
   InsuranceProduct,
@@ -133,7 +134,7 @@ async function fetchProviderQuote(
     const coverageAmount = Math.floor((loanAmount * product.coveragePercentage) / 100);
     const premiumAmount = Math.floor((loanAmount * product.premiumBps) / 10000);
     const premiumBpsAnnual = product.premiumBps;
-    const quoteId = `quote_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const quoteId = `quote_${randomUUID()}`;
     const expiresAt = Date.now() + 24 * 60 * 60 * 1000; // 24 hour quote validity
 
     const quote: InsuranceQuote = {
@@ -190,7 +191,7 @@ export function submitClaim(
     throw new Error("Product not found");
   }
 
-  const claimId = `claim_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  const claimId = `claim_${randomUUID()}`;
 
   // Validate claim amount doesn't exceed max coverage
   if (claimAmount > product.maxClaimAmount) {

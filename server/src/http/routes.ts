@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { issueToken } from "../auth/tokens.js";
 import { loadApiKeyStore, type ApiKeyStore } from "../auth/apiKeyStore.js";
@@ -560,7 +561,7 @@ export function handleHttpRequest(
           res.end(JSON.stringify({ error: "credentialIds must be a non-empty array" }));
           return;
         }
-        const batchId = `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const batchId = `batch_${randomUUID()}`;
         const batch = batchVerificationStore.createBatch(
           batchId,
           body.borrowerId,

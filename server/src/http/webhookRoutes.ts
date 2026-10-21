@@ -548,7 +548,11 @@ async function handleIncomingWebhook(
     }
 
     // Process valid webhook
-    console.log("Received valid webhook:", validation.payload);
+    // Log identifiers only: the body can carry borrower and loan data.
+    console.log("Received valid webhook:", {
+      event: validation.payload!.event,
+      webhookId: validation.payload!.webhookId,
+    });
     
     // Here you would process the webhook payload based on the event type
     // For now, we'll just acknowledge receipt

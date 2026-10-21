@@ -5,6 +5,7 @@
  * Supports multiple formats (JSON, CSV, PDF) and scheduled report generation.
  */
 
+import { randomUUID } from "node:crypto";
 import type { BatchVerification } from "./batchVerificationStore.js";
 
 export type ReportFormat = "json" | "csv" | "pdf";
@@ -24,6 +25,8 @@ export interface VerificationAuditReport {
   totalCredentialsFailed: number;
   byBorrower: Map<string, BorrowerAuditSummary>;
   issues?: string[];
+  /** Caller that generated the report. Reports without an owner are readable by anyone. */
+  ownerId?: string;
 }
 
 export interface BorrowerAuditSummary {
@@ -62,7 +65,8 @@ export class AuditReportGenerator {
     batches: BatchVerification[],
     format: ReportFormat = "json",
     periodStart?: number,
-    periodEnd?: number
+    periodEnd?: number,
+    ownerId?: string
   ): VerificationAuditReport {
     const now = Date.now();
     const start = periodStart || now - 30 * 24 * 60 * 60 * 1000; // Last 30 days
@@ -124,12 +128,11 @@ export class AuditReportGenerator {
         : 0;
     const averageFailureRate = 100 - averageSuccessRate;
 
-    const reportId = `report_${Date.now()}_${Math.random()
-      .toString(36)
-      .substr(2, 9)}`;
+    const reportId = `report_${randomUUID()}`;
 
     const report: VerificationAuditReport = {
       reportId,
+      ownerId,
       generatedAt: now,
       periodStart: start,
       periodEnd: end,
@@ -238,9 +241,11 @@ export class AuditReportGenerator {
   /**
    * Get formatted report in the specified format.
    */
-  getFormattedReport(reportId: string, format: ReportFormat): string | null {
+  getFormattedReport(reportId: string, format: ReportFormat, requesterId?: string): string | null {
     const report = this.reports.get(reportId);
     if (!report) return null;
+    // A report owned by someone else is not returned, and looks the same as a missing one.
+    if (report.ownerId !== undefined && report.ownerId !== requesterId) return null;
 
     switch (format) {
       case "json":
@@ -262,9 +267,7 @@ export class AuditReportGenerator {
     frequency: "daily" | "weekly" | "monthly",
     recipients: string[]
   ): ReportSchedule {
-    const scheduleId = `schedule_${Date.now()}_${Math.random()
-      .toString(36)
-      .substr(2, 9)}`;
+    const scheduleId = `schedule_${randomUUID()}`;
 
     const schedule: ReportSchedule = {
       scheduleId,
