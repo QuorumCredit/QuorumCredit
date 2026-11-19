@@ -199,7 +199,7 @@ pub fn stake_sbt(
 /// - [`ContractError::ContractPaused`]
 /// - [`ContractError::NoActiveLoan`] — no stake found for this `(sbt_id, holder)`.
 /// - [`ContractError::AlreadyRepaid`] — stake already claimed.
-/// - [`ContractError::LoanPastDeadline`] — lock period has not elapsed yet.
+/// - [`ContractError::StakeNotUnlocked`] — lock period has not elapsed yet.
 pub fn claim_sbt_reward(env: &Env, holder: Address, sbt_id: u64) -> Result<(), ContractError> {
     require_not_paused(env)?;
     holder.require_auth();
@@ -212,8 +212,8 @@ pub fn claim_sbt_reward(env: &Env, holder: Address, sbt_id: u64) -> Result<(), C
 
     let now = env.ledger().timestamp();
     if now < record.unlocks_at {
-        // Re-using LoanPastDeadline semantically inverted: lock not yet expired
-        return Err(ContractError::LoanPastDeadline);
+        // Issue #2071: the stake is still locked; this is not a loan deadline issue.
+        return Err(ContractError::StakeNotUnlocked);
     }
 
     record.claimed = true;

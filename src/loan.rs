@@ -119,7 +119,12 @@ fn vouch_yield_bps_uncached(env: &Env, vouch: &VouchRecord, borrower: &Address, 
         }
     }
     let unique_count = unique_borrowers.len() as i128;
-    let diversification_bonus = ((unique_count - 1) * 50).min(500);
+    // Issue #2069: an empty history contributes no bonus (previously -50).
+    let diversification_bonus = if unique_count == 0 {
+        0
+    } else {
+        ((unique_count - 1) * 50).min(500)
+    };
 
     (base_bps + age_bonus + rep_bonus + voucher_rep_bonus + reliability_bonus + diversification_bonus).max(0)
 }
@@ -142,6 +147,19 @@ pub fn calculate_dynamic_yield(env: &Env, borrower: &Address) -> i128 {
         .unwrap_or(0) as i128;
 
     (base_bps + (credit_score / 100) - (default_count * 50)).max(0)
+}
+
+/// Issue #2070: reputation/bps-weighted stake with checked arithmetic.
+///
+/// Computes `stake * weight / BPS_DENOMINATOR`, returning
+/// `ContractError::ArithmeticError` instead of panicking when the product
+/// overflows `i128`.
+pub(crate) fn weighted_stake(stake: i128, weight: i128) -> Result<i128, ContractError> {
+    stake
+        .checked_mul(weight)
+        .ok_or(ContractError::ArithmeticError)?
+        .checked_div(BPS_DENOMINATOR)
+        .ok_or(ContractError::ArithmeticError)
 }
 
 /// Request loan.
@@ -186,14 +204,13 @@ pub fn request_loan(
         .unwrap_or(Vec::new(&env));
 
     // Compute reputation-weighted total stake (Issue #866)
-    let total_stake: i128 = vouches
-        .iter()
-        .filter(|v| v.token == token_addr)
-        .map(|v| {
-            let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
-            v.stake * weight / BPS_DENOMINATOR
-        })
-        .sum();
+    let mut total_stake: i128 = 0;
+    for v in vouches.iter().filter(|v| v.token == token_addr) {
+        let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
+        total_stake = total_stake
+            .checked_add(weighted_stake(v.stake, weight)?)
+            .ok_or(ContractError::ArithmeticError)?;
+    }
 
     if total_stake < threshold {
         panic_with_error!(&env, ContractError::InsufficientFunds);
@@ -234,8 +251,8 @@ pub fn request_loan(
         // Apply tier rewards on top of per-vouch rate (Issue #866)
         let effective_rate = rate + (tier_adjusted_yield_bps - config(&env).yield_bps);
         let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
-        let weighted_stake = v.stake * weight / BPS_DENOMINATOR;
-        let vouch_yield = amount * weighted_stake / total_stake * effective_rate / 10_000;
+        let vouch_weighted = weighted_stake(v.stake, weight)?;
+        let vouch_yield = amount * vouch_weighted / total_stake * effective_rate / 10_000;
         total_yield += vouch_yield;
         yield_distribution.push_back(YieldDistributionEntry {
             voucher: v.voucher.clone(),
@@ -469,10 +486,12 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         let outstanding_principal = (loan.amount - loan.amount_repaid).max(0);
         let new_interest =
             calculate_daily_compound_interest(outstanding_principal, days_elapsed);
+        // Issue #2068: surface overflow as ArithmeticError instead of silently
+        // saturating accrued interest to i128::MAX.
         loan.accrued_interest = loan
             .accrued_interest
             .checked_add(new_interest)
-            .unwrap_or(i128::MAX);
+            .ok_or(ContractError::ArithmeticError)?;
         // Advance the clock by whole days only; any sub-day remainder rolls
         // forward and will be picked up on the next call.
         loan.last_interest_calc += days_elapsed * SECS_PER_DAY;
@@ -616,7 +635,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             // Issue #1077: Add liquidity-tier yield bonus on top of the locked-in yield.
             // Illiquid tokens earn a higher bonus to compensate for risk.
             let tier_bonus_bps = crate::bridge::liquidity_tier_bonus_bps(&env, &loan.token_address);
-            let tier_yield_extra = v.stake * tier_bonus_bps / BPS_DENOMINATOR;
+            let tier_yield_extra = weighted_stake(v.stake, tier_bonus_bps)?;
 
             let payout = v.stake + vouch_yield + penalty_share + tier_yield_extra;
 
@@ -1191,14 +1210,13 @@ pub fn refinance_loan(
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(&env));
 
-    let total_stake: i128 = vouches
-        .iter()
-        .filter(|v| v.token == new_token)
-        .map(|v| {
-            let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
-            v.stake * weight / BPS_DENOMINATOR
-        })
-        .sum();
+    let mut total_stake: i128 = 0;
+    for v in vouches.iter().filter(|v| v.token == new_token) {
+        let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
+        total_stake = total_stake
+            .checked_add(weighted_stake(v.stake, weight)?)
+            .ok_or(ContractError::ArithmeticError)?;
+    }
 
     if total_stake < new_threshold {
         return Err(ContractError::InsufficientFunds);
@@ -1629,9 +1647,11 @@ pub fn approve_extension(
         soroban_sdk::Vec::new(&env);
     for v in vouches.iter() {
         let weight = crate::vouch::vouch_reputation_weight(&env, &v.voucher);
-        let weighted = v.stake * weight / crate::types::BPS_DENOMINATOR;
+        let weighted = weighted_stake(v.stake, weight)?;
         weighted_stakes.push_back((v.voucher.clone(), weighted));
-        total_stake = total_stake.saturating_add(weighted);
+        total_stake = total_stake
+            .checked_add(weighted)
+            .ok_or(ContractError::ArithmeticError)?;
     }
 
     // Single O(n) pass: accumulate approval_stake from the cached values.
@@ -1876,7 +1896,7 @@ pub fn buyback_loan(
         return Err(ContractError::VoucherNotFound);
     }
 
-    let cost = total_stake * loan.buyback_price / BPS_DENOMINATOR;
+    let cost = weighted_stake(total_stake, loan.buyback_price)?;
     if amount < cost {
         return Err(ContractError::InvalidAmount);
     }

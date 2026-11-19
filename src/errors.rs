@@ -77,6 +77,10 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "ContractPaused"),
             String::from_str(env, "Contract is paused. Wait for an admin to call unpause()."),
         ),
+        ContractError::StakeNotUnlocked => (
+            String::from_str(env, "StakeNotUnlocked"),
+            String::from_str(env, "SBT stake is still locked. Wait until the unlock time before claiming."),
+        ),
         ContractError::LoanPastDeadline => (
             String::from_str(env, "LoanPastDeadline"),
             String::from_str(env, "Repayment deadline has passed. Use slash() to mark default."),
@@ -822,6 +826,8 @@ EmergencyBypassNotAuthorised = 131,
     NoAdminsConfigured = 250,
     /// Issue #1907: a monotonic ID counter would overflow u64 on increment.
     CounterOverflow = 251,
+    /// Issue #2071: SBT stake claimed before its `unlocks_at` time (distinct from LoanPastDeadline).
+    StakeNotUnlocked = 266,
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
     /// An invalid field permission value (must be 0-3) was supplied.
     InvalidPermission = 252,
