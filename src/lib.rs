@@ -138,6 +138,10 @@ mod rbac_enforcement_test;
 #[cfg(test)]
 mod admin_empty_signer_test;
 #[cfg(test)]
+mod cooldown_bypass_expiry_test;
+#[cfg(test)]
+mod slash_quorum_overflow_test;
+#[cfg(test)]
 mod slash_result_test;
 #[cfg(test)]
 mod vouch_panic_free_test;

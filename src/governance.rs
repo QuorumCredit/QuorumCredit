@@ -377,6 +377,21 @@ pub fn get_slash_vote_quorum(env: Env) -> u32 {
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS)
 }
 
+/// Ceiling of `total_stake * quorum_bps / BPS_DENOMINATOR`.
+///
+/// Returns `ArithmeticError` if either intermediate step overflows, so an
+/// oversized stake total surfaces as a visible error instead of silently
+/// producing an unreachable `i128::MAX` threshold (issue #2106).
+pub fn quorum_stake_required(total_stake: i128, quorum_bps: u32) -> Result<i128, ContractError> {
+    let numerator = total_stake
+        .checked_mul(quorum_bps as i128)
+        .ok_or(ContractError::ArithmeticError)?;
+    let rounded_up = numerator
+        .checked_add(BPS_DENOMINATOR - 1)
+        .ok_or(ContractError::ArithmeticError)?;
+    Ok(rounded_up / BPS_DENOMINATOR)
+}
+
 /// Execute a slash vote if quorum has been met.
 /// Anyone can call this function to execute a slash once quorum is reached.
 /// Requires approximately 2/3 (6667 bps) of total vouched stake to have approved.
@@ -399,7 +414,10 @@ pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractErr
         .persistent()
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(&env));
-    let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+    let total_stake: i128 = vouches
+        .iter()
+        .try_fold(0i128, |acc, v| acc.checked_add(v.stake))
+        .ok_or(ContractError::ArithmeticError)?;
 
     // Retrieve quorum threshold (default ≈ 66.67%)
     let quorum_bps: u32 = env
@@ -408,13 +426,9 @@ pub fn execute_slash_vote(env: Env, borrower: Address) -> Result<(), ContractErr
         .get(&DataKey::SlashVoteQuorum)
         .unwrap_or(DEFAULT_SLASH_VOTE_QUORUM_BPS);
 
-    // Calculate required quorum stake using ceiling division
-    let quorum_stake = (total_stake
-        .checked_mul(quorum_bps as i128)
-        .unwrap_or(i128::MAX)
-        .checked_add(BPS_DENOMINATOR - 1)
-        .unwrap_or(i128::MAX))
-        / BPS_DENOMINATOR;
+    // Calculate required quorum stake using ceiling division. Overflow is reported
+    // as ArithmeticError rather than saturating to i128::MAX (issue #2106).
+    let quorum_stake = quorum_stake_required(total_stake, quorum_bps)?;
 
     // Check if approval stake meets quorum
     if vote.approve_stake < quorum_stake {

@@ -18,7 +18,7 @@ use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Vec};
 
 use crate::errors::ContractError;
 use crate::helpers::{require_admin_approval, require_not_paused};
-use crate::types::DataKey;
+use crate::types::{DataKey, VouchRecord};
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -83,6 +83,8 @@ pub struct TreasuryProposal {
     pub status: TreasuryProposalStatus,
     /// Whether this proposal is a large allocation requiring admin approval.
     pub requires_admin: bool,
+    /// Number of distinct addresses that have voted (issue #2105: quorum on count).
+    pub voter_count: u32,
     /// Issue #1448: Timestamp deadline for admin approval (only set for large allocations).
     /// If admin does not approve by this time, proposal is auto-rejected.
     pub admin_approval_deadline: Option<u64>,
@@ -208,6 +210,7 @@ pub fn create_proposal(
         no_votes: 0,
         status: TreasuryProposalStatus::Active,
         requires_admin,
+        voter_count: 0,
         /// Issue #1448: Initialize admin_approval_deadline as None; will be set when moving to PendingAdminApproval
         admin_approval_deadline: None,
     };
@@ -224,12 +227,47 @@ pub fn create_proposal(
     Ok(proposal_id)
 }
 
+/// Minimum number of distinct voters required before a proposal can pass (issue #2105).
+pub const TREASURY_MIN_VOTER_COUNT: u32 = 3;
+
+/// Minimum total vouched-stake weight (YES + NO) required before a proposal can pass
+/// (issue #2105). 100 XLM expressed in stroops.
+pub const TREASURY_MIN_VOTE_WEIGHT: i128 = 1_000_000_000;
+
+/// Sum of `voter`'s active vouched stake across every borrower they have backed.
+///
+/// Reads `VoucherHistory(voter)` for the borrowers and sums the voter's own
+/// `VouchRecord` stake on each borrower's vouch list.
+pub fn voter_vouched_stake(env: &Env, voter: &Address) -> Result<i128, ContractError> {
+    let borrowers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherHistory(voter.clone()))
+        .unwrap_or(Vec::new(env));
+
+    let mut total: i128 = 0;
+    for borrower in borrowers.iter() {
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .unwrap_or(Vec::new(env));
+        for record in vouches.iter() {
+            if record.voucher == *voter {
+                total = total
+                    .checked_add(record.stake)
+                    .ok_or(ContractError::StakeOverflow)?;
+            }
+        }
+    }
+    Ok(total)
+}
+
 /// Cast a vote on an active treasury proposal.
 ///
 /// Voting weight is the voter's total vouched stake across all borrowers
-/// (simplified: each unique voter counts as 1 unit — a governance-weight
-/// oracle would be needed for full stake-weighted voting; this implementation
-/// uses unit weight to avoid cross-contract reads during this iteration).
+/// (issue #2105). Addresses with no vouched stake cannot vote, so a Sybil
+/// cluster of unstaked addresses has no influence.
 ///
 /// # Parameters
 /// - `voter`       — address casting the vote; must sign.
@@ -270,14 +308,26 @@ pub fn vote_on_proposal(
         return Err(ContractError::AlreadyVoted);
     }
 
-    // Record vote (unit weight = 1 stroop per voter for simplicity).
+    let weight = voter_vouched_stake(env, &voter)?;
+    if weight <= 0 {
+        return Err(ContractError::NoVouchedStake);
+    }
+
+    // Record vote with the voter's vouched-stake weight.
     env.storage().persistent().set(&vote_key, &approve);
 
     if approve {
-        proposal.yes_votes += 1;
+        proposal.yes_votes = proposal
+            .yes_votes
+            .checked_add(weight)
+            .ok_or(ContractError::StakeOverflow)?;
     } else {
-        proposal.no_votes += 1;
+        proposal.no_votes = proposal
+            .no_votes
+            .checked_add(weight)
+            .ok_or(ContractError::StakeOverflow)?;
     }
+    proposal.voter_count += 1;
 
     env.storage()
         .persistent()
@@ -323,9 +373,12 @@ pub fn finalize_proposal(
         return Err(ContractError::VotingPeriodEnded);
     }
 
-    let total_votes = proposal.yes_votes + proposal.no_votes;
-    // Quorum check: require minimum 2 votes and YES > NO.
-    let quorum_met = total_votes >= 2 && proposal.yes_votes > proposal.no_votes;
+    let total_weight = proposal.yes_votes + proposal.no_votes;
+    // Quorum check (issue #2105): enough distinct voters, enough total vouched
+    // stake, and YES weight strictly greater than NO weight.
+    let quorum_met = proposal.voter_count >= TREASURY_MIN_VOTER_COUNT
+        && total_weight >= TREASURY_MIN_VOTE_WEIGHT
+        && proposal.yes_votes > proposal.no_votes;
 
     if !quorum_met {
         proposal.status = TreasuryProposalStatus::Rejected;
@@ -351,10 +404,34 @@ pub fn finalize_proposal(
         return Ok(());
     }
 
-    // Execute: deduct from treasury balance.
+    pay_out_and_execute(env, proposal_id, &mut proposal, symbol_short!("execute"))
+}
+
+/// Transfer a passed proposal's funds to its recipient and mark it executed (issue #2107).
+///
+/// The token transfer happens before any state is written. If the transfer fails,
+/// the function returns `TreasuryTransferFailed` without touching the balance or
+/// the proposal status, so the proposal can be retried. A successful transfer
+/// decrements `TreasuryBalance` and records the payout in the monthly report.
+fn pay_out_and_execute(
+    env: &Env,
+    proposal_id: u64,
+    proposal: &mut TreasuryProposal,
+    event_topic: soroban_sdk::Symbol,
+) -> Result<(), ContractError> {
     let balance = get_treasury_balance(env);
     if proposal.amount > balance {
         return Err(ContractError::InsufficientFunds);
+    }
+
+    let transfer = crate::helpers::token(env).try_transfer(
+        &env.current_contract_address(),
+        &proposal.recipient,
+        &proposal.amount,
+    );
+    match transfer {
+        Ok(Ok(())) => {}
+        _ => return Err(ContractError::TreasuryTransferFailed),
     }
 
     env.storage()
@@ -364,13 +441,12 @@ pub fn finalize_proposal(
     proposal.status = TreasuryProposalStatus::Executed;
     env.storage()
         .persistent()
-        .set(&DataKey::TreasuryProposal(proposal_id), &proposal);
+        .set(&DataKey::TreasuryProposal(proposal_id), proposal);
 
-    // Update monthly spending report.
     update_monthly_report(env, 0, proposal.amount);
 
     env.events().publish(
-        (symbol_short!("treasury"), symbol_short!("execute")),
+        (symbol_short!("treasury"), event_topic),
         (proposal_id, proposal.recipient.clone(), proposal.amount),
     );
 
@@ -403,28 +479,7 @@ pub fn admin_approve_proposal(
         return Err(ContractError::InvalidStateTransition);
     }
 
-    let balance = get_treasury_balance(env);
-    if proposal.amount > balance {
-        return Err(ContractError::InsufficientFunds);
-    }
-
-    env.storage()
-        .persistent()
-        .set(&DataKey::TreasuryBalance, &(balance - proposal.amount));
-
-    proposal.status = TreasuryProposalStatus::Executed;
-    env.storage()
-        .persistent()
-        .set(&DataKey::TreasuryProposal(proposal_id), &proposal);
-
-    update_monthly_report(env, 0, proposal.amount);
-
-    env.events().publish(
-        (symbol_short!("treasury"), symbol_short!("adm_exec")),
-        (proposal_id, proposal.recipient.clone(), proposal.amount),
-    );
-
-    Ok(())
+    pay_out_and_execute(env, proposal_id, &mut proposal, symbol_short!("adm_exec"))
 }
 
 /// Issue #1448: Auto-reject a stale large allocation proposal.
@@ -526,6 +581,9 @@ mod tests {
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::{Env, String};
+    use soroban_sdk::token::StellarAssetClient;
+    use crate::types::VouchRecord;
+    use crate::errors::ContractError;
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();
@@ -537,8 +595,43 @@ mod tests {
         let contract_id = env.register_contract(None, crate::QuorumCreditContract);
         let client = crate::QuorumCreditContractClient::new(&env, &contract_id);
         client.initialize(&deployer, &admins, &1, &token_id.address());
+        // Fund the contract with real tokens so payouts can transfer (issue #2107).
+        StellarAssetClient::new(&env, &token_id.address()).mint(&contract_id, &1_000_000_000_000);
         let proposer = Address::generate(&env);
         (env, contract_id, proposer)
+    }
+
+    /// Creates a voter with `VOTER_STAKE` of vouched stake (issue #2105 weighting).
+    /// Vouch records are injected directly so tests stay focused on governance.
+    const VOTER_STAKE: i128 = 500_000_000;
+
+    fn seeded_voter(env: &Env, contract_id: &Address) -> Address {
+        seeded_voter_with_stake(env, contract_id, VOTER_STAKE)
+    }
+
+    fn seeded_voter_with_stake(env: &Env, contract_id: &Address, stake: i128) -> Address {
+        let voter = Address::generate(env);
+        let borrower = Address::generate(env);
+        env.as_contract(contract_id, || {
+            let token = crate::helpers::config(env).token;
+            let vouches = Vec::from_array(
+                env,
+                [VouchRecord {
+                    voucher: voter.clone(),
+                    stake,
+                    vouch_timestamp: env.ledger().timestamp(),
+                    token,
+                }],
+            );
+            env.storage()
+                .persistent()
+                .set(&DataKey::Vouches(borrower.clone()), &vouches);
+            let history = Vec::from_array(env, [borrower]);
+            env.storage()
+                .persistent()
+                .set(&DataKey::VoucherHistory(voter.clone()), &history);
+        });
+        voter
     }
 
     #[test]
@@ -601,13 +694,17 @@ mod tests {
             })
             .unwrap();
 
-        let voter1 = Address::generate(&env);
-        let voter2 = Address::generate(&env);
+        let voter1 = seeded_voter(&env, &contract_id);
+        let voter2 = seeded_voter(&env, &contract_id);
+        let voter3 = seeded_voter(&env, &contract_id);
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter1, id, true).unwrap()
         });
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter3, id, true).unwrap()
         });
 
         // Advance time past voting period.
@@ -640,7 +737,7 @@ mod tests {
             })
             .unwrap();
 
-        let voter1 = Address::generate(&env);
+        let voter1 = seeded_voter(&env, &contract_id);
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter1, id, false).unwrap()
         });
@@ -673,7 +770,7 @@ mod tests {
             })
             .unwrap();
 
-        let voter = Address::generate(&env);
+        let voter = seeded_voter(&env, &contract_id);
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter.clone(), id, true).unwrap()
         });
@@ -712,13 +809,17 @@ mod tests {
             })
             .unwrap();
 
-        let voter1 = Address::generate(&env);
-        let voter2 = Address::generate(&env);
+        let voter1 = seeded_voter(&env, &contract_id);
+        let voter2 = seeded_voter(&env, &contract_id);
+        let voter3 = seeded_voter(&env, &contract_id);
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter1, id, true).unwrap()
         });
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter3, id, true).unwrap()
         });
 
         // Finalize voting to move to PendingAdminApproval
@@ -764,13 +865,17 @@ mod tests {
             })
             .unwrap();
 
-        let voter1 = Address::generate(&env);
-        let voter2 = Address::generate(&env);
+        let voter1 = seeded_voter(&env, &contract_id);
+        let voter2 = seeded_voter(&env, &contract_id);
+        let voter3 = seeded_voter(&env, &contract_id);
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter1, id, true).unwrap()
         });
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter3, id, true).unwrap()
         });
 
         env.ledger()
@@ -801,13 +906,17 @@ mod tests {
             })
             .unwrap();
 
-        let voter1 = Address::generate(&env);
-        let voter2 = Address::generate(&env);
+        let voter1 = seeded_voter(&env, &contract_id);
+        let voter2 = seeded_voter(&env, &contract_id);
+        let voter3 = seeded_voter(&env, &contract_id);
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter1, id, true).unwrap()
         });
         env.as_contract(&contract_id, || {
             vote_on_proposal(&env, voter2, id, true).unwrap()
+        });
+        env.as_contract(&contract_id, || {
+            vote_on_proposal(&env, voter3, id, true).unwrap()
         });
 
         env.ledger()
@@ -881,8 +990,8 @@ mod tests {
             })
             .unwrap();
         // Two YES votes meet quorum; the proposal then executes once.
-        for _ in 0..2 {
-            let voter = Address::generate(&env);
+        for _ in 0..3 {
+            let voter = seeded_voter(&env, &contract_id);
             env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
         }
         env.ledger()
@@ -906,8 +1015,8 @@ mod tests {
                 create_proposal(&env, proposer, recipient, 100_000, String::from_str(&env, "Grant"))
             })
             .unwrap();
-        for _ in 0..2 {
-            let voter = Address::generate(&env);
+        for _ in 0..3 {
+            let voter = seeded_voter(&env, &contract_id);
             env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
         }
         // Simulate the treasury being drained after the proposal was created.
@@ -926,5 +1035,129 @@ mod tests {
             .as_contract(&contract_id, || get_treasury_proposal(&env, id))
             .unwrap();
         assert_eq!(p.status, TreasuryProposalStatus::Active);
+    }
+
+    // ── Issue #2105: stake-weighted voting and quorum ───────────────────────
+
+    fn new_funded_proposal(env: &Env, contract_id: &Address, proposer: Address, amount: i128) -> u64 {
+        env.as_contract(contract_id, || deposit_to_treasury(env, 1_000_000));
+        let recipient = Address::generate(env);
+        env.as_contract(contract_id, || {
+            create_proposal(env, proposer, recipient, amount, String::from_str(env, "Grant"))
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn test_two_low_stake_voters_cannot_pass_proposal() {
+        let (env, contract_id, proposer) = setup();
+        let id = new_funded_proposal(&env, &contract_id, proposer, 100_000);
+        for _ in 0..2 {
+            let voter = seeded_voter_with_stake(&env, &contract_id, 10_000_000);
+            env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
+        }
+        env.ledger().with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        let p = env.as_contract(&contract_id, || get_treasury_proposal(&env, id)).unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_two_high_stake_voters_below_minimum_count_cannot_pass() {
+        let (env, contract_id, proposer) = setup();
+        let id = new_funded_proposal(&env, &contract_id, proposer, 100_000);
+        for _ in 0..2 {
+            let voter = seeded_voter_with_stake(&env, &contract_id, TREASURY_MIN_VOTE_WEIGHT);
+            env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
+        }
+        env.ledger().with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        let p = env.as_contract(&contract_id, || get_treasury_proposal(&env, id)).unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_zero_stake_address_cannot_vote() {
+        let (env, contract_id, proposer) = setup();
+        let id = new_funded_proposal(&env, &contract_id, proposer, 100_000);
+        let outsider = Address::generate(&env);
+        let result = env.as_contract(&contract_id, || vote_on_proposal(&env, outsider, id, true));
+        assert_eq!(result, Err(ContractError::NoVouchedStake));
+    }
+
+    #[test]
+    fn test_voter_weight_is_sum_of_vouched_stake() {
+        let (env, contract_id, _proposer) = setup();
+        let voter = seeded_voter_with_stake(&env, &contract_id, 7_000_000);
+        let weight = env.as_contract(&contract_id, || voter_vouched_stake(&env, &voter)).unwrap();
+        assert_eq!(weight, 7_000_000);
+    }
+
+    // ── Issue #2107: passed proposals pay the recipient ─────────────────────
+
+    #[test]
+    fn test_execution_transfers_funds_to_recipient() {
+        let (env, contract_id, proposer) = setup();
+        env.as_contract(&contract_id, || deposit_to_treasury(&env, 1_000_000));
+        let recipient = Address::generate(&env);
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(&env, proposer, recipient.clone(), 100_000, String::from_str(&env, "Grant"))
+            })
+            .unwrap();
+        for _ in 0..3 {
+            let voter = seeded_voter(&env, &contract_id);
+            env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
+        }
+        env.ledger().with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        let token = env.as_contract(&contract_id, || crate::helpers::config(&env).token);
+        let recipient_balance = soroban_sdk::token::Client::new(&env, &token).balance(&recipient);
+        assert_eq!(recipient_balance, 100_000);
+
+        let p = env.as_contract(&contract_id, || get_treasury_proposal(&env, id)).unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::Executed);
+        assert_eq!(env.as_contract(&contract_id, || get_treasury_balance(&env)), 900_000);
+    }
+
+    #[test]
+    fn test_failed_payout_leaves_balance_and_status_unchanged() {
+        let (env, contract_id, proposer) = setup();
+        // Treasury ledger claims more than the contract actually holds in tokens,
+        // so the transfer cannot succeed.
+        let contract_token_holding = 1_000_000_000_000_i128;
+        let claimed_balance = contract_token_holding * 2;
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::TreasuryBalance, &claimed_balance);
+        });
+        let recipient = Address::generate(&env);
+        // Above the 30% threshold, so the proposal routes through admin approval.
+        let amount = contract_token_holding + 1;
+        let id = env
+            .as_contract(&contract_id, || {
+                create_proposal(&env, proposer, recipient, amount, String::from_str(&env, "Big grant"))
+            })
+            .unwrap();
+        for _ in 0..3 {
+            let voter = seeded_voter(&env, &contract_id);
+            env.as_contract(&contract_id, || vote_on_proposal(&env, voter, id, true).unwrap());
+        }
+        env.ledger().with_mut(|l| l.timestamp += TREASURY_VOTING_PERIOD_SECS + 1);
+        env.as_contract(&contract_id, || finalize_proposal(&env, id).unwrap());
+
+        let admin = Address::generate(&env);
+        let result = env.as_contract(&contract_id, || {
+            admin_approve_proposal(&env, Vec::from_array(&env, [admin]), id)
+        });
+        assert_eq!(result, Err(ContractError::TreasuryTransferFailed));
+
+        let p = env.as_contract(&contract_id, || get_treasury_proposal(&env, id)).unwrap();
+        assert_eq!(p.status, TreasuryProposalStatus::PendingAdminApproval);
+        assert_eq!(env.as_contract(&contract_id, || get_treasury_balance(&env)), claimed_balance);
     }
 }

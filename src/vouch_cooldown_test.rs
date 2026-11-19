@@ -167,6 +167,7 @@ fn test_approved_bypass_allows_vouch_before_cooldown_expires() {
             requested_at: env.ledger().timestamp(),
             approvers: Vec::from_array(&env, [admin.clone()]),
             approved: true,
+            expires_at: env.ledger().timestamp() + crate::types::COOLDOWN_BYPASS_VALIDITY_SECS,
         };
         env.storage().persistent().set(&key, &request);
     });

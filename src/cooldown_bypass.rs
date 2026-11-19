@@ -6,7 +6,10 @@
 /// cooldown is skipped for that (voucher, borrower) pair.
 use soroban_sdk::{Address, Env, String, Vec};
 use crate::errors::ContractError;
-use crate::types::{CooldownBypassRequest, DataKey, VouchRecord};
+use crate::types::{
+    CooldownBypassRequest, DataKey, VouchRecord, COOLDOWN_BYPASS_VALIDITY_SECS,
+    MAX_COOLDOWN_BYPASS_REASON_LEN,
+};
 
 /// Number of admin approvals required to reach the 2/3 threshold for `total_admins`.
 fn required_approvals(total_admins: u32) -> u32 {
@@ -28,6 +31,10 @@ pub fn request_cooldown_bypass(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
 
+    if reason.len() > MAX_COOLDOWN_BYPASS_REASON_LEN {
+        return Err(ContractError::CooldownBypassReasonTooLong);
+    }
+
     let vouches: Vec<VouchRecord> = env
         .storage()
         .persistent()
@@ -37,18 +44,27 @@ pub fn request_cooldown_bypass(
         return Err(ContractError::VoucherNotFound);
     }
 
+    let now = env.ledger().timestamp();
     let key = DataKey::CooldownBypass(borrower.clone(), voucher.clone());
-    if env.storage().persistent().get::<DataKey, CooldownBypassRequest>(&key).is_some() {
-        return Err(ContractError::CooldownBypassAlreadyRequested);
+    if let Some(existing) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, CooldownBypassRequest>(&key)
+    {
+        // An expired record no longer blocks a fresh request.
+        if now <= existing.expires_at {
+            return Err(ContractError::CooldownBypassAlreadyRequested);
+        }
     }
 
     let request = CooldownBypassRequest {
         voucher: voucher.clone(),
         borrower: borrower.clone(),
         reason,
-        requested_at: env.ledger().timestamp(),
+        requested_at: now,
         approvers: Vec::new(&env),
         approved: false,
+        expires_at: now + COOLDOWN_BYPASS_VALIDITY_SECS,
     };
     env.storage().persistent().set(&key, &request);
 
@@ -87,6 +103,11 @@ pub fn vote_bypass(
         return Err(ContractError::CooldownBypassAlreadyApproved);
     }
 
+    let now = env.ledger().timestamp();
+    if now > request.expires_at {
+        return Err(ContractError::CooldownBypassExpired);
+    }
+
     if !approve {
         env.events().publish(
             ("cooldown_bypass", "rejected"),
@@ -102,6 +123,8 @@ pub fn vote_bypass(
 
     if request.approvers.len() >= required_approvals(cfg.admins.len()) {
         request.approved = true;
+        // The validity window restarts at approval so the voucher has a full window to use it.
+        request.expires_at = now + COOLDOWN_BYPASS_VALIDITY_SECS;
     }
 
     env.storage().persistent().set(&key, &request);
@@ -114,14 +137,29 @@ pub fn vote_bypass(
     Ok(())
 }
 
-/// Check if a voucher has an approved cooldown bypass for a given borrower.
+/// Check if a voucher has a usable (approved, unexpired) cooldown bypass for a given borrower.
 pub fn has_cooldown_bypass(env: &Env, voucher: &Address, borrower: &Address) -> bool {
     let key = DataKey::CooldownBypass(borrower.clone(), voucher.clone());
+    let now = env.ledger().timestamp();
     env.storage()
         .persistent()
         .get::<DataKey, CooldownBypassRequest>(&key)
-        .map(|r| r.approved)
+        .map(|r| r.approved && now <= r.expires_at)
         .unwrap_or(false)
+}
+
+/// Consume an approved cooldown bypass after it has been used to skip the cooldown.
+///
+/// Each approval grants exactly one waiver: the record is removed so a second vouch
+/// inside the cooldown window requires a new request and approval. Callers must only
+/// invoke this after `has_cooldown_bypass` returned `true`.
+pub fn consume_cooldown_bypass(env: &Env, voucher: &Address, borrower: &Address) {
+    let key = DataKey::CooldownBypass(borrower.clone(), voucher.clone());
+    env.storage().persistent().remove(&key);
+    env.events().publish(
+        ("cooldown_bypass", "consumed"),
+        (borrower.clone(), voucher.clone()),
+    );
 }
 
 /// Fetch the raw bypass request record for `(voucher, borrower)`, if any.

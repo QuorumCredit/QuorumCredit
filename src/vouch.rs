@@ -248,6 +248,8 @@ fn validate_vouch<'a>(
             if !crate::cooldown_bypass::has_cooldown_bypass(env, voucher, borrower) {
                 return Err(ContractError::VouchCooldownActive);
             }
+            // One approval buys one waiver (issue #2104).
+            crate::cooldown_bypass::consume_cooldown_bypass(env, voucher, borrower);
         }
     }
 
