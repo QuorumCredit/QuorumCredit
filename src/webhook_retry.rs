@@ -80,6 +80,9 @@ pub struct CircuitBreaker {
     pub cooldown_secs: u64,
     /// Timestamp when the circuit was last opened (0 if never opened).
     pub opened_at: u64,
+    /// `true` while the single half-open probe has been admitted and its
+    /// outcome has not yet been recorded. Blocks every other caller.
+    pub probe_in_flight: bool,
 }
 
 impl CircuitBreaker {
@@ -91,6 +94,7 @@ impl CircuitBreaker {
             failure_threshold: DEFAULT_FAILURE_THRESHOLD,
             opened_at: 0,
             cooldown_secs: DEFAULT_COOLDOWN_SECS,
+            probe_in_flight: false,
         }
     }
 
@@ -102,27 +106,39 @@ impl CircuitBreaker {
             failure_threshold,
             opened_at: 0,
             cooldown_secs,
+            probe_in_flight: false,
         }
     }
 
     /// Returns `true` if a delivery attempt should proceed right now.
     ///
     /// - `Closed`   → always allow.
-    /// - `Open`     → deny unless the cooldown has elapsed (transitions to `HalfOpen`).
-    /// - `HalfOpen` → allow one probe attempt.
+    /// - `Open`     → deny unless the cooldown has elapsed (transitions to `HalfOpen`
+    ///                and admits the single probe).
+    /// - `HalfOpen` → admit exactly one probe; every other caller is denied until
+    ///                that probe's outcome is recorded via `record_success` or
+    ///                `record_failure`.
     pub fn allow_request(&mut self, current_timestamp: u64) -> bool {
-        if self.state == CircuitState::Closed {
-            return true;
-        }
-        if self.state == CircuitState::Open {
-            if current_timestamp >= self.opened_at + self.cooldown_secs {
-                self.state = CircuitState::HalfOpen;
-                return true;
+        match self.state {
+            CircuitState::Closed => true,
+            CircuitState::Open => {
+                if current_timestamp >= self.opened_at + self.cooldown_secs {
+                    self.state = CircuitState::HalfOpen;
+                    self.probe_in_flight = true;
+                    true
+                } else {
+                    false
+                }
             }
-            return false;
+            CircuitState::HalfOpen => {
+                if self.probe_in_flight {
+                    false
+                } else {
+                    self.probe_in_flight = true;
+                    true
+                }
+            }
         }
-        // HalfOpen — allow the probe
-        true
     }
 
     /// Record a successful delivery.
@@ -131,12 +147,14 @@ impl CircuitBreaker {
     pub fn record_success(&mut self) {
         self.state = CircuitState::Closed;
         self.consecutive_failures = 0;
+        self.probe_in_flight = false;
     }
 
     /// Record a failed delivery.
     ///
     /// Increments the failure counter. If the counter reaches `failure_threshold`
-    /// (or the circuit was half-open), the circuit opens and the cooldown starts.
+    /// (or the circuit was half-open, i.e. the probe failed), the circuit opens
+    /// and the cooldown restarts.
     pub fn record_failure(&mut self, current_timestamp: u64) {
         self.consecutive_failures += 1;
         let should_open = self.state == CircuitState::HalfOpen
@@ -144,6 +162,7 @@ impl CircuitBreaker {
         if should_open {
             self.state = CircuitState::Open;
             self.opened_at = current_timestamp;
+            self.probe_in_flight = false;
         }
     }
 
@@ -211,8 +230,14 @@ impl WebhookRetryState {
 
     /// Calculate next retry delay using exponential backoff.
     /// Delay = min(INITIAL_BACKOFF_SECS * 2^retry_count, MAX_BACKOFF_SECS)
+    ///
+    /// The shift is checked: a `retry_count` of 64 or more (which would
+    /// overflow `u64`) yields the cap instead of panicking or wrapping.
     pub fn calculate_next_backoff(&self) -> u64 {
-        let backoff = INITIAL_BACKOFF_SECS * (1 << self.retry_count);
+        let backoff = match 1u64.checked_shl(self.retry_count) {
+            Some(factor) => INITIAL_BACKOFF_SECS.saturating_mul(factor),
+            None => return MAX_BACKOFF_SECS,
+        };
         if backoff > MAX_BACKOFF_SECS {
             MAX_BACKOFF_SECS
         } else {
@@ -323,6 +348,25 @@ mod tests {
     }
 
     #[test]
+    fn test_backoff_does_not_overflow_at_high_retry_count() {
+        let env = Env::default();
+        let mut state = WebhookRetryState::new(
+            1,
+            WebhookEventType::LoanRequested,
+            make_url(&env),
+            make_payload(&env),
+            1000,
+        );
+
+        // 1 << 64 would overflow a u64 shift; must clamp to the cap.
+        state.retry_count = 64;
+        assert_eq!(state.calculate_next_backoff(), MAX_BACKOFF_SECS);
+
+        state.retry_count = u32::MAX;
+        assert_eq!(state.calculate_next_backoff(), MAX_BACKOFF_SECS);
+    }
+
+    #[test]
     fn test_should_retry() {
         let env = Env::default();
         let mut state = WebhookRetryState::new(
@@ -421,6 +465,34 @@ mod tests {
         cb.record_failure(1061); // probe fails → back to open
         assert!(matches!(cb.state, CircuitState::Open));
         assert_eq!(cb.opened_at, 1061);
+    }
+
+    #[test]
+    fn test_half_open_admits_exactly_one_probe() {
+        let mut cb = CircuitBreaker::with_config(1, 60);
+        cb.record_failure(1000);
+
+        // Cooldown elapses: ten concurrent callers race for the half-open slot.
+        let admitted = (0..10).filter(|_| cb.allow_request(1061)).count();
+        assert_eq!(admitted, 1);
+        assert!(matches!(cb.state, CircuitState::HalfOpen));
+
+        // Further callers stay blocked while the probe is outstanding.
+        assert!(!cb.allow_request(1062));
+    }
+
+    #[test]
+    fn test_half_open_failed_probe_reopens_and_blocks() {
+        let mut cb = CircuitBreaker::with_config(1, 60);
+        cb.record_failure(1000);
+        assert!(cb.allow_request(1061)); // the probe
+        cb.record_failure(1061); // probe fails
+
+        assert!(matches!(cb.state, CircuitState::Open));
+        assert!(!cb.allow_request(1062));
+        // After a fresh cooldown, a new single probe is admitted.
+        let admitted = (0..10).filter(|_| cb.allow_request(1121)).count();
+        assert_eq!(admitted, 1);
     }
 
     #[test]

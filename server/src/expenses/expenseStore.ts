@@ -6,10 +6,20 @@ export function isExpenseCategory(value: unknown): value is ExpenseCategory {
   return typeof value === "string" && (CATEGORIES as string[]).includes(value);
 }
 
+/**
+ * Expense amounts are integer minor units (cents). Binary floating point
+ * cannot represent values such as 0.1 exactly, so fractional amounts are
+ * rejected and all totals are sums of integers.
+ */
+export function isValidExpenseAmount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 export interface Expense {
   id: number;
   loanId: string;
   category: ExpenseCategory;
+  /** Integer minor units (cents). */
   amount: number;
   description: string;
   recordedAt: number;
@@ -43,6 +53,9 @@ export class ExpenseStore {
   }
 
   addExpense(loanId: string, category: ExpenseCategory, amount: number, description: string): Expense {
+    if (!isValidExpenseAmount(amount)) {
+      throw new RangeError("expense amount must be a positive integer number of minor units");
+    }
     const expense: Expense = {
       id: this.nextId++,
       loanId,

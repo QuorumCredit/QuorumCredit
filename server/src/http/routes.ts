@@ -5,7 +5,7 @@ import { issueToken } from "../auth/tokens.js";
 import { loadApiKeyStore, type ApiKeyStore } from "../auth/apiKeyStore.js";
 import { defaultAuthRateLimiter, type AuthRateLimiter } from "../auth/rateLimiter.js";
 import { metrics } from "./metricsRegistry.js";
-import { expenseStore, isExpenseCategory } from "../expenses/expenseStore.js";
+import { expenseStore, isExpenseCategory, isValidExpenseAmount } from "../expenses/expenseStore.js";
 import { loanCartStore } from "../cart/loanCartStore.js";
 import { batchVerificationStore } from "../batch/batchVerificationStore.js";
 import { auditReportGenerator, type ReportFormat } from "../batch/auditReportGenerator.js";
@@ -249,9 +249,9 @@ export function handleHttpRequest(
             res.end(JSON.stringify({ error: "category must be one of business, education, healthcare, other" }));
             return;
           }
-          if (typeof body.amount !== "number" || !Number.isFinite(body.amount) || body.amount <= 0) {
+          if (!isValidExpenseAmount(body.amount)) {
             res.writeHead(400, { "content-type": "application/json" });
-            res.end(JSON.stringify({ error: "amount must be a positive number" }));
+            res.end(JSON.stringify({ error: "amount must be a positive integer number of minor units (cents)" }));
             return;
           }
           const category = body.category;

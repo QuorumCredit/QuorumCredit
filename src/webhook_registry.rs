@@ -114,8 +114,10 @@ impl WebhookRegistry {
 
     /// Unregister a specific URL subscription for `owner` on `subject`.
     ///
-    /// Marks the matching subscription inactive rather than removing it,
-    /// preserving the audit trail.
+    /// The matching subscription is removed from storage, and any inactive
+    /// entries left in the list are pruned at the same time. Keeping them
+    /// would let the stored vector grow without bound, since the per-subject
+    /// limit only counts active entries.
     ///
     /// # Errors
     ///
@@ -130,7 +132,7 @@ impl WebhookRegistry {
         owner.require_auth();
 
         let key = WebhookRegistryKey::Subscriptions(subject.clone(), owner.clone());
-        let mut subs: Vec<WebhookSubscription> = env
+        let subs: Vec<WebhookSubscription> = env
             .storage()
             .persistent()
             .get(&key)
@@ -138,10 +140,14 @@ impl WebhookRegistry {
 
         let mut found = false;
         let mut updated: Vec<WebhookSubscription> = Vec::new(env);
-        for mut sub in subs.iter() {
-            if sub.active && sub.url == url {
-                sub.active = false;
+        for sub in subs.iter() {
+            if !sub.active {
+                // Prune previously deactivated entries.
+                continue;
+            }
+            if sub.url == url {
                 found = true;
+                continue;
             }
             updated.push_back(sub);
         }
@@ -309,6 +315,31 @@ mod tests {
 
         let subs = WebhookRegistry::get_subscriptions(&env, owner.clone(), subject.clone());
         assert_eq!(subs.len(), 0);
+    }
+
+    #[test]
+    fn test_unregister_prunes_inactive_entries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let owner = Address::generate(&env);
+        let subject = String::from_str(&env, "borrower_events");
+
+        for i in 0..1000u32 {
+            let url_str = std::format!("https://example.com/hook{}", i);
+            let url = String::from_str(&env, &url_str);
+            WebhookRegistry::register(&env, owner.clone(), subject.clone(), url.clone()).unwrap();
+            WebhookRegistry::unregister(&env, owner.clone(), subject.clone(), url).unwrap();
+        }
+
+        // The stored list must not retain deactivated entries.
+        let key = WebhookRegistryKey::Subscriptions(subject.clone(), owner.clone());
+        let stored: Vec<WebhookSubscription> =
+            env.storage().persistent().get(&key).unwrap_or_else(|| Vec::new(&env));
+        assert_eq!(stored.len(), 0);
+        assert_eq!(
+            WebhookRegistry::get_subscriptions(&env, owner, subject).len(),
+            0
+        );
     }
 
     #[test]
