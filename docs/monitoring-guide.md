@@ -382,6 +382,27 @@ sqlite3 /data/indexer.db "SELECT ledger, value_json FROM events WHERE category =
 4. Re-evaluate `insurance_fund_low_bal_thresh` if it is firing too early
    or too late relative to typical claim sizes.
 
+## Observability Stack Image Upgrades
+
+`docker-compose.observability.yml` pins every image to an exact version tag
+(Prometheus, Grafana, Jaeger, Alertmanager, Pushgateway and node-exporter).
+Floating tags such as `:latest` are not used, so a host pull cannot change
+major versions and break dashboards or alert rules.
+
+Upgrade procedure:
+
+1. Renovate (`renovate.json`) opens a grouped `observability stack` PR when a
+   new tag is published. Approve it from the Renovate dependency dashboard.
+2. Read the upstream release notes for each changed image, paying attention to
+   breaking changes in PromQL, dashboard provisioning, and alert rule syntax.
+3. Bring the stack up from the pinned tags and check the targets page and the
+   three dashboards in this guide:
+   `docker compose -f docker-compose.observability.yml up -d`
+4. Confirm the alert rules load without errors (Prometheus `/rules`) and that
+   Alertmanager receives a test alert.
+5. Merge only after the checks pass. To roll back, revert the tag change in
+   `docker-compose.observability.yml` and redeploy.
+
 ## Monitoring Setup Checklist
 
 - [ ] Prometheus installed and configured

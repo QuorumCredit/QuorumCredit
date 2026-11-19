@@ -1,3 +1,16 @@
+locals {
+  # Resolve each per-environment setting: an explicit variable wins, otherwise the
+  # preset from local.environment_defaults[var.environment] (variables.tf) applies.
+  env_preset = local.environment_defaults[var.environment]
+  eks_desired_size = var.eks_desired_size != null ? var.eks_desired_size : local.env_preset.eks_desired_size
+  eks_min_size = var.eks_min_size != null ? var.eks_min_size : local.env_preset.eks_min_size
+  eks_max_size = var.eks_max_size != null ? var.eks_max_size : local.env_preset.eks_max_size
+  eks_instance_types = var.eks_instance_types != null ? var.eks_instance_types : local.env_preset.eks_instance_types
+  db_instance_class = var.db_instance_class != null ? var.db_instance_class : local.env_preset.db_instance_class
+  enable_nat_gateway = var.enable_nat_gateway != null ? var.enable_nat_gateway : local.env_preset.enable_nat_gateway
+  single_nat_gateway = var.single_nat_gateway != null ? var.single_nat_gateway : local.env_preset.single_nat_gateway
+}
+
 terraform {
   required_version = ">= 1.5.0"
 
@@ -72,8 +85,8 @@ module "vpc" {
   private_subnet_cidrs     = var.private_subnet_cidrs
   public_subnet_cidrs      = var.public_subnet_cidrs
   database_subnet_cidrs    = var.database_subnet_cidrs
-  enable_nat_gateway       = var.enable_nat_gateway
-  single_nat_gateway       = var.single_nat_gateway
+  enable_nat_gateway       = local.enable_nat_gateway
+  single_nat_gateway       = local.single_nat_gateway
   enable_dns_hostnames     = true
   enable_dns_support       = true
 
@@ -96,10 +109,10 @@ module "eks" {
     general = {
       name           = "general"
       capacity_type  = "ON_DEMAND"
-      desired_size   = var.eks_desired_size
-      min_size       = var.eks_min_size
-      max_size       = var.eks_max_size
-      instance_types = var.eks_instance_types
+      desired_size   = local.eks_desired_size
+      min_size       = local.eks_min_size
+      max_size       = local.eks_max_size
+      instance_types = local.eks_instance_types
       disk_size      = var.eks_disk_size
 
       labels = {
@@ -153,7 +166,7 @@ module "rds" {
   deletion_protection        = true
   final_snapshot_identifier  = "quorum-credit-${var.environment}-final-snapshot"
 
-  instance_class             = var.db_instance_class
+  instance_class             = local.db_instance_class
   allocated_storage           = var.db_allocated_storage
   max_allocated_storage       = var.db_max_allocated_storage
   storage_encrypted           = true

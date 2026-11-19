@@ -53,13 +53,13 @@ variable "database_subnet_cidrs" {
 variable "enable_nat_gateway" {
   description = "Enable NAT Gateway for private subnets"
   type        = bool
-  default     = true
+  default     = null # null = use environment preset
 }
 
 variable "single_nat_gateway" {
   description = "Use a single NAT Gateway for all private subnets"
   type        = bool
-  default     = false  # Use multiple for HA
+  default     = null # null = use environment preset (multiple for prod/staging)
 }
 
 # EKS Configuration
@@ -72,9 +72,9 @@ variable "kubernetes_version" {
 variable "eks_desired_size" {
   description = "Desired number of worker nodes"
   type        = number
-  default     = 3
+  default     = null # null = use environment preset
   validation {
-    condition     = var.eks_desired_size >= 2
+    condition     = var.eks_desired_size == null ? true : var.eks_desired_size >= 2
     error_message = "Must have at least 2 nodes for HA."
   }
 }
@@ -82,19 +82,19 @@ variable "eks_desired_size" {
 variable "eks_min_size" {
   description = "Minimum number of worker nodes"
   type        = number
-  default     = 2
+  default     = null # null = use environment preset
 }
 
 variable "eks_max_size" {
   description = "Maximum number of worker nodes"
   type        = number
-  default     = 10
+  default     = null # null = use environment preset
 }
 
 variable "eks_instance_types" {
   description = "EC2 instance types for worker nodes"
   type        = list(string)
-  default     = ["t3.xlarge", "t3.2xlarge"]
+  default     = null # null = use environment preset
 }
 
 variable "eks_disk_size" {
@@ -119,9 +119,9 @@ variable "db_password" {
 variable "db_instance_class" {
   description = "RDS instance class"
   type        = string
-  default     = "db.t3.large"
+  default     = null # null = use local.environment_defaults[var.environment]
   validation {
-    condition     = contains(["db.t3.large", "db.t3.xlarge", "db.r5.large", "db.r5.xlarge"], var.db_instance_class)
+    condition     = var.db_instance_class == null ? true : contains(["db.t3.small", "db.t3.large", "db.t3.xlarge", "db.r5.large", "db.r5.xlarge"], var.db_instance_class)
     error_message = "Use production-grade instance types."
   }
 }

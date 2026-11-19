@@ -1,0 +1,66 @@
+name: Terraform Validate
+
+# Validates the Terraform configuration for every environment preset so that
+# environment-specific values (e.g. the dev preset's db.t3.small) are checked in CI.
+
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-validate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    defaults:
+      run:
+        working-directory: terraform
+    env:
+      # Placeholder values: validate does not contact AWS and needs no real secrets.
+      TF_VAR_db_username: ci-placeholder
+      TF_VAR_db_password: ci-placeholder-password
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: Init without backend
+        run: terraform init -backend=false -input=false
+
+      - name: Validate configuration
+        run: terraform validate
+
+      - name: Configure AWS credentials
+        if: ${{ secrets.AWS_ROLE_ARN != '' }}
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Check environment preset is accepted by the variable validation
+        run: |
+          # Passing the environment's tfvars through a plan evaluates every variable
+          # validation block against that environment's values. Plan needs AWS
+          # credentials for data sources, so it runs only when they are configured.
+          if [ -z "${AWS_ROLE_ARN:-}" ]; then
+            echo "AWS_ROLE_ARN not configured; skipping plan for ${{ matrix.environment }}"
+            exit 0
+          fi
+          terraform plan -input=false -lock=false -refresh=false \
+            -var-file=environments/${{ matrix.environment }}.tfvars -out=tfplan-${{ matrix.environment }}
+        env:
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}

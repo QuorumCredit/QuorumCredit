@@ -1,0 +1,4 @@
+{
+  "_comment": "Accepted dependency advisories. Each entry needs an id, an expires date (YYYY-MM-DD) and a reason. Expired entries are ignored, so the advisory blocks the build again. Keep this list short and review it when it expires.",
+  "advisories": []
+}

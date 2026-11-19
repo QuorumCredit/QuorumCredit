@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "docker-compose": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "description": "Observability images are pinned to exact tags; group upgrades and require review",
+      "matchFileNames": ["docker-compose.observability.yml"],
+      "matchDatasources": ["docker"],
+      "groupName": "observability stack",
+      "dependencyDashboardApproval": true,
+      "labels": ["dependencies", "observability"]
+    }
+  ]
+}

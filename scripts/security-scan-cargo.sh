@@ -1,12 +1,18 @@
 #!/bin/bash
 
 # Issue #1579: Rust Dependencies Security Scan
-# Scans Rust dependencies for known vulnerabilities
+# Scans Rust dependencies for known vulnerabilities.
+# Issue #2091: fails the build on high, critical or unknown-severity advisories
+# that are not accepted in security/audit-allowlist.json.
 
 set -euo pipefail
 
 REPO_ROOT="$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")"
 REPORT_DIR="$REPO_ROOT/security/reports"
+REPORT="$REPORT_DIR/cargo-audit.json"
+
+# shellcheck source=lib/audit-gate.sh
+source "$REPO_ROOT/scripts/lib/audit-gate.sh"
 
 log_info() { echo "ℹ️  $*" >&2; }
 log_success() { echo "✅ $*" >&2; }
@@ -17,30 +23,35 @@ mkdir -p "$REPORT_DIR"
 
 log_info "Running Cargo Audit for Rust dependencies..."
 
-# Run cargo-audit and capture both output and exit code
-if cargo audit --json > "$REPORT_DIR/cargo-audit.json" 2>&1; then
+# cargo audit exits non-zero when it finds vulnerabilities, so the exit code
+# is recorded and the JSON report decides the result.
+set +e
+cargo audit --json > "$REPORT" 2>"$REPORT_DIR/cargo-audit.stderr"
+audit_rc=$?
+set -e
+
+if ! jq -e '.vulnerabilities' "$REPORT" >/dev/null 2>&1; then
+  log_error "cargo audit did not produce a readable JSON report (exit $audit_rc)"
+  exit 1
+fi
+
+found=$(jq '.vulnerabilities.count // 0' "$REPORT")
+if [ "$found" -eq 0 ]; then
   log_success "Cargo Audit completed - no vulnerabilities found"
   exit 0
-else
-  exit_code=$?
-  log_warn "Cargo Audit found vulnerabilities (exit code: $exit_code)"
-
-  # Parse and analyze results
-  if command -v jq &> /dev/null; then
-    critical_count=$(jq '[.vulnerabilities[] | select(.advisory.severity == "critical")] | length' "$REPORT_DIR/cargo-audit.json" 2>/dev/null || echo 0)
-    high_count=$(jq '[.vulnerabilities[] | select(.advisory.severity == "high")] | length' "$REPORT_DIR/cargo-audit.json" 2>/dev/null || echo 0)
-    medium_count=$(jq '[.vulnerabilities[] | select(.advisory.severity == "medium")] | length' "$REPORT_DIR/cargo-audit.json" 2>/dev/null || echo 0)
-
-    log_info "Vulnerability Summary:"
-    log_error "Critical: $critical_count"
-    log_warn "High: $high_count"
-    log_warn "Medium: $medium_count"
-
-    if [ "$critical_count" -gt 0 ]; then
-      log_error "Critical vulnerabilities found in Rust dependencies"
-      exit 1
-    fi
-  fi
-
-  exit 0
 fi
+
+log_warn "Cargo Audit reported $found vulnerabilities"
+jq -r '.vulnerabilities.list[]? | "  - \(.advisory.id) (\(.advisory.severity // "unknown")) \(.package.name // "?")@\(.package.version // "?")"' "$REPORT" >&2
+
+blocking=$(jq -r '.vulnerabilities.list[]? | [.advisory.id, (.advisory.severity // "unknown")] | @tsv' "$REPORT" \
+  | audit_gate_blocking)
+
+if [ -n "$blocking" ]; then
+  log_error "Blocking Rust advisories (high/critical/unknown and not allowlisted):"
+  printf '%s\n' "$blocking" | sed 's/^/  - /' >&2
+  exit 1
+fi
+
+log_success "Cargo Audit: no blocking advisories (medium/low or allowlisted)"
+exit 0

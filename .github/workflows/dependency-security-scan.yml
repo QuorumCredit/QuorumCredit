@@ -37,12 +37,12 @@ jobs:
 
       - name: Run Cargo Audit
         id: audit
-        continue-on-error: true
         run: |
           chmod +x ./scripts/security-scan-cargo.sh
           ./scripts/security-scan-cargo.sh
 
       - name: Upload Cargo Audit Report
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cargo-audit-report
@@ -67,17 +67,50 @@ jobs:
 
       - name: Run npm audit
         id: npm-audit
-        continue-on-error: true
         run: |
           chmod +x ./scripts/security-scan-npm.sh
           ./scripts/security-scan-npm.sh
 
       - name: Upload npm Audit Report
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: npm-audit-report-node-${{ matrix.node-version }}
           path: security/reports/npm-audit.json
           retention-days: 30
+
+  audit-gate-known-vulnerable:
+    # Issue #2091: the gate must fail a build that contains a known-vulnerable
+    # dependency. A fixture pins lodash@4.17.15 (high-severity advisories) and the
+    # npm gate must exit non-zero. If it passes, the gate is not blocking.
+    name: Audit gate rejects a known-vulnerable dependency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20.x
+
+      - name: Build a fixture with a known-vulnerable version
+        run: |
+          mkdir -p "$RUNNER_TEMP/vulnerable-fixture"
+          cd "$RUNNER_TEMP/vulnerable-fixture"
+          printf '%s\n' '{' '  "name": "audit-gate-fixture",' '  "version": "1.0.0",' \
+            '  "private": true,' '  "dependencies": { "lodash": "4.17.15" }' '}' > package.json
+          npm install --package-lock-only --ignore-scripts
+
+      - name: Run npm gate against the fixture (must fail)
+        run: |
+          set +e
+          (cd "$RUNNER_TEMP/vulnerable-fixture" && bash "$GITHUB_WORKSPACE/scripts/security-scan-npm.sh")
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "::error::npm audit gate passed on a known-vulnerable dependency"
+            exit 1
+          fi
+          echo "Gate correctly rejected the known-vulnerable dependency (exit $rc)"
 
   snyk-scan:
     name: Snyk Vulnerability Scanning
