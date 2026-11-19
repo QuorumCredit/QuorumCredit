@@ -1,12 +1,12 @@
 use soroban_sdk::{Address, Bytes, Env};
 
-use crate::types::Result;
+use crate::errors::ContractError;
 
 pub fn register_performance_contract(
     env: &Env,
     attestor: Address,
     contract: Bytes,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("perf_contract", &attestor);
     env.storage().persistent().set(&key, &contract);
     Ok(())
@@ -20,7 +20,7 @@ pub fn get_performance_contract(env: &Env, attestor: &Address) -> Option<Bytes> 
 pub fn track_performance_against_slas(
     env: &Env,
     attestor: &Address,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("perf_tracked", attestor);
     env.storage().persistent().set(&key, &true);
     Ok(())
@@ -35,7 +35,7 @@ pub fn record_performance_metric(
     env: &Env,
     attestor: &Address,
     metric_value: u64,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("perf_metric", attestor);
     env.storage().persistent().set(&key, &metric_value);
     Ok(())
@@ -50,7 +50,7 @@ pub fn implement_breach_notifications(
     env: &Env,
     attestor: &Address,
     breach_reason: Bytes,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("perf_breach", attestor);
     env.storage().persistent().set(&key, &breach_reason);
 
@@ -71,7 +71,7 @@ pub fn get_breach_count(env: &Env, attestor: &Address) -> u64 {
     env.storage().persistent().get(&key).unwrap_or(0)
 }
 
-pub fn clear_breach_notification(env: &Env, attestor: &Address) -> Result<()> {
+pub fn clear_breach_notification(env: &Env, attestor: &Address) -> Result<(), ContractError> {
     let key = ("perf_breach", attestor);
     if env.storage().persistent().has(&key) {
         env.storage().persistent().remove(&key);

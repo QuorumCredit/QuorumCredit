@@ -1,6 +1,8 @@
+import difflib
 import math
 import os
 import sys
+from pathlib import Path
 
 # Ensure parent directory is in Python path for scripts.fixtures imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -228,9 +230,41 @@ Note: Redesign Capital includes both the required stake (locked capital) and acc
     return report
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DOC_PATH = REPO_ROOT / "docs" / "economic_security_model.md"
+GENERATED_PATH = REPO_ROOT / "docs" / "economic_security_model.generated.md"
+
+
+def publish_report(report: str, update_doc: bool) -> int:
+    """Write the report to a generated file, diff it against the hand-edited doc,
+    and replace the doc only when explicitly asked (``--update-doc``)."""
+    GENERATED_PATH.write_text(report)
+    old = DOC_PATH.read_text() if DOC_PATH.exists() else ""
+    diff = list(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            report.splitlines(keepends=True),
+            fromfile=str(DOC_PATH.relative_to(REPO_ROOT)),
+            tofile=str(GENERATED_PATH.relative_to(REPO_ROOT)),
+        )
+    )
+    if not diff:
+        print("docs/economic_security_model.md is already up to date.")
+        return 0
+    sys.stdout.writelines(diff)
+    if update_doc:
+        DOC_PATH.write_text(report)
+        print(f"Replaced {DOC_PATH.relative_to(REPO_ROOT)}")
+    else:
+        print(
+            f"{DOC_PATH.relative_to(REPO_ROOT)} not modified; review the diff above "
+            "and re-run with --update-doc to replace it."
+        )
+    return 0
+
+
 if __name__ == "__main__":
     report = run_simulations()
     print(report)
-    with open("docs/economic_security_model.md", "w") as f:
-        f.write(report)
+    sys.exit(publish_report(report, update_doc="--update-doc" in sys.argv))
 

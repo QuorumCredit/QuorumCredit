@@ -1,12 +1,12 @@
 use soroban_sdk::{Address, Bytes, Env};
 
-use crate::types::Result;
+use crate::errors::ContractError;
 
 pub fn register_attestor_specialization(
     env: &Env,
     attestor: Address,
     spec: Bytes,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("attestor_spec", &attestor);
     env.storage().persistent().set(&key, &spec);
     Ok(())
@@ -26,7 +26,7 @@ pub fn match_credentials_to_specialized_attestors(
     matched_attestors
 }
 
-pub fn create_specialization_registry(env: &Env) -> Result<()> {
+pub fn create_specialization_registry(env: &Env) -> Result<(), ContractError> {
     let key = "spec_registry_initialized";
     if env.storage().persistent().has(&key) {
         return Ok(());

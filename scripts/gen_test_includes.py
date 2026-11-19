@@ -79,16 +79,23 @@ def orphans_listed() -> set[str]:
     }
 
 
-def write() -> int:
-    text = TESTS_RS.read_text()
-    block = generated_block()
+def splice_block(text: str, block: str) -> str:
+    """Replace the generated block in ``text`` with ``block``, keeping everything after it.
+
+    The END marker may be the last line of the file with or without a trailing newline.
+    """
     if BEGIN in text and END in text:
         head, rest = text.split(BEGIN, 1)
-        _, tail = rest.split(END + "\n", 1)
-        new = head + block + tail
-    else:
-        new = block + TRAILER
-    TESTS_RS.write_text(new)
+        _, tail = rest.split(END, 1)
+        if tail.startswith("\n"):
+            tail = tail[1:]
+        return head + block + tail
+    return block + TRAILER
+
+
+def write() -> int:
+    text = TESTS_RS.read_text()
+    TESTS_RS.write_text(splice_block(text, generated_block()))
     print(f"Wrote {TESTS_RS.relative_to(ROOT)}")
     return 0
 

@@ -1,13 +1,13 @@
 use soroban_sdk::{Address, Env};
 
-use crate::types::Result;
+use crate::errors::ContractError;
 
 pub fn migrate_credential_slice(
     env: &Env,
     credential_id: &Address,
     old_slice: &Address,
     new_slice: &Address,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("credential_slice", credential_id);
     env.storage().persistent().set(&key, new_slice);
 
@@ -43,7 +43,7 @@ pub fn set_slice_compatibility(
     env: &Env,
     slice_id: &Address,
     compatible: bool,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("slice_compat", slice_id);
     env.storage().persistent().set(&key, &compatible);
     Ok(())
@@ -61,9 +61,9 @@ pub fn implement_slice_migration_protocol(
     credential_id: &Address,
     old_slice: &Address,
     new_slice: &Address,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     if !verify_slice_compatibility(env, credential_id, new_slice) {
-        return Err(crate::types::Error::InvalidOperation);
+        return Err(ContractError::InvalidStateTransition);
     }
 
     migrate_credential_slice(env, credential_id, old_slice, new_slice)

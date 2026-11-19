@@ -198,6 +198,8 @@ mod request_loan_yield_test;
 mod quorum_slice_migration_test;
 #[cfg(test)]
 mod quorum_slice_rebalancing_test;
+// Issue #2099 — one test per quorum-slice wrapper in lib.rs.
+mod quorum_slice_wrappers_test;
 #[cfg(test)]
 mod repay_nonexistent_loan_test;
 #[cfg(test)]
@@ -5202,10 +5204,11 @@ impl QuorumCreditContract {
         env: Env,
         admin_signers: Vec<Address>,
         borrower: Address,
-        target_slice: u64,
+        old_slice: Address,
+        new_slice: Address,
     ) -> Result<(), ContractError> {
         helpers::require_admin_approval(&env, &admin_signers);
-        quorum_slice_migration::migrate_credential_slice(&env, &borrower, target_slice)
+        quorum_slice_migration::migrate_credential_slice(&env, &borrower, &old_slice, &new_slice)
     }
 
     /// Issue #2002: Run the full slice migration protocol for a borrower.
@@ -5214,19 +5217,20 @@ impl QuorumCreditContract {
         env: Env,
         admin_signers: Vec<Address>,
         borrower: Address,
-        target_slice: u64,
+        old_slice: Address,
+        new_slice: Address,
     ) -> Result<(), ContractError> {
         helpers::require_admin_approval(&env, &admin_signers);
-        quorum_slice_migration::implement_slice_migration_protocol(&env, &borrower, target_slice)
+        quorum_slice_migration::implement_slice_migration_protocol(&env, &borrower, &old_slice, &new_slice)
     }
 
     /// Issue #2002: Read the quorum slice a borrower's credential currently lives in.
-    pub fn get_credential_current_slice(env: Env, borrower: Address) -> Option<u64> {
+    pub fn get_credential_current_slice(env: Env, borrower: Address) -> Option<Address> {
         quorum_slice_migration::get_credential_current_slice(&env, &borrower)
     }
 
     /// Issue #2002: Number of completed migrations recorded for a borrower.
-    pub fn get_migration_history_count(env: Env, borrower: Address) -> u32 {
+    pub fn get_migration_history_count(env: Env, borrower: Address) -> u64 {
         quorum_slice_migration::get_migration_history_count(&env, &borrower)
     }
 
@@ -5238,40 +5242,44 @@ impl QuorumCreditContract {
     /// keeper holding admin approval). Admin approval is required.
     pub fn enable_dynamic_rebalancing(
         env: Env,
+        slice_id: Address,
         admin_signers: Vec<Address>,
+        parameters: Bytes,
     ) -> Result<(), ContractError> {
         helpers::require_admin_approval(&env, &admin_signers);
-        quorum_slice_rebalancing::enable_dynamic_rebalancing(&env)
+        quorum_slice_rebalancing::enable_dynamic_rebalancing(&env, &slice_id, parameters)
     }
 
     /// Issue #2003: Disable dynamic rebalancing. Admin approval is required.
     pub fn disable_dynamic_rebalancing(
         env: Env,
+        slice_id: Address,
         admin_signers: Vec<Address>,
     ) -> Result<(), ContractError> {
         helpers::require_admin_approval(&env, &admin_signers);
-        quorum_slice_rebalancing::disable_dynamic_rebalancing(&env)
+        quorum_slice_rebalancing::disable_dynamic_rebalancing(&env, &slice_id)
     }
 
-    /// Issue #2003: Execute a rebalancing pass over live slices.
+    /// Issue #2003: Execute a rebalancing pass over a live slice.
     ///
     /// Trigger policy: admin/keeper only — admin approval is required.
     pub fn execute_rebalancing(
         env: Env,
+        slice_id: Address,
         admin_signers: Vec<Address>,
     ) -> Result<(), ContractError> {
         helpers::require_admin_approval(&env, &admin_signers);
-        quorum_slice_rebalancing::execute_rebalancing(&env)
+        quorum_slice_rebalancing::execute_rebalancing(&env, &slice_id)
     }
 
-    /// Issue #2003: Whether dynamic rebalancing is currently enabled.
-    pub fn is_rebalancing_enabled(env: Env) -> bool {
-        quorum_slice_rebalancing::is_rebalancing_enabled(&env)
+    /// Issue #2003: Whether dynamic rebalancing is currently enabled for a slice.
+    pub fn is_rebalancing_enabled(env: Env, slice_id: Address) -> bool {
+        quorum_slice_rebalancing::is_rebalancing_enabled(&env, &slice_id)
     }
 
-    /// Issue #2003: Number of rebalancing events recorded so far.
-    pub fn get_rebalancing_event_count(env: Env) -> u32 {
-        quorum_slice_rebalancing::get_rebalancing_event_count(&env)
+    /// Issue #2003: Number of rebalancing events recorded so far for a slice.
+    pub fn get_rebalancing_event_count(env: Env, slice_id: Address) -> u64 {
+        quorum_slice_rebalancing::get_rebalancing_event_count(&env, &slice_id)
     }
 
     // ── Issue #2004: Attestor Specialization ──────────────────────────────────

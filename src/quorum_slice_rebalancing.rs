@@ -1,6 +1,6 @@
 use soroban_sdk::{Address, Bytes, Env};
 
-use crate::types::Result;
+use crate::errors::ContractError;
 
 pub struct RebalancingConfig {
     pub target_weight: u32,
@@ -12,7 +12,7 @@ pub fn enable_dynamic_rebalancing(
     env: &Env,
     slice_id: &Address,
     parameters: Bytes,
-) -> Result<()> {
+) -> Result<(), ContractError> {
     let key = ("rebalance_enabled", slice_id);
     env.storage().persistent().set(&key, &true);
 
@@ -22,7 +22,7 @@ pub fn enable_dynamic_rebalancing(
     Ok(())
 }
 
-pub fn disable_dynamic_rebalancing(env: &Env, slice_id: &Address) -> Result<()> {
+pub fn disable_dynamic_rebalancing(env: &Env, slice_id: &Address) -> Result<(), ContractError> {
     let key = ("rebalance_enabled", slice_id);
     env.storage().persistent().set(&key, &false);
     Ok(())
@@ -38,7 +38,7 @@ pub fn get_rebalancing_parameters(env: &Env, slice_id: &Address) -> Option<Bytes
     env.storage().persistent().get(&key_params)
 }
 
-pub fn execute_rebalancing(env: &Env, slice_id: &Address) -> Result<()> {
+pub fn execute_rebalancing(env: &Env, slice_id: &Address) -> Result<(), ContractError> {
     let key = ("rebalance_enabled", slice_id);
     if !env.storage().persistent().get::<_, bool>(&key).unwrap_or(false) {
         return Ok(());
@@ -56,6 +56,6 @@ pub fn get_rebalancing_event_count(env: &Env, slice_id: &Address) -> u64 {
     env.storage().persistent().get(&event_key).unwrap_or(0)
 }
 
-pub fn implement_periodic_rebalancing(env: &Env, slice_id: &Address) -> Result<()> {
+pub fn implement_periodic_rebalancing(env: &Env, slice_id: &Address) -> Result<(), ContractError> {
     execute_rebalancing(env, slice_id)
 }
