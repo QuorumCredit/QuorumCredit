@@ -11,6 +11,7 @@
 
 import { createSignedWebhookRequest, type WebhookRegistration } from "./signature.js";
 import type { Redis } from "ioredis";
+import { randomBytes } from "node:crypto";
 import { retryExecutor } from "../resilience/retry.js";
 
 /** Canonical event types third-party apps can subscribe to. The legacy
@@ -400,7 +401,7 @@ export class RedisWebhookDeliveryService {
     const signed = createSignedWebhookRequest(registration, event, data);
 
     const record: DeliveryRecord = {
-      id: `dlv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: `dlv_${Date.now()}_${randomBytes(6).toString("hex")}`,
       webhookId: registration.id,
       event,
       createdAt: Date.now(),

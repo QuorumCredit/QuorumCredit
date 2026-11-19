@@ -41,6 +41,19 @@ export function handleSearchRequest(
 }
 
 /**
+ * Issue #2087: parse an integer query value, returning undefined for anything
+ * that is not a plain integer (including NaN, fractions and exponent forms).
+ * Absent parameters are handled by the caller before this is consulted.
+ */
+function parseStrictInt(raw: string | null): number | undefined {
+  if (raw === null) return undefined;
+  const trimmed = raw.trim();
+  if (!/^-?\d+$/.test(trimmed)) return undefined;
+  const value = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+/**
  * Execute a faceted search.
  *
  * Query parameters:
@@ -61,14 +74,32 @@ async function handleSearch(
     const url = new URL(req.url ?? "", "http://internal");
     const params = url.searchParams;
 
+    const numeric = {
+      startLedger: parseStrictInt(params.get("startLedger")),
+      endLedger: parseStrictInt(params.get("endLedger")),
+      limit: parseStrictInt(params.get("limit")),
+      offset: parseStrictInt(params.get("offset")),
+    };
+    const invalid = (Object.keys(numeric) as Array<keyof typeof numeric>).filter(
+      (key) => {
+        const raw = params.get(key);
+        return raw !== null && raw.trim() !== "" && numeric[key] === undefined;
+      }
+    );
+    if (invalid.length > 0) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: `invalid numeric parameter(s): ${invalid.join(", ")}` }));
+      return;
+    }
+
     const query: SearchQuery = {
       q: params.get("q") ?? undefined,
       category: params.get("category") ?? undefined,
       action: params.get("action") ?? undefined,
-      startLedger: params.get("startLedger") ? parseInt(params.get("startLedger")!, 10) : undefined,
-      endLedger: params.get("endLedger") ? parseInt(params.get("endLedger")!, 10) : undefined,
-      limit: params.get("limit") ? parseInt(params.get("limit")!, 10) : 100,
-      offset: params.get("offset") ? parseInt(params.get("offset")!, 10) : 0,
+      startLedger: numeric.startLedger,
+      endLedger: numeric.endLedger,
+      limit: numeric.limit ?? 100,
+      offset: numeric.offset ?? 0,
     };
 
     if (query.limit && query.limit > 1000) query.limit = 1000;

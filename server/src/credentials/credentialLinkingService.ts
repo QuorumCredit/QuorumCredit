@@ -13,7 +13,7 @@
  * place here means the storage swap never changes the validation contract.
  */
 
-import { credentialStore, type Credential } from "./credentialStore.js";
+import { credentialStore, freshId, type Credential } from "./credentialStore.js";
 import { metrics } from "../http/metricsRegistry.js";
 
 /**
@@ -171,7 +171,6 @@ export class CredentialLinkingService {
   private outgoing = new Map<string, Set<string>>();
   /** credentialId -> link ids where the credential is the target. */
   private incoming = new Map<string, Set<string>>();
-  private linkCounter = 0;
 
   /**
    * Validate a proposed link without creating it. The HTTP layer runs this
@@ -269,7 +268,7 @@ export class CredentialLinkingService {
       : [request.sourceId, request.targetId];
 
     const link: CredentialLink = {
-      id: `link_${++this.linkCounter}_${Date.now()}`,
+      id: freshId("link", this.links),
       sourceId,
       targetId,
       type,

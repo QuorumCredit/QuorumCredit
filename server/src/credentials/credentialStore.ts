@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 /**
  * Issue #1590, #1591: Credential Storage and Verification Status
  *
@@ -28,6 +30,18 @@ export interface VerificationRecord {
   nextVerificationRequired: number; // timestamp when re-verification is required
 }
 
+/**
+ * Generate an ID from a CSPRNG and refuse collisions with existing keys.
+ * IDs must not depend on in-memory counters, which reset on restart (#2085).
+ */
+export function freshId(prefix: string, existing: { has(key: string): boolean }): string {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const id = `${prefix}_${randomBytes(12).toString("hex")}`;
+    if (!existing.has(id)) return id;
+  }
+  throw new Error(`could not allocate a unique ${prefix} id`);
+}
+
 export class CredentialStore {
   private credentials = new Map<string, Credential>();
   /** Issue #1742: issuer -> credential ids, so pattern search runs the regex once
@@ -37,8 +51,6 @@ export class CredentialStore {
   /** Issue #1775: listeners notified after a credential is issued (used to keep the metadata index current). */
   private issueListeners = new Set<(credential: Credential) => void>();
   private verifications = new Map<string, VerificationRecord>();
-  private credentialCounter = 0;
-  private verificationCounter = 0;
 
   /**
    * Issue a new credential
@@ -50,7 +62,7 @@ export class CredentialStore {
     expiresAt: number,
     metadata?: Record<string, unknown>
   ): Credential {
-    const credentialId = `cred_${++this.credentialCounter}_${Date.now()}`;
+    const credentialId = freshId("cred", this.credentials);
     const credential: Credential = {
       id: credentialId,
       holderId,
@@ -188,7 +200,7 @@ export class CredentialStore {
     expiresAt: number,
     verificationStatus: VerificationRecord["verificationStatus"] = "pending"
   ): VerificationRecord {
-    const verificationId = `ver_${++this.verificationCounter}_${Date.now()}`;
+    const verificationId = freshId("ver", this.verifications);
     const now = Math.floor(Date.now() / 1000);
 
     // Re-verification required after 1 year (365 days)

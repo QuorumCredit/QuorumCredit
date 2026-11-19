@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { WebhookDeliveryService, MAX_RETRIES, BASE_DELAY_MS, backoffDelayMs } from "../src/webhooks/delivery.js";
+import { WebhookDeliveryService, RedisWebhookDeliveryService, MAX_RETRIES, BASE_DELAY_MS, backoffDelayMs } from "../src/webhooks/delivery.js";
 
 describe("webhook delivery rate limiting", () => {
   it("backoffDelayMs returns increasing delays", () => {
@@ -82,5 +82,45 @@ describe("webhook delivery rate limiting", () => {
     expect(stats.delivered).toBe(1);
     expect(stats.failed).toBe(1);
     expect(stats.successRateBps).toBe(5000);
+  });
+});
+
+describe("webhook delivery ID format (#2084)", () => {
+  function fakeRedis() {
+    const kv = new Map<string, string>();
+    const sets = new Map<string, Set<string>>();
+    return {
+      set: async (k: string, v: string) => { kv.set(k, v); return "OK"; },
+      get: async (k: string) => kv.get(k) ?? null,
+      del: async (k: string) => (kv.delete(k) ? 1 : 0),
+      sadd: async (k: string, m: string) => {
+        const s = sets.get(k) ?? new Set<string>();
+        s.add(m);
+        sets.set(k, s);
+        return 1;
+      },
+      srem: async (k: string, m: string) => (sets.get(k)?.delete(m) ? 1 : 0),
+      smembers: async (k: string) => [...(sets.get(k) ?? [])],
+    };
+  }
+
+  it("builds Redis-backed delivery IDs from CSPRNG bytes, not Math.random", async () => {
+    const service = new RedisWebhookDeliveryService(fakeRedis() as any);
+    const registration = {
+      id: "wh-2",
+      url: "https://example.com",
+      events: [],
+      secret: "secret",
+      createdAt: new Date(),
+      enabled: true,
+    };
+    const sender = async () => ({ ok: true });
+
+    const randomSpy = vi.spyOn(Math, "random");
+    const record = await service.deliver(registration, "test", {}, sender, () => Promise.resolve());
+    expect(randomSpy).not.toHaveBeenCalled();
+    randomSpy.mockRestore();
+
+    expect(record.id).toMatch(/^dlv_\d+_[0-9a-f]{12}$/);
   });
 });
