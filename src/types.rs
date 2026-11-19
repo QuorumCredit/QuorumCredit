@@ -3567,10 +3567,17 @@ pub enum LoanMilestone {
 }
 
 impl LoanMilestone {
-    /// Fraction of a voucher's stake released when this milestone is reached,
-    /// expressed in basis points. Each milestone releases 25% (2_500 bps).
+    /// Fraction of a voucher's original stake released when this milestone is
+    /// reached, in basis points. Issue #2118: the schedule sums to 10_000 bps
+    /// (100%) across all milestones. `Issued` is a disbursement event, not a
+    /// repayment, so it releases nothing.
     pub fn release_bps(&self) -> u32 {
-        2_500
+        match self {
+            LoanMilestone::Issued => 0,
+            LoanMilestone::FirstPaymentMade => 2_500,
+            LoanMilestone::HalfRepaid => 2_500,
+            LoanMilestone::Completed => 5_000,
+        }
     }
 
     /// Stable numeric discriminant used as a storage-key component.
@@ -3697,6 +3704,9 @@ pub struct GovParticipationMetrics {
 pub const GOV_PROPOSAL_THRESHOLD_BPS: i128 = 100;
 /// BPS denominator for GOV calculations.
 pub const GOV_BPS_DENOMINATOR: i128 = 10_000;
+
+/// Basis-point denominator (100% = 10_000 bps) used by fee, rate and utilization math.
+pub const BPS_DENOMINATOR: i128 = 10_000;
 /// Default DAO voting period in seconds (7 days).
 pub const DAO_VOTING_PERIOD_SECS: u64 = 7 * 24 * 60 * 60;
 /// Default DAO timelock after voting before execution, in seconds (2 days).

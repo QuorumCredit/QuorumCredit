@@ -59,11 +59,17 @@ pub fn calculate_utilization_rate(env: &Env, outstanding_loans: i128, total_capi
         return config.base_rate_bps;
     }
 
-    // Utilization in basis points (0–10_000)
+    // Utilization in basis points, capped at BPS_DENOMINATOR (100%) so that
+    // loans exceeding capital cannot push the premium past the documented range.
+    // Checked arithmetic: on overflow the utilization saturates to the cap.
     let utilization_bps = if outstanding_loans <= 0 {
         0
     } else {
-        outstanding_loans * BPS_DENOMINATOR / total_capital
+        outstanding_loans
+            .checked_mul(BPS_DENOMINATOR)
+            .map(|scaled| scaled / total_capital)
+            .unwrap_or(BPS_DENOMINATOR)
+            .min(BPS_DENOMINATOR)
     };
 
     let rate = if utilization_bps <= config.kink_utilization_bps {
@@ -72,8 +78,11 @@ pub fn calculate_utilization_rate(env: &Env, outstanding_loans: i128, total_capi
         let excess_bps = utilization_bps - config.kink_utilization_bps;
         // Each 1 basis-point of excess utilization adds `premium_slope_bps / 10_000` bps to rate.
         // Simplified: excess_bps * premium_slope_bps / 10_000
-        let premium = excess_bps * config.premium_slope_bps / BPS_DENOMINATOR;
-        config.base_rate_bps + premium
+        let premium = excess_bps
+            .checked_mul(config.premium_slope_bps)
+            .map(|scaled| scaled / BPS_DENOMINATOR)
+            .unwrap_or(config.rate_cap_bps);
+        config.base_rate_bps.saturating_add(premium)
     };
 
     // Clamp to [floor, cap]
@@ -251,4 +260,52 @@ pub fn set_utilization_rate_config(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calculate_utilization_rate;
+    use crate::types::{default_utilization_rate_config, BPS_DENOMINATOR};
+    use crate::QuorumCreditContract;
+    use soroban_sdk::{Address, Env};
+
+    fn rate_for(env: &Env, contract_id: &Address, outstanding: i128, capital: i128) -> i128 {
+        env.as_contract(contract_id, || {
+            calculate_utilization_rate(env, outstanding, capital)
+        })
+    }
+
+    /// Issue #2116: utilization above 100% must be capped at 10,000 bps, so
+    /// outstanding loans of twice the capital price exactly like full
+    /// utilization instead of growing the premium without bound.
+    #[test]
+    fn test_utilization_capped_when_loans_are_twice_capital() {
+        let env = Env::default();
+        let contract_id = env.register(QuorumCreditContract, ());
+        let capital: i128 = 1_000_000;
+
+        let at_full = rate_for(&env, &contract_id, capital, capital);
+        let at_double = rate_for(&env, &contract_id, capital * 2, capital);
+        assert_eq!(at_double, at_full);
+
+        let cfg = default_utilization_rate_config();
+        let premium = (BPS_DENOMINATOR - cfg.kink_utilization_bps) * cfg.premium_slope_bps
+            / BPS_DENOMINATOR;
+        let expected = (cfg.base_rate_bps + premium)
+            .max(cfg.rate_floor_bps)
+            .min(cfg.rate_cap_bps);
+        assert_eq!(at_double, expected);
+    }
+
+    /// Issue #2116: the multiplication by 10,000 must not overflow even for
+    /// extreme outstanding-loan values; the result saturates at the cap.
+    #[test]
+    fn test_utilization_extreme_outstanding_does_not_overflow() {
+        let env = Env::default();
+        let contract_id = env.register(QuorumCreditContract, ());
+
+        let at_full = rate_for(&env, &contract_id, 1, 1);
+        let extreme = rate_for(&env, &contract_id, i128::MAX, 1);
+        assert_eq!(extreme, at_full);
+    }
 }

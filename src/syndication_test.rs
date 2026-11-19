@@ -5,7 +5,8 @@
 #[cfg(test)]
 mod syndication_tests {
     use crate::syndication;
-    use crate::types::{DataKey, SyndicationConfig, SyndicationRole, SyndicationStatus};
+    use crate::errors::ContractError;
+    use crate::types::{DataKey, LoanRecord, SyndicationConfig, SyndicationRole, SyndicationStatus};
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{
         testutils::{Address as _, Ledger},
@@ -262,6 +263,32 @@ mod syndication_tests {
             }
 
             syndication::request_syndication_loan(s.env.clone(), syndication_id, lead.clone()).unwrap();
+
+            // Issue #2119: a default needs the underlying loan record, whose
+            // deadline is 2_000. Seed it here and move the ledger past it so
+            // the default tests run after the deadline.
+            let loan = LoanRecord {
+                id: syndication_id,
+                borrower: lead.clone(),
+                co_borrowers: Vec::new(&s.env),
+                amount: total_amount,
+                amount_repaid: 0,
+                total_yield: 0,
+                repaid: false,
+                defaulted: false,
+                created_at: 500,
+                disbursement_timestamp: 1_000,
+                repayment_timestamp: None,
+                deadline: 2_000,
+                loan_purpose: String::from_str(&s.env, "default test"),
+                token_address: s.token.clone(),
+            };
+            s.env
+                .storage()
+                .persistent()
+                .set(&DataKey::Loan(syndication_id), &loan);
+            s.env.ledger().with_mut(|l| l.timestamp = 3_000);
+
             syndication_id
         })
     }
@@ -364,6 +391,51 @@ mod syndication_tests {
             // All the loss falls on the only member with stake, but it can
             // never go negative.
             assert_eq!(m_lead.collateral, 0);
+        });
+    }
+
+    /// Issue #2119: an address that is not a member of the syndication must
+    /// not be able to declare its default and slash the members.
+    #[test]
+    fn test_default_rejected_for_non_member_caller() {
+        let s = setup();
+        let m1 = Address::generate(&s.env);
+        let m2 = Address::generate(&s.env);
+        let outsider = Address::generate(&s.env);
+        let syndication_id = setup_active_syndication(&s, &[(m1.clone(), 500, 0), (m2.clone(), 500, 0)], 1_000);
+
+        s.env.as_contract(&s.contract_id, || {
+            let res = syndication::handle_syndication_default(s.env.clone(), syndication_id, outsider.clone());
+            assert!(matches!(res, Err(ContractError::UnauthorizedCaller)));
+
+            // No losses applied and the syndication is still active.
+            let m = syndication::get_syndication_member(s.env.clone(), syndication_id, m1.clone()).unwrap();
+            assert_eq!(m.collateral, 500);
+            let syn = syndication::get_syndication(s.env.clone(), syndication_id).unwrap();
+            assert_eq!(syn.status, SyndicationStatus::Active);
+        });
+    }
+
+    /// Issue #2119: a default cannot be declared before the underlying loan's
+    /// deadline has passed.
+    #[test]
+    fn test_default_rejected_before_loan_deadline() {
+        let s = setup();
+        let m1 = Address::generate(&s.env);
+        let m2 = Address::generate(&s.env);
+        let syndication_id = setup_active_syndication(&s, &[(m1.clone(), 500, 0), (m2.clone(), 500, 0)], 1_000);
+
+        // Rewind the ledger to before the deadline (2_000).
+        s.env.ledger().with_mut(|l| l.timestamp = 1_500);
+
+        s.env.as_contract(&s.contract_id, || {
+            let res = syndication::handle_syndication_default(s.env.clone(), syndication_id, m1.clone());
+            assert!(matches!(res, Err(ContractError::LoanNotExpired)));
+
+            let m = syndication::get_syndication_member(s.env.clone(), syndication_id, m1.clone()).unwrap();
+            assert_eq!(m.collateral, 500);
+            let syn = syndication::get_syndication(s.env.clone(), syndication_id).unwrap();
+            assert_eq!(syn.status, SyndicationStatus::Active);
         });
     }
 }

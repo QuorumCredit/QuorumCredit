@@ -104,11 +104,12 @@ pub fn is_flagged(env: &Env, voucher: &Address) -> bool {
     if !config.enabled || config.threshold == 0 {
         return false;
     }
-    env.storage()
-        .persistent()
-        .get::<_, VoucherFraudScore>(&DataKey::VoucherFraudScore(voucher.clone()))
-        .map(|s| s.score >= config.threshold)
-        .unwrap_or(false)
+    // Issue #2117: recompute the score from the authoritative `VoucherStats`
+    // instead of reading the stored `VoucherFraudScore`. The stored value is
+    // only refreshed on vouch and governance events, so it can be stale when
+    // stats change through other paths.
+    let stats = voucher_stats(env, voucher);
+    score_from_stats(&stats) >= config.threshold
 }
 
 /// Persist the fraud-score configuration. Requires admin multi-sig approval.
@@ -199,5 +200,78 @@ mod tests {
         assert!(score_from_stats(&stats(0, 1)) >= cfg.threshold);
         // clean voucher → no breach.
         assert!(score_from_stats(&stats(5, 0)) < cfg.threshold);
+    }
+}
+
+#[cfg(test)]
+mod fraud_flag_recompute_tests {
+    use super::{get_fraud_score, is_flagged};
+    use crate::types::{DataKey, FraudScoreConfig, VoucherStats};
+    use crate::QuorumCreditContract;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    fn setup() -> (Env, Address) {
+        let env = Env::default();
+        let contract_id = env.register(QuorumCreditContract, ());
+        env.as_contract(&contract_id, || {
+            env.storage().instance().set(
+                &DataKey::FraudScoreConfig,
+                &FraudScoreConfig {
+                    threshold: 500,
+                    enabled: true,
+                },
+            );
+        });
+        (env, contract_id)
+    }
+
+    /// Issue #2117: stats written through a path that never calls
+    /// `update_fraud_score` must still flag the voucher. The stored score is
+    /// absent here, so the old implementation (which read it) returned false.
+    #[test]
+    fn test_is_flagged_recomputes_when_stored_score_is_stale() {
+        let (env, contract_id) = setup();
+        let voucher = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(
+                &DataKey::VoucherStats(voucher.clone()),
+                &VoucherStats {
+                    successful_vouches: 0,
+                    total_vouches_slashed: 2,
+                    total_yield_earned: 0,
+                    total_slashed: 0,
+                },
+            );
+
+            assert!(get_fraud_score(env.clone(), voucher.clone()).is_none());
+            assert!(is_flagged(&env, &voucher));
+        });
+    }
+
+    /// Issue #2117: a stored score that is out of date in the other direction
+    /// must not keep a voucher flagged after their stats have recovered.
+    #[test]
+    fn test_is_flagged_ignores_stale_high_stored_score() {
+        let (env, contract_id) = setup();
+        let voucher = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(
+                &DataKey::VoucherStats(voucher.clone()),
+                &VoucherStats {
+                    successful_vouches: 10,
+                    total_vouches_slashed: 0,
+                    total_yield_earned: 0,
+                    total_slashed: 0,
+                },
+            );
+            env.storage().persistent().set(
+                &DataKey::VoucherFraudScore(voucher.clone()),
+                &crate::types::VoucherFraudScore { score: 9_000 },
+            );
+
+            assert!(!is_flagged(&env, &voucher));
+        });
     }
 }

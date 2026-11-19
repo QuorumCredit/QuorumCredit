@@ -11,7 +11,7 @@ use soroban_sdk::{symbol_short, Address, Env, String, Vec};
 use crate::errors::ContractError;
 use crate::helpers::require_allowed_token;
 use crate::types::{
-    DataKey, LoanSyndication, SyndicationConfig, SyndicationMember, SyndicationRepayment,
+    DataKey, LoanRecord, LoanSyndication, SyndicationConfig, SyndicationMember, SyndicationRepayment,
     SyndicationRole, SyndicationStatus, DEFAULT_SYNDICATION_CONFIG,
 };
 
@@ -467,6 +467,29 @@ pub fn handle_syndication_default(
     let mut syndication = load_syndication(&env, syndication_id)?;
     if syndication.status != SyndicationStatus::Active {
         return Err(ContractError::InvalidSyndicationStatus);
+    }
+
+    // Issue #2119: only a member of this syndication may declare its default.
+    // Previously any authenticated address could slash every member.
+    if !syndication.members.iter().any(|m| m.address == caller) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    // Issue #2119: the default is only valid once the underlying loan's
+    // repayment deadline has passed, and only while that loan is still open.
+    let loan_id = syndication
+        .loan_id
+        .ok_or(ContractError::NoActiveLoan)?;
+    let loan: LoanRecord = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Loan(loan_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+    if loan.repaid || loan.defaulted {
+        return Err(ContractError::NoActiveLoan);
+    }
+    if env.ledger().timestamp() <= loan.deadline {
+        return Err(ContractError::LoanNotExpired);
     }
 
     let repaid = total_repaid(&env, syndication_id);

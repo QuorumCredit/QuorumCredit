@@ -11,7 +11,7 @@ use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 use crate::errors::ContractError;
 use crate::helpers::{require_allowed_token, require_not_thawing};
-use crate::types::{DataKey, LoanMilestone, LoanRecord, LoanStatus, VouchRecord};
+use crate::types::{DataKey, LoanMilestone, LoanRecord, VouchRecord};
 use crate::vouch::invalidate_weighted_stake_cache;
 
 const ALL_MILESTONES: [LoanMilestone; 4] = [
@@ -26,12 +26,15 @@ const ALL_MILESTONES: [LoanMilestone; 4] = [
 /// before the halfway point of the loan's [disbursement, deadline] window.
 const EARLY_BONUS_BPS: u32 = 500; // 5%
 
+/// Issue #2118: every release must be backed by a real repayment milestone.
+/// `Issued` fires at disbursement, before any repayment, so it never unlocks
+/// stake while the loan is outstanding.
 fn milestone_reached(loan: &LoanRecord, milestone: LoanMilestone) -> bool {
     match milestone {
-        LoanMilestone::Issued => true,
+        LoanMilestone::Issued => false,
         LoanMilestone::FirstPaymentMade => loan.amount_repaid > 0,
         LoanMilestone::HalfRepaid => loan.amount > 0 && loan.amount_repaid >= loan.amount / 2,
-        LoanMilestone::Completed => loan.repaid || loan.status == LoanStatus::Repaid,
+        LoanMilestone::Completed => loan.repaid,
     }
 }
 
@@ -59,8 +62,10 @@ fn total_released(env: &Env, loan_id: u64, voucher: &Address) -> i128 {
 }
 
 /// Release the portion of `voucher`'s stake unlocked by reaching `milestone`
-/// on `loan_id`. Releases 25% of the voucher's original stake per milestone,
-/// plus an early-completion bonus drawn from their own remaining stake.
+/// on `loan_id`. Each milestone releases its share of the voucher's original
+/// stake (see `LoanMilestone::release_bps`), plus an early-completion bonus
+/// drawn from their own remaining stake. Refused when the release would leave
+/// the borrower's remaining stake below the loan's outstanding principal.
 pub fn release_vouch_at_milestone(
     env: Env,
     loan_id: u64,
@@ -120,9 +125,23 @@ pub fn release_vouch_at_milestone(
         return Ok(0);
     }
 
+    // Issue #2118: after the release, the borrower's remaining stake in this
+    // token must still cover the loan's outstanding principal. Otherwise the
+    // release would leave the loan under-collateralised.
+    let new_stake = current_stake - release_amount;
+    let mut remaining_stake: i128 = new_stake;
+    for (i, v) in vouches.iter().enumerate() {
+        if i as u32 != idx && v.token == vouch_rec.token {
+            remaining_stake = remaining_stake.saturating_add(v.stake);
+        }
+    }
+    let outstanding = (loan.amount - loan.amount_repaid).max(0);
+    if remaining_stake < outstanding {
+        return Err(ContractError::MinStakeNotMet);
+    }
+
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
     let mut vouches_mut = vouches;
-    let new_stake = current_stake - release_amount;
     if new_stake == 0 {
         vouches_mut.remove(idx);
     } else {
@@ -177,4 +196,113 @@ pub fn get_milestone_release(
         voucher,
         milestone.index(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{release_vouch_at_milestone, ALL_MILESTONES};
+    use crate::errors::ContractError;
+    use crate::types::{DataKey, LoanMilestone, LoanRecord, VouchRecord};
+    use crate::QuorumCreditContract;
+    use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+
+    /// Build a loan with a 500..2000 term (midpoint 1250, so ledger time
+    /// 1000 counts as an early milestone).
+    fn seed_loan(env: &Env, contract_id: &Address, borrower: &Address, token: &Address, amount: i128, repaid: i128, stake: i128, voucher: &Address) {
+        env.as_contract(contract_id, || {
+            let loan = LoanRecord {
+                id: 1,
+                borrower: borrower.clone(),
+                co_borrowers: Vec::new(env),
+                amount,
+                amount_repaid: repaid,
+                total_yield: 0,
+                repaid: false,
+                defaulted: false,
+                created_at: 500,
+                disbursement_timestamp: 500,
+                repayment_timestamp: None,
+                deadline: 2_000,
+                loan_purpose: soroban_sdk::String::from_str(env, "test"),
+                token_address: token.clone(),
+            };
+            env.storage().persistent().set(&DataKey::Loan(1), &loan);
+            let mut vouches: Vec<VouchRecord> = Vec::new(env);
+            vouches.push_back(VouchRecord {
+                voucher: voucher.clone(),
+                stake,
+                vouch_timestamp: 400,
+                token: token.clone(),
+            });
+            env.storage()
+                .persistent()
+                .set(&DataKey::Vouches(borrower.clone()), &vouches);
+        });
+    }
+
+    /// Issue #2118: `Issued` is a disbursement event, so a voucher must not be
+    /// able to pull stake out while the loan is outstanding.
+    #[test]
+    fn test_issued_milestone_cannot_release_stake() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        let contract_id = env.register(QuorumCreditContract, ());
+        let borrower = Address::generate(&env);
+        let voucher = Address::generate(&env);
+        let token = Address::generate(&env);
+        seed_loan(&env, &contract_id, &borrower, &token, 1_000, 0, 1_000, &voucher);
+
+        let res = env.as_contract(&contract_id, || {
+            release_vouch_at_milestone(env.clone(), 1, voucher.clone(), LoanMilestone::Issued)
+        });
+        assert!(matches!(res, Err(ContractError::MilestoneNotReached)));
+    }
+
+    /// Issue #2118: the per-milestone schedule must never release more than the
+    /// voucher's full stake, and `Issued` releases nothing.
+    #[test]
+    fn test_release_schedule_sums_to_at_most_full_stake() {
+        assert_eq!(LoanMilestone::Issued.release_bps(), 0);
+        let total: u32 = ALL_MILESTONES.iter().map(|m| m.release_bps()).sum();
+        assert!(total <= 10_000);
+        assert_eq!(total, 10_000);
+    }
+
+    /// Issue #2118: a release that leaves the borrower's remaining stake below
+    /// the loan's outstanding principal must be refused.
+    #[test]
+    fn test_release_refused_when_it_breaches_loan_to_stake_ratio() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        let contract_id = env.register(QuorumCreditContract, ());
+        let borrower = Address::generate(&env);
+        let voucher = Address::generate(&env);
+        let token = Address::generate(&env);
+        // Outstanding = 1_000 - 100 = 900. Stake 1_000 minus a 25% release
+        // (plus the 5% early bonus) leaves less than 900.
+        seed_loan(&env, &contract_id, &borrower, &token, 1_000, 100, 1_000, &voucher);
+
+        let res = env.as_contract(&contract_id, || {
+            release_vouch_at_milestone(
+                env.clone(),
+                1,
+                voucher.clone(),
+                LoanMilestone::FirstPaymentMade,
+            )
+        });
+        assert!(matches!(res, Err(ContractError::MinStakeNotMet)));
+
+        // The stake must be untouched after a refused release.
+        let stake = env.as_contract(&contract_id, || {
+            let v: Vec<VouchRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Vouches(borrower.clone()))
+                .unwrap();
+            v.get(0).unwrap().stake
+        });
+        assert_eq!(stake, 1_000);
+    }
 }
