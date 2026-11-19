@@ -138,6 +138,8 @@ mod rbac_enforcement_test;
 #[cfg(test)]
 mod admin_empty_signer_test;
 #[cfg(test)]
+mod duplicate_admin_signer_test;
+#[cfg(test)]
 mod slash_result_test;
 #[cfg(test)]
 mod vouch_panic_free_test;
@@ -3291,6 +3293,8 @@ impl QuorumCreditContract {
         voucher: Address,
     ) -> Result<diversification::DiversificationScore, ContractError> {
         diversification::calculate_diversification_score(&env, &voucher)
+    }
+
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
 
     /// Set the access permission (0=Public, 1=Private, 2=ReadOnly, 3=Hidden) for a
@@ -5297,6 +5301,8 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_specialization::AttestorSpecialization> {
         attestor_specialization::get_attestor_specialization(&env, &attestor)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Issue #1928: Quorum Slice Transparency Index Reporting
     // ─────────────────────────────────────────────────────────────────────────

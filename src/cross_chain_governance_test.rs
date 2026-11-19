@@ -24,6 +24,28 @@ mod tests {
         (contract_id, admin)
     }
 
+    /// Records `stake` vouched by `voter` for a fresh borrower, using the same
+    /// storage layout the vouch module writes (`Vouches` + `VoucherHistory`).
+    fn seed_vouch_stake(env: &Env, contract_id: &Address, voter: &Address, stake: i128) {
+        let borrower = Address::generate(env);
+        let record = crate::types::VouchRecord {
+            voucher: voter.clone(),
+            stake,
+            vouch_timestamp: 0,
+            token: Address::generate(env),
+        };
+        env.as_contract(contract_id, || {
+            env.storage().persistent().set(
+                &crate::types::DataKey::Vouches(borrower.clone()),
+                &Vec::from_array(env, [record]),
+            );
+            env.storage().persistent().set(
+                &crate::types::DataKey::VoucherHistory(voter.clone()),
+                &Vec::from_array(env, [borrower]),
+            );
+        });
+    }
+
     #[test]
     fn test_create_cross_chain_proposal() {
         // Test proposal creation with valid parameters
@@ -103,6 +125,8 @@ mod tests {
         let (contract_id, admin) = setup_contract(&env);
         let admin_signers = Vec::from_array(&env, [admin.clone()]);
         let voting_period = 1_000u64;
+        let voter = Address::generate(&env);
+        seed_vouch_stake(&env, &contract_id, &voter, 1_000_000);
 
         let proposal_id = env.as_contract(&contract_id, || {
             let proposal_id = create_cross_chain_proposal(
@@ -116,8 +140,7 @@ mod tests {
             )
             .unwrap();
 
-            let voter = Address::generate(&env);
-            submit_cross_chain_vote(env.clone(), voter, proposal_id, true, 1).unwrap();
+            submit_cross_chain_vote(env.clone(), voter.clone(), proposal_id, true, 1).unwrap();
 
             proposal_id
         });
@@ -319,53 +342,116 @@ mod tests {
     /// rejected on the second call, not double-counted into the tally.
     #[test]
     fn test_submit_cross_chain_vote_rejects_nonce_replay() {
-        let s = setup();
+        let env = Env::default();
+        let (contract_id, admin) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
         let chain_id = 7u32;
 
-        let proposal_id = s.env.as_contract(&s.contract_id, || {
+        let proposal_id = env.as_contract(&contract_id, || {
             create_cross_chain_proposal(
-                s.env.clone(),
-                s.admins.clone(),
-                String::from_str(&s.env, "test proposal"),
-                String::from_str(&s.env, "noop"),
-                Bytes::new(&s.env),
+                env.clone(),
+                admin_signers.clone(),
+                String::from_str(&env, "test proposal"),
+                String::from_str(&env, "noop"),
+                Bytes::new(&env),
                 chain_id,
                 10_000,
             )
             .unwrap()
         });
 
-        let voter = Address::generate(&s.env);
+        let voter = Address::generate(&env);
+        seed_vouch_stake(&env, &contract_id, &voter, 1_000_000);
         let nonce = 42u64;
 
-        s.env.as_contract(&s.contract_id, || {
-            submit_cross_chain_vote(
-                s.env.clone(),
-                voter.clone(),
-                proposal_id,
-                true,
-                chain_id,
-                nonce,
-            )
-            .unwrap();
+        env.as_contract(&contract_id, || {
+            submit_cross_chain_vote(env.clone(), voter.clone(), proposal_id, true, chain_id, nonce)
+                .unwrap();
         });
 
-        let replay_result = s.env.as_contract(&s.contract_id, || {
-            submit_cross_chain_vote(
-                s.env.clone(),
-                voter.clone(),
-                proposal_id,
-                true,
-                chain_id,
-                nonce,
-            )
+        let replay_result = env.as_contract(&contract_id, || {
+            submit_cross_chain_vote(env.clone(), voter.clone(), proposal_id, true, chain_id, nonce)
         });
         assert_eq!(replay_result, Err(ContractError::VoteAttestationNonceReused));
 
-        let (approve_stake, _, total_stake) = s.env.as_contract(&s.contract_id, || {
-            get_proposal_results(s.env.clone(), proposal_id).unwrap()
+        let (approve_stake, _, total_stake) = env.as_contract(&contract_id, || {
+            get_proposal_results(env.clone(), proposal_id).unwrap()
         });
         assert_eq!(approve_stake, 1_000_000, "the replayed vote must not be double-counted");
         assert_eq!(total_stake, 1_000_000);
+    }
+
+    /// Issue #2047: vote weight comes from the voter's vouched stake, so two
+    /// voters with different stakes must move the tally by different amounts.
+    #[test]
+    fn test_vote_weight_follows_verified_stake() {
+        let env = Env::default();
+        let (contract_id, admin) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+
+        let proposal_id = env.as_contract(&contract_id, || {
+            create_cross_chain_proposal(
+                env.clone(),
+                admin_signers.clone(),
+                String::from_str(&env, "weighted tally"),
+                String::from_str(&env, "noop"),
+                Bytes::new(&env),
+                1,
+                10_000,
+            )
+            .unwrap()
+        });
+
+        let large_voter = Address::generate(&env);
+        let small_voter = Address::generate(&env);
+        seed_vouch_stake(&env, &contract_id, &large_voter, 5_000_000);
+        seed_vouch_stake(&env, &contract_id, &small_voter, 2_000_000);
+
+        env.as_contract(&contract_id, || {
+            submit_cross_chain_vote(env.clone(), large_voter.clone(), proposal_id, true, 1, 1)
+                .unwrap();
+            submit_cross_chain_vote(env.clone(), small_voter.clone(), proposal_id, false, 1, 2)
+                .unwrap();
+        });
+
+        let (approve_stake, reject_stake, total_stake) = env.as_contract(&contract_id, || {
+            get_proposal_results(env.clone(), proposal_id).unwrap()
+        });
+        assert_eq!(approve_stake, 5_000_000);
+        assert_eq!(reject_stake, 2_000_000);
+        assert_eq!(total_stake, 7_000_000);
+    }
+
+    /// Issue #2047: an address with no vouched stake has no voting weight and
+    /// its vote is rejected rather than counted at a default weight.
+    #[test]
+    fn test_vote_rejected_without_verifiable_stake() {
+        let env = Env::default();
+        let (contract_id, admin) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+
+        let proposal_id = env.as_contract(&contract_id, || {
+            create_cross_chain_proposal(
+                env.clone(),
+                admin_signers.clone(),
+                String::from_str(&env, "unstaked voter"),
+                String::from_str(&env, "noop"),
+                Bytes::new(&env),
+                1,
+                10_000,
+            )
+            .unwrap()
+        });
+
+        let stranger = Address::generate(&env);
+        let result = env.as_contract(&contract_id, || {
+            submit_cross_chain_vote(env.clone(), stranger.clone(), proposal_id, true, 1, 1)
+        });
+        assert_eq!(result, Err(ContractError::VoucherNotFound));
+
+        let (approve_stake, reject_stake, total_stake) = env.as_contract(&contract_id, || {
+            get_proposal_results(env.clone(), proposal_id).unwrap()
+        });
+        assert_eq!((approve_stake, reject_stake, total_stake), (0, 0, 0));
     }
 }

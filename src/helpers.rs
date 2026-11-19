@@ -396,8 +396,31 @@ pub fn validate_admin_config(
     Ok(())
 }
 
+/// Returns true if any address appears more than once in `signers`.
+///
+/// Approval thresholds are only meaningful when each signer is a distinct
+/// admin; repeating one address would otherwise satisfy an N-of-M threshold.
+pub fn has_duplicate_signer(signers: &Vec<Address>) -> bool {
+    for i in 0..signers.len() {
+        let current = match signers.get(i) {
+            Some(s) => s,
+            None => return true,
+        };
+        for j in 0..i {
+            if signers.get(j).map_or(false, |prior| prior == current) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
     let cfg = config(env);
+    assert!(
+        !has_duplicate_signer(admin_signers),
+        "duplicate admin signer"
+    );
     assert!(
         admin_signers.len() >= cfg.admin_threshold,
         "insufficient admin approvals"

@@ -176,6 +176,33 @@ pub fn create_cross_chain_proposal(
     Ok(proposal_id)
 }
 
+/// Total stake the voter currently has vouched across all borrowers.
+///
+/// Reads the voter's backed-borrower index and sums only the `VouchRecord`s
+/// that still name this voter, so stale index entries contribute nothing.
+fn verified_voter_stake(env: &Env, voter: &Address) -> i128 {
+    let borrowers: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::VoucherHistory(voter.clone()))
+        .unwrap_or(Vec::new(env));
+
+    let mut total: i128 = 0;
+    for borrower in borrowers.iter() {
+        let vouches: Vec<crate::types::VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower))
+            .unwrap_or(Vec::new(env));
+        for record in vouches.iter() {
+            if record.voucher == *voter {
+                total = total.saturating_add(record.stake);
+            }
+        }
+    }
+    total
+}
+
 /// Submit a vote on a cross-chain proposal
 /// Can only be called by active vouchers
 ///
@@ -209,8 +236,12 @@ pub fn submit_cross_chain_vote(
         return Err(ContractError::VotingPeriodEnded);
     }
 
-    // For now, use a default voter stake (in production, would query from vouch records)
-    let voter_stake: i128 = 1_000_000; // 0.1 XLM default
+    // Voting weight is the voter's live vouched stake, not a fixed default.
+    // A voter with no verifiable stake cannot influence the tally.
+    let voter_stake = verified_voter_stake(&env, &voter);
+    if voter_stake <= 0 {
+        return Err(ContractError::VoucherNotFound);
+    }
 
     // Update vote tallies
     if approve {

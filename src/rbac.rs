@@ -1,5 +1,5 @@
 use crate::errors::ContractError;
-use crate::helpers::{config, require_admin_approval};
+use crate::helpers::{config, has_duplicate_signer, require_admin_approval};
 use crate::types::{AdminPermission, AdminRole, DataKey};
 use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
@@ -122,6 +122,12 @@ pub fn require_admin_approval_with_permission(
     required_permission: AdminPermission,
 ) -> Result<(), ContractError> {
     let cfg = config(env);
+
+    // Reject repeated signers before counting: the threshold must be met by
+    // distinct admins, not by one admin listed several times.
+    if has_duplicate_signer(admin_signers) {
+        return Err(ContractError::DuplicateApprovalSigner);
+    }
 
     if admin_signers.len() < cfg.admin_threshold {
         return Err(ContractError::UnauthorizedCaller);

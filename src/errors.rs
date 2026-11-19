@@ -376,10 +376,10 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
         ContractError::LoanNotExpired => (
             String::from_str(env, "LoanNotExpired"),
             String::from_str(env, "The loan has not reached its deadline yet."),
+        ),
         ContractError::NotInitialized => (
             String::from_str(env, "NotInitialized"),
             String::from_str(env, "Contract has not been initialized. Call initialize() first."),
-        ),
         ),
         _ => (
             String::from_str(env, "UnknownError"),

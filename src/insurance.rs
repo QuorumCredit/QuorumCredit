@@ -301,6 +301,8 @@ pub fn fetch_quote(
 /// Returns `QuoteAlreadyAccepted` if already active.
 pub fn accept_quote(env: Env, quote_id: u64) -> Result<(), ContractError> {
     let mut quote = load_quote(&env, quote_id)?;
+    // Only the borrower the quote was issued to may activate it (matches fetch_quote).
+    quote.borrower.require_auth();
     if quote.accepted {
         return Err(ContractError::QuoteAlreadyAccepted);
     }
@@ -368,7 +370,12 @@ pub fn file_claim(env: Env, quote_id: u64) -> Result<u64, ContractError> {
 }
 
 /// Approve a pending claim.  Admin-only; the caller must pass valid admin signers.
-pub fn approve_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
+pub fn approve_claim(
+    env: Env,
+    admin_signers: Vec<Address>,
+    claim_id: u64,
+) -> Result<(), ContractError> {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
     let mut claim = load_claim(&env, claim_id)?;
     if !matches!(claim.status, ClaimStatus::Pending) {
         return Err(ContractError::InvalidClaimStatus);
@@ -385,8 +392,13 @@ pub fn approve_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
     Ok(())
 }
 
-/// Reject a pending claim.
-pub fn reject_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
+/// Reject a pending claim.  Admin-only; the caller must pass valid admin signers.
+pub fn reject_claim(
+    env: Env,
+    admin_signers: Vec<Address>,
+    claim_id: u64,
+) -> Result<(), ContractError> {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
     let mut claim = load_claim(&env, claim_id)?;
     if !matches!(claim.status, ClaimStatus::Pending) {
         return Err(ContractError::InvalidClaimStatus);
@@ -406,8 +418,14 @@ pub fn reject_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
 /// Pay out an approved claim via the protocol token.
 ///
 /// Transfers `claim.payout_amount` from the contract's reserve to the
-/// borrower's address.  Marks the claim as `Paid`.
-pub fn pay_claim(env: Env, claim_id: u64) -> Result<(), ContractError> {
+/// borrower's address.  Marks the claim as `Paid`.  Admin-only; the caller
+/// must pass valid admin signers before any funds move.
+pub fn pay_claim(
+    env: Env,
+    admin_signers: Vec<Address>,
+    claim_id: u64,
+) -> Result<(), ContractError> {
+    crate::helpers::require_admin_approval(&env, &admin_signers);
     let mut claim = load_claim(&env, claim_id)?;
     if !matches!(claim.status, ClaimStatus::Approved) {
         return Err(ContractError::InvalidClaimStatus);
@@ -689,9 +707,10 @@ mod missing_record_tests {
         let (env, contract_id) = setup();
         env.as_contract(&contract_id, || {
             assert!(file_claim(env.clone(), 999).is_err());
-            assert!(approve_claim(env.clone(), 999).is_err());
-            assert!(reject_claim(env.clone(), 999).is_err());
-            assert!(pay_claim(env.clone(), 999).is_err());
+            let admins = crate::helpers::config(&env).admins;
+            assert!(approve_claim(env.clone(), admins.clone(), 999).is_err());
+            assert!(reject_claim(env.clone(), admins.clone(), 999).is_err());
+            assert!(pay_claim(env.clone(), admins, 999).is_err());
             assert!(accept_quote(env.clone(), 999).is_err());
         });
     }
@@ -703,6 +722,148 @@ mod missing_record_tests {
         env.as_contract(&contract_id, || {
             env.storage().instance().set(&key, &u64::MAX);
             assert_eq!(next_id(&env, &key), Err(ContractError::CounterOverflow));
+        });
+    }
+}
+
+#[cfg(test)]
+mod claim_authorization_tests {
+    //! Issue #2046: quote acceptance and claim resolution must be authorized.
+    //!
+    //! `approve_claim`, `reject_claim` and `pay_claim` move claim state and,
+    //! for `pay_claim`, transfer reserve funds, so they require a registered
+    //! admin threshold. `accept_quote` requires the borrower's own auth.
+    use super::*;
+    use crate::{QuorumCreditContract, QuorumCreditContractClient};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{vec, Address, Env};
+
+    /// Deploys and initializes the contract with one admin (threshold 1).
+    fn setup() -> (Env, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&deployer, &vec![&env, admin.clone()], &1u32, &token);
+        (env, contract_id, admin)
+    }
+
+    fn store_quote(env: &Env, contract_id: &Address, borrower: &Address) -> u64 {
+        let quote = InsuranceQuote {
+            id: 1,
+            product_id: 1,
+            provider_id: 1,
+            borrower: borrower.clone(),
+            loan_amount: 1_000,
+            coverage_amount: 1_000,
+            premium_amount: 10,
+            accepted: false,
+            issued_at: 0,
+        };
+        env.as_contract(contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::InsuranceQuote(1), &quote);
+        });
+        1
+    }
+
+    fn store_claim(env: &Env, contract_id: &Address, status: ClaimStatus) -> u64 {
+        let claim = InsuranceClaim {
+            id: 1,
+            quote_id: 1,
+            borrower: Address::generate(env),
+            status,
+            payout_amount: 1_000,
+            filed_at: 0,
+            resolved_at: None,
+        };
+        env.as_contract(contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::InsuranceClaim(1), &claim);
+        });
+        1
+    }
+
+    #[test]
+    #[should_panic]
+    fn accept_quote_requires_borrower_auth() {
+        // No mocked auths: the borrower's require_auth must reject the call.
+        let env = Env::default();
+        let borrower = Address::generate(&env);
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let quote_id = store_quote(&env, &contract_id, &borrower);
+        env.as_contract(&contract_id, || {
+            let _ = accept_quote(env.clone(), quote_id);
+        });
+    }
+
+    #[test]
+    fn accept_quote_succeeds_for_borrower_auth() {
+        let (env, contract_id, _admin) = setup();
+        let borrower = Address::generate(&env);
+        let quote_id = store_quote(&env, &contract_id, &borrower);
+        env.as_contract(&contract_id, || {
+            accept_quote(env.clone(), quote_id).unwrap();
+            let stored: InsuranceQuote = env
+                .storage()
+                .persistent()
+                .get(&DataKey::InsuranceQuote(quote_id))
+                .unwrap();
+            assert!(stored.accepted);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "signer is not a registered admin")]
+    fn approve_claim_rejects_unregistered_signer() {
+        let (env, contract_id, _admin) = setup();
+        let stranger = Address::generate(&env);
+        let claim_id = store_claim(&env, &contract_id, ClaimStatus::Pending);
+        env.as_contract(&contract_id, || {
+            let _ = approve_claim(env.clone(), vec![&env, stranger], claim_id);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "insufficient admin approvals")]
+    fn reject_claim_rejects_empty_signers() {
+        let (env, contract_id, _admin) = setup();
+        let claim_id = store_claim(&env, &contract_id, ClaimStatus::Pending);
+        env.as_contract(&contract_id, || {
+            let _ = reject_claim(env.clone(), vec![&env], claim_id);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "signer is not a registered admin")]
+    fn pay_claim_rejects_unregistered_signer_before_transfer() {
+        let (env, contract_id, _admin) = setup();
+        let stranger = Address::generate(&env);
+        let claim_id = store_claim(&env, &contract_id, ClaimStatus::Approved);
+        env.as_contract(&contract_id, || {
+            let _ = pay_claim(env.clone(), vec![&env, stranger], claim_id);
+        });
+    }
+
+    #[test]
+    fn approve_claim_accepts_registered_admin() {
+        let (env, contract_id, admin) = setup();
+        let claim_id = store_claim(&env, &contract_id, ClaimStatus::Pending);
+        env.as_contract(&contract_id, || {
+            approve_claim(env.clone(), vec![&env, admin], claim_id).unwrap();
+            let stored: InsuranceClaim = env
+                .storage()
+                .persistent()
+                .get(&DataKey::InsuranceClaim(claim_id))
+                .unwrap();
+            assert!(matches!(stored.status, ClaimStatus::Approved));
         });
     }
 }
