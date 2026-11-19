@@ -129,7 +129,7 @@ fn test_distribute_referral_reward_pays_correctly() {
         let tc = soroban_sdk::token::Client::new(&env, &token_addr);
         let referrer_balance_before = tc.balance(&referrer);
 
-        distribute_referral_reward(&env, &borrower, &token_addr, first_loan_interest);
+        distribute_referral_reward(&env, &borrower, &token_addr, first_loan_interest).unwrap();
 
         // Expected reward: 200_000 * 1000 / 10_000 = 20_000
         let expected_reward: i128 = first_loan_interest * DEFAULT_REFERRAL_BONUS_BPS as i128 / 10_000;
@@ -181,7 +181,7 @@ fn test_distribute_referral_reward_noop_when_reserve_insufficient() {
         let referrer_balance_before = tc.balance(&referrer);
 
         // Must not panic; must be a no-op
-        distribute_referral_reward(&env, &borrower, &token_addr, 200_000);
+        distribute_referral_reward(&env, &borrower, &token_addr, 200_000).unwrap();
 
         assert_eq!(
             tc.balance(&referrer),
@@ -207,7 +207,7 @@ fn test_distribute_referral_reward_noop_when_no_referrer() {
             .set(&DataKey::YieldReserve, &10_000_000i128);
 
         // Should be a silent no-op — must not panic
-        distribute_referral_reward(&env, &borrower, &token_addr, 200_000);
+        distribute_referral_reward(&env, &borrower, &token_addr, 200_000).unwrap();
 
         // Yield reserve must be unchanged (no payout happened)
         let reserve: i128 = env

@@ -359,7 +359,7 @@ pub fn settle_option(
     let net_payout = payout - fee;
 
     if net_payout > 0 {
-        crate::community_treasury::deposit_to_treasury(env, fee);
+        crate::community_treasury::deposit_to_treasury(env, fee)?;
         let tc = soroban_sdk::token::Client::new(env, &token_addr);
         tc.transfer(&env.current_contract_address(), &holder, &net_payout);
     }

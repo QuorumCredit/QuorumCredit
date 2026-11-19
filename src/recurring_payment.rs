@@ -11,10 +11,13 @@
 //! notification on repeated failure are handled by that off-chain layer,
 //! which reports failed attempts back via `record_recurring_payment_failure`.
 
-use soroban_sdk::{symbol_short, Address, Env};
+use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 use crate::errors::ContractError;
-use crate::helpers::{get_active_loan_record, require_allowed_token, require_not_thawing};
+use crate::helpers::{
+    get_active_loan_record, is_admin, require_admin_approval, require_allowed_token,
+    require_not_thawing,
+};
 use crate::types::DataKey;
 pub use crate::types::RecurringPaymentConfig;
 
@@ -130,10 +133,43 @@ pub fn execute_recurring_payment(env: Env, borrower: Address) -> Result<i128, Co
     Ok(config.amount)
 }
 
+/// Register the keeper address allowed to report recurring-payment failures.
+/// Requires approval from the registered admin set.
+pub fn set_recurring_payment_keeper(env: Env, admin_signers: Vec<Address>, keeper: Address) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::RecurringPaymentKeeper, &keeper);
+}
+
+/// Only the registered keeper or a registered admin may report failures.
+/// Anyone else is refused, so a third party cannot terminate a borrower's
+/// automated repayment by recording failures against it.
+fn require_keeper_or_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
+    caller.require_auth();
+    if is_admin(env, caller) {
+        return Ok(());
+    }
+    let keeper: Option<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::RecurringPaymentKeeper);
+    match keeper {
+        Some(k) if k == *caller => Ok(()),
+        _ => Err(ContractError::UnauthorizedCaller),
+    }
+}
+
 /// Record that an off-chain execution attempt failed (transfer reverted),
-/// so retry counts and success-rate tracking reflect reality. Called by the
-/// automation keeper, not the borrower.
-pub fn record_recurring_payment_failure(env: Env, borrower: Address) -> Result<u32, ContractError> {
+/// so retry counts and success-rate tracking reflect reality. Callable only
+/// by the registered keeper or an admin (see `require_keeper_or_admin`).
+pub fn record_recurring_payment_failure(
+    env: Env,
+    caller: Address,
+    borrower: Address,
+) -> Result<u32, ContractError> {
+    require_keeper_or_admin(&env, &caller)?;
+
     let mut config: RecurringPaymentConfig = env
         .storage()
         .persistent()
