@@ -11,12 +11,16 @@ on:
   push:
     paths:
       - "openapi.yaml"
+      - "docs/openapi.yaml"
+      - "src/**/*.rs"
       - "server/src/http/routes.ts"
       - "server/src/http/webhookRoutes.ts"
       - ".github/workflows/openapi-drift.yml"
   pull_request:
     paths:
       - "openapi.yaml"
+      - "docs/openapi.yaml"
+      - "src/**/*.rs"
       - "server/src/http/routes.ts"
       - "server/src/http/webhookRoutes.ts"
       - ".github/workflows/openapi-drift.yml"
@@ -117,3 +121,30 @@ jobs:
           else
             echo "✅ All server paths are documented."
           fi
+
+      # Issue #2010: docs/openapi.yaml is the canonical spec, but the checks above
+      # only ever looked at the root file. Check it too.
+      - name: Root openapi.yaml must remain a pointer (no paths or schemas)
+        run: |
+          ROOT_PATHS=$(yq e '(.paths // {}) | keys | .[]' openapi.yaml)
+          ROOT_SCHEMAS=$(yq e '(.components.schemas // {}) | keys | .[]' openapi.yaml)
+          if [ -n "$ROOT_PATHS$ROOT_SCHEMAS" ]; then
+            echo "❌ root openapi.yaml defines paths/schemas; it must stay a pointer to docs/openapi.yaml."
+            echo "$ROOT_PATHS $ROOT_SCHEMAS"
+            exit 1
+          fi
+          echo "✅ Root openapi.yaml is a pointer only."
+
+      - name: Diff — every docs/openapi.yaml path must be a contract function
+        run: |
+          # docs/openapi.yaml documents Soroban contract functions (not HTTP routes),
+          # so each path key must match a public function in the contract source.
+          yq e '.paths | keys | .[]' docs/openapi.yaml | sed 's#^/##' | sort -u > /tmp/docs_paths.txt
+          grep -rhoE 'pub fn [a-z_0-9]+' src --include=*.rs | sed 's/pub fn //' | sort -u > /tmp/contract_fns.txt
+          PHANTOMS=$(comm -23 /tmp/docs_paths.txt /tmp/contract_fns.txt || true)
+          if [ -n "$PHANTOMS" ]; then
+            echo "❌ docs/openapi.yaml documents functions that do NOT exist in the contract:"
+            echo "$PHANTOMS"
+            exit 1
+          fi
+          echo "✅ Every documented contract function exists in src/."

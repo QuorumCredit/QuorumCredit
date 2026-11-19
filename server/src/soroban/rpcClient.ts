@@ -16,6 +16,10 @@ import {
   TransactionBuilder,
   type InvokeHostFunctionArgs,
 } from "@stellar/stellar-sdk";
+import { metrics } from "../http/metricsRegistry.js";
+
+/** Incremented every time the no-op RPC client is used (issue #2007). */
+export const NOOP_RPC_CLIENT_METRIC = "qc_soroban_noop_rpc_client_total";
 
 export interface ExecuteRecurringPaymentResult {
   ok: boolean;
@@ -33,6 +37,7 @@ export interface SorobanRpcClient {
 
 export class NoOpRpcClient implements SorobanRpcClient {
   async executeRecurringPayment(): Promise<ExecuteRecurringPaymentResult> {
+    metrics.incCounter(NOOP_RPC_CLIENT_METRIC);
     console.warn(
       "[quorum-credit] SOROBAN_RPC_URL not configured — recurring payment execution is a no-op"
     );
@@ -188,12 +193,41 @@ export class SorobanRpcClientImpl implements SorobanRpcClient {
 
 // ── Factory ────────────────────────────────────────────────────────────────
 
+/**
+ * Fail-fast guard (issue #2007): in production, recurring payments must never
+ * silently no-op. Throws when any required Soroban setting is missing.
+ * Outside production this is a no-op so local dev and tests keep working.
+ */
+export function assertSorobanRpcConfigured(
+  rpcUrl: string | undefined,
+  contractId: string | undefined,
+  keeperSecretKey: string | undefined,
+  nodeEnv: string | undefined = process.env.NODE_ENV
+): void {
+  if (nodeEnv !== "production") return;
+
+  const missing: string[] = [];
+  if (!rpcUrl) missing.push("SOROBAN_RPC_URL");
+  if (!contractId) missing.push("QUORUM_CREDIT_CONTRACT_ID");
+  if (!keeperSecretKey) missing.push("SOROBAN_KEEPER_SECRET_KEY");
+
+  if (missing.length > 0) {
+    throw new Error(
+      "[quorum-credit] FATAL — NODE_ENV=production requires Soroban RPC configuration; missing: " +
+        missing.join(", ")
+    );
+  }
+}
+
 export function buildSorobanRpcClient(
   rpcUrl: string | undefined,
   contractId: string | undefined,
-  keeperSecretKey: string | undefined
+  keeperSecretKey: string | undefined,
+  nodeEnv: string | undefined = process.env.NODE_ENV
 ): SorobanRpcClient {
+  assertSorobanRpcConfigured(rpcUrl, contractId, keeperSecretKey, nodeEnv);
   if (!rpcUrl || !contractId || !keeperSecretKey) {
+    metrics.incCounter(NOOP_RPC_CLIENT_METRIC);
     return new NoOpRpcClient();
   }
   return new SorobanRpcClientImpl(rpcUrl, contractId, keeperSecretKey);

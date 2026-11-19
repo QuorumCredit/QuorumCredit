@@ -180,3 +180,15 @@ groups:
         annotations:
           summary: "Elasticsearch has pending tasks"
           description: "Tasks pending for {{ $value | humanizeDuration }}"
+
+      # Soroban no-op RPC client in use (issue #2007)
+      # Recurring payments silently do nothing when the real client is not configured.
+      - alert: SorobanRpcNoOpClientInUse
+        expr: increase(qc_soroban_noop_rpc_client_total[10m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: soroban
+        annotations:
+          summary: "Soroban RPC is not configured; recurring payments are no-ops"
+          description: "The NoOpRpcClient handled {{ $value }} call(s) in the last 10 minutes. Set SOROBAN_RPC_URL, QUORUM_CREDIT_CONTRACT_ID and SOROBAN_KEEPER_SECRET_KEY."

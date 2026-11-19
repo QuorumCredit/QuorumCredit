@@ -982,30 +982,6 @@ paths:
         '400':
           $ref: '#/components/responses/ContractError'
 
-  /set_min_loan_amount:
-    post:
-      tags: [admin]
-      summary: Set minimum loan amount in stroops
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [admin_signers, amount]
-              properties:
-                admin_signers:
-                  type: array
-                  items:
-                    $ref: '#/components/schemas/Address'
-                amount:
-                  $ref: '#/components/schemas/Stroops'
-      responses:
-        '200':
-          $ref: '#/components/responses/Success'
-        '400':
-          $ref: '#/components/responses/ContractError'
-
   /set_max_loan_amount:
     post:
       tags: [admin]

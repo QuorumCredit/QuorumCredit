@@ -12,6 +12,8 @@ on:
       - "src/types.rs"
       - "src/errors.rs"
       - "src/invariants_test.rs"
+      - "src/property_based_test.rs"
+      - "src/property_based_invariants_test.rs"
       - "src/differential_testing.rs"
       - "src/gas_cost_regression.rs"
       - "Cargo.toml"
@@ -29,6 +31,8 @@ on:
       - "src/types.rs"
       - "src/errors.rs"
       - "src/invariants_test.rs"
+      - "src/property_based_test.rs"
+      - "src/property_based_invariants_test.rs"
       - "src/differential_testing.rs"
       - "src/gas_cost_regression.rs"
       - "Cargo.toml"
@@ -71,6 +75,10 @@ jobs:
       - name: Run negative control tests
         run: |
           cargo test negative_control -- --nocapture 2>&1
+
+      - name: Run property-based state invariant tests (#2008)
+        run: |
+          cargo test property_based -- --nocapture 2>&1
 
       - name: Run proptest fuzzing harness
         run: |

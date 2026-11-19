@@ -5353,3 +5353,12 @@ impl QuorumCreditContract {
         audit_trail_compression::compress_audit_trail(&env, &credential_id, older_than_timestamp)
     }
 }
+
+// Issue #2008: property-based and invariant test files were never compiled, so
+// `cargo test` and the invariants CI workflow silently skipped them.
+#[cfg(test)]
+mod property_based_test;
+#[cfg(test)]
+mod property_based_invariants_test;
+#[cfg(test)]
+mod invariants_test;

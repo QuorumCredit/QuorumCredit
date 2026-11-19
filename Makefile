@@ -1,4 +1,4 @@
-.PHONY: build test generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test check-contract-dups
+.PHONY: build test test-server test-dashboard test-all generate-sdk check-sdk deploy-testnet deploy-mainnet indexer indexer-test check-contract-dups
 
 check-contract-dups:
 	python3 scripts/check_contract_duplicate_fns.py src/lib.rs
@@ -33,9 +33,21 @@ check-sdk: build
 		--python sdk/python/quorum_credit/client.py \
 		--check
 
-## Run the full test suite
+## Fast default: contract (Rust) test suite only
 test:
 	cd $(CONTRACT_DIR) && cargo test
+
+## Server (vitest) test suite (issue #2009)
+test-server:
+	cd server && npm test
+
+## Dashboard (vitest) test suite (issue #2009)
+test-dashboard:
+	cd dashboard && npm test
+
+## Every suite: contract + server + dashboard (issue #2009).
+## `make test` stays contract-only so it remains fast; use this for a full local check.
+test-all: test test-server test-dashboard
 
 ## Deploy to Stellar testnet
 deploy-testnet:
