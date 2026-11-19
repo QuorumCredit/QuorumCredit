@@ -4725,6 +4725,7 @@ impl QuorumCreditContract {
         rate_threshold_bps: u32,
         closes_at: u64,
         resolves_at: u64,
+        token_addr: Address,
     ) -> Result<u64, ContractError> {
         prediction_market::create_market(
             &env,
@@ -4733,19 +4734,19 @@ impl QuorumCreditContract {
             rate_threshold_bps,
             closes_at,
             resolves_at,
+            token_addr,
         )
     }
 
-    /// Place a prediction on an open market.
+    /// Place a prediction on an open market. The stake is paid in the market's token.
     pub fn place_market_prediction(
         env: Env,
         participant: Address,
         market_id: u64,
         side: prediction_market::PredictionSide,
         stake: i128,
-        token_addr: Address,
     ) -> Result<(), ContractError> {
-        prediction_market::place_prediction(&env, participant, market_id, side, stake, token_addr)
+        prediction_market::place_prediction(&env, participant, market_id, side, stake)
     }
 
     /// Oracle resolves a prediction market (admin only).
@@ -4758,6 +4759,11 @@ impl QuorumCreditContract {
         prediction_market::resolve_market(&env, admin_signers, market_id, outcome)
     }
 
+    /// Move a prediction market past its close time to `PendingResolution`.
+    pub fn close_prediction_market(env: Env, market_id: u64) -> Result<(), ContractError> {
+        prediction_market::close_market(&env, market_id)
+    }
+
     /// Cancel a prediction market and allow refunds (admin only).
     pub fn cancel_prediction_market(
         env: Env,
@@ -4767,14 +4773,13 @@ impl QuorumCreditContract {
         prediction_market::cancel_market(&env, admin_signers, market_id)
     }
 
-    /// Claim payout for a winning prediction.
+    /// Claim payout for a winning prediction, paid in the market's token.
     pub fn claim_prediction_payout(
         env: Env,
         participant: Address,
         market_id: u64,
-        token_addr: Address,
     ) -> Result<i128, ContractError> {
-        prediction_market::claim_payout(&env, participant, market_id, token_addr)
+        prediction_market::claim_payout(&env, participant, market_id)
     }
 
     /// Return a prediction market by ID.

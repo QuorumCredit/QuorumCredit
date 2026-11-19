@@ -33,10 +33,17 @@ extern crate alloc;
 use crate::errors::ContractError;
 use crate::helpers::{config, require_admin_approval, require_not_paused, token_client};
 use crate::types::{DataKey, Config};
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{
+    contracttype, symbol_short, Address, BytesN, Env, IntoVal, String, Symbol, Vec,
+};
 
 /// Flash loan fee in basis points (0.05% = 5 bps)
 pub const FLASH_LOAN_FEE_BPS: i128 = 5;
+
+/// Name of the function the borrower's callback contract must export. It is
+/// invoked as `on_flash_loan(amount, fee, callback_data)` and must repay
+/// `amount + fee` to this contract before it returns.
+pub const FLASH_LOAN_CALLBACK_FN: &str = "on_flash_loan";
 
 /// Per-contract borrowing cap to prevent abuse.
 pub const DEFAULT_PER_CONTRACT_FLASH_CAP: i128 = 10_000_000_000; // 1000 XLM
@@ -46,6 +53,14 @@ pub const MAX_FLASH_LOAN_AMOUNT: i128 = 1_000_000_000_000; // 100,000 XLM
 
 /// Minimum flash loan amount
 pub const MIN_FLASH_LOAN_AMOUNT: i128 = 1_000_000; // 0.1 XLM
+
+/// Maximum number of flash loan records kept in the hot `FlashLoanHistory`.
+/// Older records are moved to per-period archive buckets, not dropped.
+pub const FLASH_LOAN_HISTORY_MAX_RECORDS: u32 = 10_000;
+
+/// Length of one archive period, in seconds. Evicted records are grouped into
+/// buckets keyed by `timestamp / FLASH_LOAN_ARCHIVE_PERIOD_SECS` (one day).
+pub const FLASH_LOAN_ARCHIVE_PERIOD_SECS: u64 = 86_400;
 
 /// Minimum interval, in ledger seconds, required between two flash loans to
 /// the same `callback_contract`. Bounds how fast a single caller can spam
@@ -183,22 +198,36 @@ pub fn flash_loan(
 
     // Calculate fee (0.05% = 5 bps)
     let fee = (amount * FLASH_LOAN_FEE_BPS) / 10_000;
-    let total_repay = amount + fee;
 
     // Transfer amount to callback contract
     token_client(env).transfer(&contract_id, &callback_contract, &amount);
 
-    // Invoke callback contract to perform flash loan operations
-    // The callback must call repay_flash_loan() before transaction completes
-    // Note: In production, this would use Soroban's contract invocation system
+    // Invoke the callback so it can use the borrowed funds. If the callback
+    // panics, the whole transaction reverts, including the transfer above.
+    let args = Vec::from_array(
+        env,
+        [
+            amount.into_val(env),
+            fee.into_val(env),
+            callback_data.into_val(env),
+        ],
+    );
+    let _: () = env.invoke_contract(
+        &callback_contract,
+        &Symbol::new(env, FLASH_LOAN_CALLBACK_FN),
+        args,
+    );
 
-    // Verify repayment happened (in production, this is implicit in transaction atomicity)
-    // The contract balance check ensures the loan was repaid. This runs before
+    // Enforce repayment of principal AND fee. The pre-loan balance is the
+    // reference point: a callback that returns only the principal leaves the
+    // balance at `balance`, which is below `balance + fee`. This runs before
     // any bookkeeping is written, so a failed repayment leaves FlashLoanStats,
     // the loan history, and the per-callback cooldown untouched.
+    let required_balance = balance
+        .checked_add(fee)
+        .ok_or(ContractError::ArithmeticError)?;
     let balance_after = token_client(env).balance(&contract_id);
-    if balance_after < balance {
-        // Flash loan was not repaid in full
+    if balance_after < required_balance {
         return Err(ContractError::FlashLoanNotRepaid);
     }
 
@@ -376,10 +405,14 @@ fn add_flash_loan_record(env: &Env, record: &FlashLoanRecord) -> Result<(), Cont
 
     records.push_back(record.clone());
 
-    // Keep only last 10000 records to avoid unbounded growth
-    if records.len() > 10000 {
-        // Archive old records (would archive to separate storage in production)
-        records.pop_front();
+    // Keep only the newest FLASH_LOAN_HISTORY_MAX_RECORDS in the hot history.
+    // Evicted records move to a per-period archive bucket. Aggregate figures
+    // live in FlashLoanStats and are never derived from history, so archival
+    // does not change them.
+    while records.len() > FLASH_LOAN_HISTORY_MAX_RECORDS {
+        if let Some(old) = records.pop_front() {
+            archive_flash_loan_record(env, &old);
+        }
     }
 
     env.storage()
@@ -387,6 +420,26 @@ fn add_flash_loan_record(env: &Env, record: &FlashLoanRecord) -> Result<(), Cont
         .set(&DataKey::FlashLoanHistory, &records);
 
     Ok(())
+}
+
+fn archive_flash_loan_record(env: &Env, record: &FlashLoanRecord) {
+    let period = record.timestamp / FLASH_LOAN_ARCHIVE_PERIOD_SECS;
+    let key = DataKey::FlashLoanArchive(period);
+    let mut bucket: Vec<FlashLoanRecord> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or_else(|| Vec::new(&env));
+    bucket.push_back(record.clone());
+    env.storage().persistent().set(&key, &bucket);
+}
+
+/// Archived flash loan records for one period (`timestamp / FLASH_LOAN_ARCHIVE_PERIOD_SECS`).
+pub fn get_flash_loan_archive(env: &Env, period: u64) -> Vec<FlashLoanRecord> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::FlashLoanArchive(period))
+        .unwrap_or_else(|| Vec::new(env))
 }
 
 fn update_flash_loan_stats(env: &Env, amount: i128, fee: i128) -> Result<(), ContractError> {
@@ -450,6 +503,101 @@ mod tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::testutils::{Address as _, Ledger};
     use soroban_sdk::token::StellarAssetClient;
+    use soroban_sdk::{contract, contractimpl};
+
+    /// Test double for a borrower callback. `init` records the token and the
+    /// lender (the QuorumCredit contract). `on_flash_loan` repays the
+    /// principal, and also the fee when `repay_fee` is true.
+    #[contract]
+    pub struct MockFlashCallback;
+
+    #[contracttype]
+    #[derive(Clone)]
+    enum MockKey {
+        Token,
+        Lender,
+        RepayFee,
+    }
+
+    #[contractimpl]
+    impl MockFlashCallback {
+        pub fn init(env: Env, token: Address, lender: Address, repay_fee: bool) {
+            env.storage().instance().set(&MockKey::Token, &token);
+            env.storage().instance().set(&MockKey::Lender, &lender);
+            env.storage().instance().set(&MockKey::RepayFee, &repay_fee);
+        }
+
+        pub fn on_flash_loan(env: Env, amount: i128, fee: i128, _data: BytesN<32>) {
+            let token: Address = env.storage().instance().get(&MockKey::Token).unwrap();
+            let lender: Address = env.storage().instance().get(&MockKey::Lender).unwrap();
+            let repay_fee: bool = env.storage().instance().get(&MockKey::RepayFee).unwrap();
+            let repay = if repay_fee { amount + fee } else { amount };
+            soroban_sdk::token::Client::new(&env, &token).transfer(
+                &env.current_contract_address(),
+                &lender,
+                &repay,
+            );
+        }
+    }
+
+    fn register_mock_callback(
+        env: &Env,
+        token: &Address,
+        lender: &Address,
+        repay_fee: bool,
+    ) -> Address {
+        let id = env.register_contract(None, MockFlashCallback);
+        MockFlashCallbackClient::new(env, &id).init(token, lender, &repay_fee);
+        id
+    }
+
+    #[test]
+    fn test_full_repayment_with_fee_succeeds() {
+        let env = Env::default();
+        let (contract_id, admin, token) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let callback = register_mock_callback(&env, &token, &contract_id, true);
+        // The callback receives the principal and needs the fee on hand to repay it.
+        StellarAssetClient::new(&env, &token).mint(&callback, &500);
+        let callback_data = BytesN::from_array(&env, &[0u8; 32]);
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        let before = token_client.balance(&contract_id);
+
+        env.as_contract(&contract_id, || {
+            set_flash_loan_callback_allowed(&env, admin_signers.clone(), callback.clone(), true)
+                .unwrap();
+            flash_loan(&env, MIN_FLASH_LOAN_AMOUNT, callback.clone(), callback_data.clone())
+                .unwrap();
+
+            let stats = get_flash_loan_stats(&env).unwrap();
+            assert_eq!(stats.loan_count, 1);
+            assert_eq!(stats.total_fees, 500);
+        });
+
+        assert_eq!(token_client.balance(&contract_id), before + 500);
+    }
+
+    #[test]
+    fn test_principal_only_repayment_is_rejected_with_not_repaid() {
+        // Returning the principal without the fee must fail with
+        // FlashLoanNotRepaid. Before the fix, the balance-only check passed here.
+        let env = Env::default();
+        let (contract_id, admin, token) = setup_contract(&env);
+        let admin_signers = Vec::from_array(&env, [admin.clone()]);
+        let callback = register_mock_callback(&env, &token, &contract_id, false);
+        let callback_data = BytesN::from_array(&env, &[0u8; 32]);
+
+        env.as_contract(&contract_id, || {
+            set_flash_loan_callback_allowed(&env, admin_signers.clone(), callback.clone(), true)
+                .unwrap();
+            let err = flash_loan(&env, MIN_FLASH_LOAN_AMOUNT, callback.clone(), callback_data)
+                .unwrap_err();
+            assert_eq!(err, ContractError::FlashLoanNotRepaid);
+
+            let stats = get_flash_loan_stats(&env).unwrap();
+            assert_eq!(stats.loan_count, 0);
+        });
+    }
 
     fn setup_contract(env: &Env) -> (Address, Address, Address) {
         env.mock_all_auths();
@@ -492,9 +640,9 @@ mod tests {
         // The failure must return a typed error and must not write any loan
         // bookkeeping: stats, history, or the per-callback cooldown timestamp.
         let env = Env::default();
-        let (contract_id, admin, _token) = setup_contract(&env);
+        let (contract_id, admin, token) = setup_contract(&env);
         let admin_signers = Vec::from_array(&env, [admin.clone()]);
-        let callback = Address::generate(&env);
+        let callback = register_mock_callback(&env, &token, &contract_id, false);
         let callback_data = BytesN::from_array(&env, &[0u8; 32]);
 
         env.as_contract(&contract_id, || {
@@ -581,6 +729,62 @@ mod tests {
 
         env.as_contract(&contract_id, || {
             assert!(check_flash_loan_cooldown(&env, &callback).is_ok());
+        });
+    }
+
+    #[test]
+    fn test_archiving_history_leaves_stats_unchanged() {
+        // Filling the hot history past its cap moves the oldest record into the
+        // period archive. FlashLoanStats totals must be identical before and
+        // after that eviction.
+        let env = Env::default();
+        // Seeding the full history is a large write; lift the test budget.
+        env.cost_estimate().budget().reset_unlimited();
+        let (contract_id, _admin, token) = setup_contract(&env);
+        let borrower = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            let seed = FlashLoanRecord {
+                borrower: borrower.clone(),
+                amount: 100,
+                fee: 1,
+                timestamp: 0,
+                token: token.clone(),
+            };
+            let mut full: Vec<FlashLoanRecord> = Vec::new(&env);
+            for _ in 0..FLASH_LOAN_HISTORY_MAX_RECORDS {
+                full.push_back(seed.clone());
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::FlashLoanHistory, &full);
+
+            update_flash_loan_stats(&env, 100, 1).unwrap();
+            let before = get_flash_loan_stats(&env).unwrap();
+
+            let newest = FlashLoanRecord {
+                timestamp: 1,
+                amount: 200,
+                ..seed.clone()
+            };
+            add_flash_loan_record(&env, &newest).unwrap();
+
+            let after = get_flash_loan_stats(&env).unwrap();
+            assert_eq!(after.total_volume, before.total_volume);
+            assert_eq!(after.total_fees, before.total_fees);
+            assert_eq!(after.loan_count, before.loan_count);
+            assert_eq!(after.period_fees, before.period_fees);
+
+            let history: Vec<FlashLoanRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::FlashLoanHistory)
+                .unwrap();
+            assert_eq!(history.len(), FLASH_LOAN_HISTORY_MAX_RECORDS);
+
+            let archived = get_flash_loan_archive(&env, 0);
+            assert_eq!(archived.len(), 1);
+            assert_eq!(archived.get(0).unwrap().amount, 100);
         });
     }
 
