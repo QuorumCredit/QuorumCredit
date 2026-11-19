@@ -35,7 +35,9 @@
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Vec};
 
 use crate::errors::ContractError;
-use crate::helpers::{config, require_admin_approval, require_not_paused};
+use crate::helpers::{
+    config, require_admin_approval, require_allowed_token, require_not_paused,
+};
 use crate::types::DataKey;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -228,8 +230,13 @@ pub fn buy_option(
         return Err(ContractError::InvalidAmount);
     }
 
+    // Only protocol-approved tokens may be used for the premium transfer.
+    require_allowed_token(env, &token_addr)?;
+
     let now = env.ledger().timestamp();
-    let expires_at = now + duration_secs;
+    let expires_at = now
+        .checked_add(duration_secs)
+        .ok_or(ContractError::ArithmeticError)?;
     let days_to_expiry = (duration_secs / SECS_PER_DAY).max(1);
     let vol = get_implied_volatility(env);
 
@@ -624,5 +631,32 @@ mod tests {
             buy_option(&env, holder, OptionType::Call, 200, 1_000, 0, token)
         });
         assert_eq!(r3, Err(ContractError::InvalidAmount));
+    }
+
+    #[test]
+    fn test_buy_option_rejects_disallowed_token() {
+        let (env, contract_id) = make_env();
+        let holder = Address::generate(&env);
+        // Not the protocol token and not in the allowed-token list.
+        let rogue_token = Address::generate(&env);
+
+        let result = env.as_contract(&contract_id, || {
+            buy_option(&env, holder, OptionType::Call, 200, 1_000, 3600, rogue_token)
+        });
+        assert_eq!(result, Err(ContractError::InvalidToken));
+    }
+
+    #[test]
+    fn test_buy_option_rejects_expiry_overflow() {
+        let (env, contract_id) = make_env();
+        // Non-zero timestamp so `now + u64::MAX` actually overflows.
+        env.ledger().set_timestamp(1_000);
+        let holder = Address::generate(&env);
+        let token = env.as_contract(&contract_id, || config(&env).token);
+
+        let result = env.as_contract(&contract_id, || {
+            buy_option(&env, holder, OptionType::Call, 200, 1_000, u64::MAX, token)
+        });
+        assert_eq!(result, Err(ContractError::ArithmeticError));
     }
 }

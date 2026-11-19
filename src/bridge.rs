@@ -151,10 +151,23 @@ fn bridge_token_inner(
     // Validate that source_token is an allowed token
     require_allowed_token(env, source_token)?;
 
-    // Pull `amount` of source_token from caller into this contract.
-    // The bridge_contract address is trusted to perform the cross-token conversion.
+    // Only admin-approved bridge contracts may be named as the conversion route.
+    if !is_approved_bridge(env, bridge_contract) {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    // Pull `amount` of source_token from caller into this contract, then confirm
+    // the contract's balance rose by exactly `amount`. A shortfall (e.g. a
+    // fee-on-transfer token) would otherwise leave the bridged balance credited
+    // beyond what the contract actually holds.
     let src_client = token::Client::new(env, source_token);
-    src_client.transfer(caller, &env.current_contract_address(), &amount);
+    let self_addr = env.current_contract_address();
+    let balance_before = src_client.balance(&self_addr);
+    src_client.transfer(caller, &self_addr, &amount);
+    let balance_after = src_client.balance(&self_addr);
+    if balance_after.checked_sub(balance_before) != Some(amount) {
+        return Err(ContractError::InvalidAmount);
+    }
 
     // Update the bridged-token balance tracker.
     let prev_balance: i128 = env
@@ -177,6 +190,40 @@ fn bridge_token_inner(
     );
 
     Ok(())
+}
+
+/// Admin: approve or revoke a bridge contract for use with `bridge_token`.
+///
+/// Only bridge contracts in the approved registry may be supplied to
+/// `bridge_token`; any other address is rejected.
+pub fn set_approved_bridge(
+    env: Env,
+    admin_signers: Vec<Address>,
+    bridge_contract: Address,
+    approved: bool,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+    require_admin_approval(&env, &admin_signers);
+
+    env.storage().persistent().set(
+        &DataKey::ApprovedBridgeContract(bridge_contract.clone()),
+        &approved,
+    );
+
+    env.events().publish(
+        (symbol_short!("bridge"), symbol_short!("approve")),
+        (bridge_contract, approved),
+    );
+
+    Ok(())
+}
+
+/// Returns `true` if `bridge_contract` is in the admin-approved registry.
+pub fn is_approved_bridge(env: &Env, bridge_contract: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ApprovedBridgeContract(bridge_contract.clone()))
+        .unwrap_or(false)
 }
 
 /// Query the bridged-token balance for a given token address.
@@ -642,6 +689,52 @@ mod tests {
             get_bridged_token_balance(env.clone(), token_addr)
         });
         assert_eq!(balance, 0i128);
+    }
+
+    // ── #2055: bridge registry and delivery checks ────────────────────────────
+
+    #[test]
+    fn test_bridge_token_rejects_unapproved_bridge_contract() {
+        let (env, contract_id) = make_env();
+        let caller = Address::generate(&env);
+        let rogue_bridge = Address::generate(&env);
+        let token_addr = env.as_contract(&contract_id, || config(&env).token);
+
+        let result = env.as_contract(&contract_id, || {
+            bridge_token_inner(&env, &caller, &rogue_bridge, &token_addr, 100)
+        });
+        assert_eq!(result, Err(ContractError::UnauthorizedCaller));
+
+        // No credit must be recorded for a rejected bridge.
+        let balance = env.as_contract(&contract_id, || {
+            get_bridged_token_balance(env.clone(), token_addr.clone())
+        });
+        assert_eq!(balance, 0);
+    }
+
+    #[test]
+    fn test_bridge_token_accepts_approved_bridge_and_credits_balance() {
+        let (env, contract_id) = make_env();
+        let caller = Address::generate(&env);
+        let bridge = Address::generate(&env);
+        let token_addr = env.as_contract(&contract_id, || config(&env).token);
+        let admins = env.as_contract(&contract_id, || config(&env).admins);
+        StellarAssetClient::new(&env, &token_addr).mint(&caller, &1_000);
+
+        let approve = env.as_contract(&contract_id, || {
+            set_approved_bridge(env.clone(), admins.clone(), bridge.clone(), true)
+        });
+        assert_eq!(approve, Ok(()));
+
+        let result = env.as_contract(&contract_id, || {
+            bridge_token_inner(&env, &caller, &bridge, &token_addr, 400)
+        });
+        assert_eq!(result, Ok(()));
+
+        let balance = env.as_contract(&contract_id, || {
+            get_bridged_token_balance(env.clone(), token_addr.clone())
+        });
+        assert_eq!(balance, 400);
     }
 
     // ── #1454/#1455: `repay_cross_chain_atomic` replay + reentrancy ──────────

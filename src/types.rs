@@ -839,6 +839,8 @@ pub enum DataKey {
     BridgedTokenBalance(Address),
     /// token_addr → u32 price in basis points relative to native token
     BridgeTokenPrice(Address),
+    /// bridge_contract → bool: admin-approved bridge contract (issue #2055)
+    ApprovedBridgeContract(Address),
     /// Reentrancy guard for token transfer operations
     ReentrancyGuard,
     // ── Issue #1070: Circuit Breaker for Rapid Default Cascade ─────────────────
