@@ -14,7 +14,7 @@ use crate::types::{
     MAX_FORBEARANCE_PERIODS, REPUTATION_BONUS_MAX_BPS, SLASH_ESCROW_PERIOD,
     DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE, SECS_PER_DAY,
 };
-use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Symbol, Vec};
 
 /// Vouch-age bonus constants
 const VOUCH_AGE_BONUS_MIN_SECS: u64 = 30 * 24 * 60 * 60;   // 30 days
@@ -673,11 +673,24 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             }
         }
 
-        // Try to mint excellent credit tier badge if eligible
-        let _ = crate::reputation::mint_excellent_badge(&env, &borrower);
+        // Try to mint excellent credit tier badge if eligible. Ineligibility is an
+        // expected outcome, so the repayment still succeeds; the failure is published
+        // so indexers can see why no badge was minted.
+        if let Err(err) = crate::reputation::mint_excellent_badge(&env, &borrower) {
+            env.events().publish(
+                (Symbol::new(&env, "reputation"), Symbol::new(&env, "mint_failed")),
+                (borrower.clone(), err as u32),
+            );
+        }
 
-        // Update credit score after successful repayment
-        let _ = crate::credit_score::update_credit_score(env.clone(), borrower.clone());
+        // Update credit score after successful repayment. A failure must not undo the
+        // repayment, but it is published so a stale score is observable.
+        if let Err(err) = crate::credit_score::update_credit_score(env.clone(), borrower.clone()) {
+            env.events().publish(
+                (Symbol::new(&env, "credit"), Symbol::new(&env, "upd_fail")),
+                (borrower.clone(), err as u32),
+            );
+        }
 
         env.storage()
             .persistent()
@@ -845,7 +858,14 @@ pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
         // than only via the manual slash path. `NoActiveLoan` just means the
         // loan was already settled/closed; any other error is ignored so a
         // read never fails because of the lazy check.
-        let _ = crate::lazy_default_detection::check_and_mark_default(&env, loan.id);
+        if let Err(err) = crate::lazy_default_detection::check_and_mark_default(&env, loan.id) {
+            if err != ContractError::NoActiveLoan {
+                env.events().publish(
+                    (Symbol::new(&env, "lazy_default"), Symbol::new(&env, "check_failed")),
+                    (loan.id, err as u32),
+                );
+            }
+        }
         if let Ok(refreshed) = get_active_loan_record(&env, &borrower) {
             return Some(refreshed);
         }
@@ -867,7 +887,14 @@ pub fn loan_status_extended(env: Env, borrower: Address) -> LoanStatusEx {
 pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
     // Issue #2005: run the lazy default check before returning so a
     // past-deadline unpaid loan is flagged as Defaulted on read.
-    let _ = crate::lazy_default_detection::check_and_mark_default(&env, loan_id);
+    if let Err(err) = crate::lazy_default_detection::check_and_mark_default(&env, loan_id) {
+        if err != ContractError::NoActiveLoan {
+            env.events().publish(
+                (Symbol::new(&env, "lazy_default"), Symbol::new(&env, "check_failed")),
+                (loan_id, err as u32),
+            );
+        }
+    }
     env.storage().persistent().get(&DataKey::Loan(loan_id))
 }
 

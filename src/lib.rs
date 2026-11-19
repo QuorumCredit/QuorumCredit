@@ -2,7 +2,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token, Address, Bytes,
-    BytesN, Env, String, Vec,
+    BytesN, Env, String, Symbol, Vec,
 };
 
 pub mod admin;
@@ -139,6 +139,14 @@ mod rbac_enforcement_test;
 mod admin_empty_signer_test;
 #[cfg(test)]
 mod slash_result_test;
+#[cfg(test)]
+mod slash_credit_score_failure_test;
+#[cfg(test)]
+mod slash_circuit_breaker_result_test;
+#[cfg(test)]
+mod repay_result_events_test;
+#[cfg(test)]
+mod lazy_default_result_test;
 #[cfg(test)]
 mod vouch_panic_free_test;
 #[cfg(test)]
@@ -807,8 +815,14 @@ impl QuorumCreditContract {
             ReputationNftExternalClient::new(&env, &nft_addr).burn(&borrower);
         }
 
-        // Update credit score after slash
-        let _ = credit_score::update_credit_score(env.clone(), borrower.clone());
+        // Update credit score after slash. The slash must still succeed, but a
+        // failed update is surfaced as an event so the stale score is observable.
+        if let Err(err) = credit_score::update_credit_score(env.clone(), borrower.clone()) {
+            env.events().publish(
+                (Symbol::new(&env, "credit"), Symbol::new(&env, "upd_fail")),
+                (borrower.clone(), err as u32),
+            );
+        }
 
         // Issue #1288: Decrement on-chain TVL / active-loan-count counters on slash.
         helpers::decrement_tvl_counters(&env, loan.amount);
@@ -820,12 +834,19 @@ impl QuorumCreditContract {
 
         // Issue #1371: check the circuit breaker after each executed slash using
         // real running default/loan counters instead of never calling it.
-        let _ = circuit_breaker::try_trigger_circuit_breaker(
+        if let Err(err) = circuit_breaker::try_trigger_circuit_breaker(
             &env,
             &cfg,
             helpers::get_total_default_count(&env),
             helpers::get_total_loan_count(&env),
-        );
+        ) {
+            // The slash completes, but a breaker failure must not be silent: surface it
+            // so operators know automatic protection did not engage.
+            env.events().publish(
+                (Symbol::new(&env, "circuit_breaker"), Symbol::new(&env, "failed")),
+                (borrower.clone(), err as u32),
+            );
+        }
 
         Ok(())
     }
@@ -3291,6 +3312,8 @@ impl QuorumCreditContract {
         voucher: Address,
     ) -> Result<diversification::DiversificationScore, ContractError> {
         diversification::calculate_diversification_score(&env, &voucher)
+    }
+
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
 
     /// Set the access permission (0=Public, 1=Private, 2=ReadOnly, 3=Hidden) for a
@@ -5297,6 +5320,8 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_specialization::AttestorSpecialization> {
         attestor_specialization::get_attestor_specialization(&env, &attestor)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Issue #1928: Quorum Slice Transparency Index Reporting
     // ─────────────────────────────────────────────────────────────────────────
