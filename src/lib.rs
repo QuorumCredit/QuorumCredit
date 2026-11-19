@@ -229,6 +229,14 @@ mod api_contract_test;
 mod api_reference_test;
 #[cfg(test)]
 mod features_test;
+#[cfg(test)]
+mod issue_2064_leave_pool_test;
+#[cfg(test)]
+mod issue_2065_fee_discount_test;
+#[cfg(test)]
+mod issue_2066_decay_test;
+#[cfg(test)]
+mod issue_2067_loyalty_principal_test;
 #[cfg(all(test, feature = "mainnet-tests"))]
 mod mainnet_deployment_test;
 #[cfg(test)]
@@ -3291,6 +3299,8 @@ impl QuorumCreditContract {
         voucher: Address,
     ) -> Result<diversification::DiversificationScore, ContractError> {
         diversification::calculate_diversification_score(&env, &voucher)
+    }
+
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
 
     /// Set the access permission (0=Public, 1=Private, 2=ReadOnly, 3=Hidden) for a
@@ -5297,6 +5307,8 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_specialization::AttestorSpecialization> {
         attestor_specialization::get_attestor_specialization(&env, &attestor)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Issue #1928: Quorum Slice Transparency Index Reporting
     // ─────────────────────────────────────────────────────────────────────────

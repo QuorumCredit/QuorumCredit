@@ -19,7 +19,7 @@
 use crate::errors::ContractError;
 use crate::helpers::require_not_paused;
 use crate::types::{
-    DataKey, LoyaltyBenefits, LoyaltyRecord, LoyaltyTier, LOYALTY_ANNIVERSARY_PERIOD_SECS,
+    DataKey, LoanRecord, LoyaltyBenefits, LoyaltyRecord, LoyaltyTier, LOYALTY_ANNIVERSARY_PERIOD_SECS,
     LOYALTY_GOLD_THRESHOLD, LOYALTY_SILVER_THRESHOLD,
     loyalty_bronze_benefits, loyalty_silver_benefits, loyalty_gold_benefits,
 };
@@ -48,6 +48,23 @@ fn load_loyalty_record(env: &Env, user: &Address) -> LoyaltyRecord {
 }
 
 /// Determine the tier corresponding to a repayment count.
+/// Principal of the user's most recent loan, or 0 if the user has no loan on record.
+/// Issue #2067: the authoritative source for loyalty benefit accounting.
+fn latest_loan_principal(env: &Env, user: &Address) -> i128 {
+    let loan_id: Option<u64> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LatestLoan(user.clone()));
+    loan_id
+        .and_then(|id| {
+            env.storage()
+                .persistent()
+                .get::<_, LoanRecord>(&DataKey::Loan(id))
+        })
+        .map(|loan| loan.amount)
+        .unwrap_or(0)
+}
+
 fn tier_for_count(count: u32) -> LoyaltyTier {
     if count >= LOYALTY_GOLD_THRESHOLD {
         LoyaltyTier::Gold
@@ -185,7 +202,8 @@ pub fn record_default_for_loyalty(env: &Env, user: &Address) {
 ///
 /// # Arguments
 /// * `user`          — The user claiming the bonus.
-/// * `loan_principal`— The principal of the current/most recent loan (used to compute bonus amount).
+/// * `loan_principal`— Must equal the principal of the user's most recent loan on record (Issue #2067);
+///   a mismatch is refused with `InvalidAmount`.
 ///
 /// Returns the anniversary bonus amount in basis points for external application.
 ///
@@ -197,6 +215,13 @@ pub fn claim_anniversary_bonus(
 ) -> Result<u32, ContractError> {
     require_not_paused(&env)?;
     user.require_auth();
+
+    // Issue #2067: the principal used for benefit accounting must match the user's own
+    // loan record. A caller-supplied figure that disagrees is refused, so lifetime
+    // benefits cannot be inflated with a made-up principal.
+    if loan_principal != latest_loan_principal(&env, &user) {
+        return Err(ContractError::InvalidAmount);
+    }
 
     let mut record = load_loyalty_record(&env, &user);
     let benefits = benefits_for_tier(record.tier);
@@ -225,8 +250,7 @@ pub fn claim_anniversary_bonus(
 
     // Accumulate benefits earned (approximate stroops value of the bonus)
     if loan_principal > 0 {
-        let bonus_stroops =
-            loan_principal * benefits.anniversary_bonus_bps as i128 / 10_000;
+        let bonus_stroops = loan_principal * benefits.anniversary_bonus_bps as i128 / 10_000;
         record.total_benefits_earned += bonus_stroops;
     }
 

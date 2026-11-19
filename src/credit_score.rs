@@ -530,8 +530,11 @@ pub fn apply_tier_rewards_to_fee(
         None => return base_fee_bps,
     };
 
+    // Issue #2065: multiply in u64 so a large configured discount cannot overflow u32.
+    // The discount is capped at 10,000 bps (100%) so the result never goes below zero.
     let rewards = get_tier_rewards(env.clone(), credit_score.tier);
-    let discount = base_fee_bps * rewards.fee_discount_bps as u32 / 10000;
+    let discount_bps = (rewards.fee_discount_bps as u64).min(10_000);
+    let discount = (base_fee_bps as u64 * discount_bps / 10_000) as u32;
     base_fee_bps - discount
 }
 
@@ -583,9 +586,13 @@ pub fn apply_reputation_decay(env: &Env, borrower: &Address) -> Result<(), Contr
     let decay_per_month_bps = cfg.score_decay_per_month as i128;
     let total_decay_basis = decay_per_month_bps * months_elapsed as i128;
     
-    // Cap total decay at 100% (10000 bps) to prevent negative scores
-    let capped_decay = total_decay_basis.min(10000);
-    let decay_amount = (credit_score.score as i128 * capped_decay / 10000) as u32;
+    // Issue #2066: clamp to [0, 10000] bps. A negative configured value must not wrap
+    // when cast, and the total cannot exceed 100% so scores never go negative.
+    let capped_decay = total_decay_basis.clamp(0, 10000);
+    // Issue #2066: convert with `try_from` rather than `as u32`, so an out-of-range
+    // value is reported as an error instead of silently wrapping.
+    let decay_amount = u32::try_from(credit_score.score as i128 * capped_decay / 10000)
+        .map_err(|_| ContractError::InvalidCreditConfig)?;
     
     credit_score.score = credit_score.score.saturating_sub(decay_amount);
     credit_score.last_decay_timestamp = now;

@@ -222,11 +222,25 @@ pub fn leave_pool(
         return Err(ContractError::CollateralPoolActive);
     }
 
+    // Issue #2064: `members`, `stakes` and `chain_ids` are parallel vectors. If they
+    // ever disagree in length the pool is corrupt; refuse rather than refund zero
+    // and leave the stake stranded in the pool.
+    let len = pool.members.len();
+    if pool.stakes.len() != len || pool.chain_ids.len() != len {
+        return Err(ContractError::InvariantViolation);
+    }
+
     let idx = member_index(&pool, &voucher)
         .ok_or(ContractError::NotPoolMember)?;
 
-    let stake = pool.stakes.get(idx as u32).unwrap_or(0);
-    let chain_id = pool.chain_ids.get(idx as u32).unwrap_or(0);
+    let stake = pool
+        .stakes
+        .get(idx as u32)
+        .ok_or(ContractError::InvariantViolation)?;
+    let chain_id = pool
+        .chain_ids
+        .get(idx as u32)
+        .ok_or(ContractError::InvariantViolation)?;
 
     // Rebuild members / stakes / chain_ids with the departing member removed.
     let mut new_members = Vec::new(&env);
@@ -235,8 +249,16 @@ pub fn leave_pool(
     for (i, m) in pool.members.iter().enumerate() {
         if i != idx {
             new_members.push_back(m.clone());
-            new_stakes.push_back(pool.stakes.get(i as u32).unwrap_or(0));
-            new_chains.push_back(pool.chain_ids.get(i as u32).unwrap_or(0));
+            new_stakes.push_back(
+                pool.stakes
+                    .get(i as u32)
+                    .ok_or(ContractError::InvariantViolation)?,
+            );
+            new_chains.push_back(
+                pool.chain_ids
+                    .get(i as u32)
+                    .ok_or(ContractError::InvariantViolation)?,
+            );
         }
     }
 
