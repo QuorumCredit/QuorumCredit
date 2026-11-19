@@ -63,14 +63,8 @@ pub mod prediction_market;
 pub mod reputation_nft;
 pub mod staking_pool;
 pub mod referral;
-pub mod prediction_market;
-pub mod community_treasury;
 pub mod dynamic_interest;
-pub mod governance_token;
-pub mod interest_rate_options;
-pub mod loan_attribution;
 pub mod loyalty;
-pub mod liquidity_mining;
 // Issue #110 — circuit breaker for webhook delivery
 pub mod webhook_retry;
 // Issue #111 — max webhook subscriptions per caller
@@ -82,11 +76,12 @@ pub mod attestor_analytics;
 // each `monitor_loan_covenants` call during the loan lifecycle.
 pub mod covenant_monitoring;
 // Issue #2002 — migration of borrowers/credentials between quorum slices.
-pub mod quorum_slice_migration;
 // Issue #2003 — dynamic rebalancing of quorum slices (admin/keeper triggered).
-pub mod quorum_slice_rebalancing;
 // Issue #2004 — attestor specialization records, written on registration.
 pub mod attestor_specialization;
+// Issue #2103 — attestor performance/SLA tracking. Internal only: not exposed as
+// contract entrypoints yet; compiled so its tests run.
+mod attestor_performance_contracts;
 
 // ── Issues #1738–#1741: SBT features ─────────────────────────────────────────
 // Issue #1738 — SBT Reputation System
@@ -115,7 +110,6 @@ pub mod field_permissions;
 // Issue #1617 — Quorum Slice Transparency Index
 pub mod transparency;
 // Issue #1633 — Credential Audit Trail Compression
-pub mod audit_trail_compression;
 
 #[cfg(test)]
 mod governance_test;
@@ -358,7 +352,8 @@ impl QuorumCreditContract {
         stake: i128,
         token: Address,
     ) -> Result<(), ContractError> {
-        vouch::vouch(env, voucher, borrower, stake, token)
+        // Issue #2100: the entrypoint targets native Stellar (chain_id = None -> 0).
+        vouch::vouch(env, voucher, borrower, stake, token, None)
     }
 
     pub fn increase_stake(
@@ -3291,6 +3286,8 @@ impl QuorumCreditContract {
         voucher: Address,
     ) -> Result<diversification::DiversificationScore, ContractError> {
         diversification::calculate_diversification_score(&env, &voucher)
+    }
+
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
 
     /// Set the access permission (0=Public, 1=Private, 2=ReadOnly, 3=Hidden) for a
@@ -5168,30 +5165,43 @@ impl QuorumCreditContract {
     pub fn initialize_loan_covenants(
         env: Env,
         borrower: Address,
-        loan_amount: i128,
-        collateral_value: i128,
-        income: i128,
+        covenant_types: Vec<crate::types::CovenantType>,
+        ltv_ratio_bps: u32,
+        dti_ratio_bps: u32,
+        min_activity_per_period: u32,
+        collateral_maintenance_bps: u32,
+        monitoring_period_secs: u64,
+        breach_tolerance: u32,
     ) -> Result<(), ContractError> {
+        // Issue #2100: the module is keyed by loan ID, so resolve the borrower's
+        // active loan. A borrower without an active loan gets `NoActiveLoan`.
+        let loan = helpers::get_active_loan_record(&env, &borrower)?;
         covenant_monitoring::initialize_loan_covenants(
             &env,
-            &borrower,
-            loan_amount,
-            collateral_value,
-            income,
+            loan.id,
+            covenant_types,
+            ltv_ratio_bps,
+            dti_ratio_bps,
+            min_activity_per_period,
+            collateral_maintenance_bps,
+            monitoring_period_secs,
+            breach_tolerance,
         )
     }
 
     /// Issue #2001: Re-evaluate all covenants for a borrower's active loan.
     ///
     /// Should be called periodically (or by a keeper) during the loan lifecycle.
-    /// Returns the list of covenant breaches detected; an empty list means all
+    /// Returns the loan's covenant status; `breach_count` is zero when all
     /// covenants (LTV, DTI, PaymentSchedule, ActivityRequirement,
     /// CollateralMaintenance, CrossDefault) are satisfied.
     pub fn monitor_loan_covenants(
         env: Env,
         borrower: Address,
-    ) -> Result<Vec<covenant_monitoring::CovenantBreach>, ContractError> {
-        covenant_monitoring::monitor_loan_covenants(&env, &borrower)
+    ) -> Result<crate::types::LoanCovenantStatus, ContractError> {
+        // Issue #2100: resolve the borrower to its active loan ID.
+        let loan = helpers::get_active_loan_record(&env, &borrower)?;
+        covenant_monitoring::monitor_loan_covenants(&env, loan.id)
     }
 
     // ── Issue #2002: Quorum Slice Migration ───────────────────────────────────
@@ -5297,6 +5307,8 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_specialization::AttestorSpecialization> {
         attestor_specialization::get_attestor_specialization(&env, &attestor)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Issue #1928: Quorum Slice Transparency Index Reporting
     // ─────────────────────────────────────────────────────────────────────────
