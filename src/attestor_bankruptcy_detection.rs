@@ -381,9 +381,34 @@ pub fn is_attestor_flagged(env: &Env, attestor: Address) -> Result<bool, Contrac
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    fn metrics(env: &Env, assets: i128, liabilities: i128) -> FinancialMetrics {
+        FinancialMetrics {
+            attestor_address: Address::generate(env),
+            total_assets: assets,
+            total_liabilities: liabilities,
+            available_liquidity: assets,
+            active_attestations: 0,
+            failed_attestations: 0,
+            failure_rate_percentage: 0,
+            last_update: 0,
+        }
+    }
 
     #[test]
     fn test_health_status_bankrupt() {
-        // Bankruptcy test would verify that liabilities > assets results in Bankrupt status
+        let env = Env::default();
+        // liabilities > assets → Bankrupt
+        let m = metrics(&env, 100, 200);
+        assert_eq!(determine_health_status(&m), HealthStatus::Bankrupt);
+    }
+
+    #[test]
+    fn test_health_status_not_bankrupt_when_assets_exceed_liabilities() {
+        let env = Env::default();
+        // assets > liabilities → not Bankrupt (healthy ratios here)
+        let m = metrics(&env, 1_000, 100);
+        assert_eq!(determine_health_status(&m), HealthStatus::Healthy);
     }
 }

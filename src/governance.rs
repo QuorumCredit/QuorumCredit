@@ -626,7 +626,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
         // Issue #1422: refresh this voucher's fraud score off the updated
         // slash history so suspicious vouching patterns get flagged.
-        let _ = crate::detection::update_fraud_score(env.clone(), v.voucher.clone());
+        crate::detection::update_fraud_score(env.clone(), v.voucher.clone())?;
     }
 
     env.storage()

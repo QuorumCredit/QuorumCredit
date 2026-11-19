@@ -152,6 +152,7 @@ pub fn get_fraud_score_config_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soroban_sdk::testutils::Address as _;
 
     fn stats(successful: u32, slashed: u32) -> VoucherStats {
         VoucherStats {
@@ -199,5 +200,19 @@ mod tests {
         assert!(score_from_stats(&stats(0, 1)) >= cfg.threshold);
         // clean voucher → no breach.
         assert!(score_from_stats(&stats(5, 0)) < cfg.threshold);
+    }
+
+    #[test]
+    fn test_update_fraud_score_persists_record() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, crate::QuorumCreditContract);
+        let voucher = Address::generate(&env);
+        env.as_contract(&contract_id, || {
+            assert!(get_fraud_score(env.clone(), voucher.clone()).is_none());
+            update_fraud_score(env.clone(), voucher.clone()).unwrap();
+            let record = get_fraud_score(env.clone(), voucher.clone())
+                .expect("fraud score record must be persisted");
+            assert_eq!(record.score, 0);
+        });
     }
 }

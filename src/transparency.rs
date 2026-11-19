@@ -110,13 +110,13 @@ pub fn calculate_transparency_index(
         .unwrap_or(score);
 
     if previous_score != score {
-        let _ = track_transparency_change(
+        track_transparency_change(
             env,
             slice_id,
             previous_score,
             score,
             "Recalculated transparency index",
-        );
+        )?;
         env.storage()
             .persistent()
             .set(&DataKey::PreviousSliceTransparencyScore(slice_id.clone()), &score);
@@ -355,6 +355,32 @@ mod tests {
         env.as_contract(&contract_id, || {
             update_distinct_domains(&env, &slice_id, 7).unwrap();
             assert_eq!(calculate_transparency_index(&env, &slice_id), Ok(0));
+        });
+    }
+
+    #[test]
+    fn test_transparency_change_is_recorded_in_history() {
+        let env = Env::default();
+        let contract_id = setup_contract(&env);
+        let slice_id = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            update_validator_count(&env, &slice_id, 5).unwrap();
+            update_distinct_domains(&env, &slice_id, 3).unwrap();
+            set_slice_public(&env, &slice_id, true).unwrap();
+
+            // Seed a previous score that differs from the recalculated one so a
+            // change must be tracked.
+            env.storage()
+                .persistent()
+                .set(&DataKey::PreviousSliceTransparencyScore(slice_id.clone()), &0u32);
+
+            let score = calculate_transparency_index(&env, &slice_id).unwrap();
+            let history = get_transparency_history(&env, &slice_id);
+            assert_eq!(history.len(), 1);
+            let (_ts, prev, new) = history.get(0).unwrap();
+            assert_eq!(prev, 0);
+            assert_eq!(new, score);
         });
     }
 }

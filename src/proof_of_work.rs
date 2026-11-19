@@ -6,7 +6,7 @@
 
 extern crate alloc;
 
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 use crate::errors::ContractError;
 use crate::types::DataKey;
 
@@ -138,11 +138,23 @@ pub fn require_pow_for_operation(
 
         // Check if adjustment is needed
         if count % POW_ADJUSTMENT_THRESHOLD as u32 == 0 {
-            let _ = adjust_difficulty_if_needed(env);
+            report_adjustment_result(env, adjust_difficulty_if_needed(env));
         }
     }
     
     Ok(pow_valid)
+}
+
+/// Surface a failed difficulty adjustment instead of silently dropping it.
+/// Emits `pow/adjust_failed` carrying the error code so operators can see
+/// that the control did not take effect. Successful adjustments are silent.
+fn report_adjustment_result(env: &Env, result: Result<(), ContractError>) {
+    if let Err(err) = result {
+        env.events().publish(
+            (symbol_short!("pow"), Symbol::new(env, "adjust_failed")),
+            err as u32,
+        );
+    }
 }
 
 /// Adjust proof-of-work difficulty based on operation frequency.
@@ -315,5 +327,25 @@ mod tests {
         assert_eq!(count_leading_zeros(0), 64);
         assert_eq!(count_leading_zeros(0x00000001), 32);
         assert_eq!(count_leading_zeros(0x80000000), 0);
+    }
+
+    #[test]
+    fn test_adjustment_failure_emits_pow_adjust_failed_event() {
+        let env = Env::default();
+        let contract_id = setup_contract(&env);
+        env.as_contract(&contract_id, || {
+            report_adjustment_result(&env, Err(ContractError::InvalidDifficulty));
+            assert_eq!(env.events().all().events().len(), 1);
+        });
+    }
+
+    #[test]
+    fn test_successful_adjustment_emits_no_failure_event() {
+        let env = Env::default();
+        let contract_id = setup_contract(&env);
+        env.as_contract(&contract_id, || {
+            report_adjustment_result(&env, Ok(()));
+            assert_eq!(env.events().all().events().len(), 0);
+        });
     }
 }
