@@ -71,6 +71,7 @@ pub mod interest_rate_options;
 pub mod loan_attribution;
 pub mod loyalty;
 pub mod liquidity_mining;
+pub mod liquidity_farming;
 // Issue #110 — circuit breaker for webhook delivery
 pub mod webhook_retry;
 // Issue #111 — max webhook subscriptions per caller
@@ -165,6 +166,8 @@ mod cross_chain_governance_test;
 mod cross_chain_auction_test;
 #[cfg(test)]
 mod liquidity_farming_test;
+#[cfg(test)]
+mod staking_pool_test;
 #[cfg(test)]
 mod loan_cart_test;
 #[cfg(test)]
@@ -3291,6 +3294,8 @@ impl QuorumCreditContract {
         voucher: Address,
     ) -> Result<diversification::DiversificationScore, ContractError> {
         diversification::calculate_diversification_score(&env, &voucher)
+    }
+
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
 
     /// Set the access permission (0=Public, 1=Private, 2=ReadOnly, 3=Hidden) for a
@@ -5297,6 +5302,8 @@ impl QuorumCreditContract {
         attestor: Address,
     ) -> Option<attestor_specialization::AttestorSpecialization> {
         attestor_specialization::get_attestor_specialization(&env, &attestor)
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Issue #1928: Quorum Slice Transparency Index Reporting
     // ─────────────────────────────────────────────────────────────────────────

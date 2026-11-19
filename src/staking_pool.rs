@@ -34,6 +34,10 @@ use crate::types::{
     YIELD_PER_TOKEN_PRECISION,
 };
 
+/// Accumulator value at or above which a `pool/accWarn` event is emitted, so
+/// operators can see the yield-per-token accumulator nearing `i128::MAX`.
+const ACCUMULATOR_WARN_THRESHOLD: i128 = i128::MAX / 2;
+
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 fn load_pool(env: &Env, pool_id: u64) -> Result<StakingPool, ContractError> {
@@ -326,8 +330,9 @@ pub fn claim_yield(
         return Err(ContractError::InsufficientFunds);
     }
 
+    // Do not touch `last_action_timestamp` here: it anchors the unstake delay
+    // enforced by `process_unstake`, and a claim must not extend a queued exit.
     position.pending_rewards = 0;
-    position.last_action_timestamp = env.ledger().timestamp();
 
     let token_client = token::Client::new(&env, &pool.token);
     token_client.transfer(&env.current_contract_address(), &staker, &rewards);
@@ -388,18 +393,37 @@ pub fn distribute_yield(
     if reserve < yield_amount {
         return Err(ContractError::InsufficientYieldReserve);
     }
-    env.storage()
-        .persistent()
-        .set(&DataKey::YieldReserve, &(reserve - yield_amount));
 
-    // Update accumulator.
+    // Update accumulator. The per-token delta is rounded down, so only the
+    // amount that stakers can actually harvest (`distributed`) is debited from
+    // the reserve. The rounding remainder stays in the reserve instead of being
+    // debited and then lost.
     let delta = yield_amount
         .checked_mul(YIELD_PER_TOKEN_PRECISION)
         .ok_or(ContractError::ArithmeticOverflow)?
         / pool.total_staked;
+    let distributed = delta
+        .checked_mul(pool.total_staked)
+        .ok_or(ContractError::ArithmeticOverflow)?
+        / YIELD_PER_TOKEN_PRECISION;
 
-    pool.yield_per_token_scaled = pool.yield_per_token_scaled.saturating_add(delta);
-    pool.total_yield_distributed = pool.total_yield_distributed.saturating_add(yield_amount);
+    let new_accumulator = pool
+        .yield_per_token_scaled
+        .checked_add(delta)
+        .ok_or(ContractError::ArithmeticOverflow)?;
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::YieldReserve, &(reserve - distributed));
+
+    pool.yield_per_token_scaled = new_accumulator;
+    if pool.yield_per_token_scaled >= ACCUMULATOR_WARN_THRESHOLD {
+        env.events().publish(
+            (symbol_short!("pool"), symbol_short!("accWarn")),
+            (pool_id, pool.yield_per_token_scaled),
+        );
+    }
+    pool.total_yield_distributed = pool.total_yield_distributed.saturating_add(distributed);
 
     // Recalculate APY: annualised yield / total staked, in basis points.
     let now = env.ledger().timestamp();
@@ -407,7 +431,7 @@ pub fn distribute_yield(
     if elapsed_secs > 0 && pool.total_staked > 0 {
         // apy_bps = yield_amount * 10_000 * SECS_PER_YEAR / elapsed_secs / total_staked
         const SECS_PER_YEAR: i128 = 365 * 24 * 60 * 60;
-        let annualised = yield_amount
+        let annualised = distributed
             .saturating_mul(10_000)
             .saturating_mul(SECS_PER_YEAR)
             / (elapsed_secs as i128)
@@ -464,7 +488,10 @@ pub fn apply_staking_pool_loss(
         .ok_or(ContractError::ArithmeticOverflow)?
         / pool.total_staked;
 
-    pool.yield_per_token_scaled = pool.yield_per_token_scaled.saturating_sub(loss_delta);
+    pool.yield_per_token_scaled = pool
+        .yield_per_token_scaled
+        .checked_sub(loss_delta)
+        .ok_or(ContractError::ArithmeticOverflow)?;
     pool.total_staked = pool.total_staked.saturating_sub(loss_amount);
 
     save_pool(&env, &pool);

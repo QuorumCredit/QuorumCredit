@@ -15,7 +15,7 @@
 use crate::errors::ContractError;
 use crate::helpers::require_admin_approval;
 use crate::types::DataKey;
-use soroban_sdk::{contracttype, Address, Env, Vec};
+use soroban_sdk::{contracttype, token, Address, Env, Vec};
 
 /// Liquidity farming pool for a token
 #[contracttype]
@@ -23,8 +23,11 @@ use soroban_sdk::{contracttype, Address, Env, Vec};
 pub struct LiquidityFarmPool {
     /// Unique pool ID
     pub pool_id: u64,
-    /// Token being farmed
+    /// Token being farmed (the LP token deposited via `add_liquidity`)
     pub token: Address,
+    /// Token paid out as farming rewards. Rewards are drawn from the contract's
+    /// balance of this token, which acts as the funded reward reserve.
+    pub reward_token: Address,
     /// Total liquidity in pool
     pub total_liquidity: i128,
     /// Total reward tokens allocated
@@ -86,6 +89,7 @@ pub fn create_farm_pool(
     env: Env,
     admin_signers: Vec<Address>,
     token: Address,
+    reward_token: Address,
     initial_reward_rate: i128,
 ) -> Result<u64, ContractError> {
     require_admin_approval(&env, &admin_signers);
@@ -100,6 +104,7 @@ pub fn create_farm_pool(
     let pool = LiquidityFarmPool {
         pool_id,
         token,
+        reward_token,
         total_liquidity: 0,
         total_rewards: 0,
         reward_rate: initial_reward_rate,
@@ -164,6 +169,13 @@ pub fn add_liquidity(
         }
     };
 
+    // Pull the LP tokens into the contract before recording the deposit.
+    token::Client::new(&env, &pool.token).transfer(
+        &lp_provider,
+        &env.current_contract_address(),
+        &liquidity_amount,
+    );
+
     // Update pool totals
     pool.total_liquidity = pool.total_liquidity.saturating_add(liquidity_amount);
 
@@ -173,8 +185,6 @@ pub fn add_liquidity(
     env.storage()
         .persistent()
         .set(&DataKey::FarmingPosition(pool_id, lp_provider), &position);
-
-    // In production, would transfer liquidity tokens from LP to contract
 
     Ok(())
 }
@@ -219,6 +229,13 @@ pub fn remove_liquidity(
     // Update pool
     pool.total_liquidity = pool.total_liquidity.saturating_sub(amount_to_withdraw);
 
+    // Return the LP tokens before recording the withdrawal.
+    token::Client::new(&env, &pool.token).transfer(
+        &env.current_contract_address(),
+        &lp_provider,
+        &amount_to_withdraw,
+    );
+
     env.storage()
         .persistent()
         .set(&DataKey::FarmPool(pool_id), &pool);
@@ -233,8 +250,6 @@ pub fn remove_liquidity(
             .persistent()
             .remove(&DataKey::FarmingPosition(pool_id, lp_provider));
     }
-
-    // In production, would transfer liquidity tokens back to LP
 
     Ok(())
 }
@@ -268,11 +283,18 @@ pub fn claim_farming_rewards(
     position.pending_rewards = 0;
     position.total_rewards_claimed = position.total_rewards_claimed.saturating_add(claimed);
 
+    if claimed > 0 {
+        // Pay the rewards out of the contract's funded reward reserve.
+        token::Client::new(&env, &pool.reward_token).transfer(
+            &env.current_contract_address(),
+            &lp_provider,
+            &claimed,
+        );
+    }
+
     env.storage()
         .persistent()
         .set(&DataKey::FarmingPosition(pool_id, lp_provider), &position);
-
-    // In production, would transfer reward tokens to LP
 
     Ok(claimed)
 }
