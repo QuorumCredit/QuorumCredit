@@ -4883,7 +4883,7 @@ impl QuorumCreditContract {
         notional: i128,
         strike_bps: u32,
         duration_secs: u64,
-    ) -> i128 {
+    ) -> Result<i128, ContractError> {
         let days = (duration_secs / interest_rate_options::SECS_PER_DAY).max(1);
         let vol = interest_rate_options::get_implied_volatility(&env);
         interest_rate_options::calculate_premium(notional, strike_bps, days, vol)

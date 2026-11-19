@@ -187,6 +187,28 @@ fn validate_vouch<'a>(
     token: &Address,
     chain_id: Option<u32>,
 ) -> Result<(token::Client<'a>, Vec<VouchRecord>), ContractError> {
+    let (token_client, vouches) =
+        validate_vouch_policy(env, cfg, voucher, borrower, stake, token, chain_id)?;
+
+    if token_client.balance(voucher) < stake {
+        return Err(ContractError::InsufficientVoucherBalance);
+    }
+
+    Ok((token_client, vouches))
+}
+
+/// Every vouch policy check except the voucher's token balance. Shared by new
+/// vouches (`validate_vouch`) and rotation, which moves an existing stake and
+/// so must not require the voucher to still hold those tokens.
+fn validate_vouch_policy<'a>(
+    env: &'a Env,
+    cfg: &VouchConfig,
+    voucher: &Address,
+    borrower: &Address,
+    stake: i128,
+    token: &Address,
+    chain_id: Option<u32>,
+) -> Result<(token::Client<'a>, Vec<VouchRecord>), ContractError> {
     require_positive_amount(env, stake)?;
 
     if voucher == borrower {
@@ -269,10 +291,6 @@ fn validate_vouch<'a>(
 
     if has_active_loan(env, borrower) {
         return Err(ContractError::ActiveLoanExists);
-    }
-
-    if token_client.balance(voucher) < stake {
-        return Err(ContractError::InsufficientVoucherBalance);
     }
 
     Ok((token_client, vouches))
@@ -1050,7 +1068,11 @@ mod tests {
     use super::*;
     use crate::types::DataKey;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
-    use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, Address, Env, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger},
+        token::StellarAssetClient,
+        Address, Env, Vec,
+    };
 
     fn setup_contract(env: &Env) -> (Address, Address) {
         let deployer = Address::generate(env);
@@ -1091,6 +1113,195 @@ mod tests {
         // One past u32::MAX must fail rather than wrap to a small index.
         let above = (u32::MAX as usize) + 1;
         assert_eq!(to_u32_index(above), Err(ContractError::ArithmeticError));
+    }
+
+    // ── Issue #2115: rotate_to_new_borrower policy checks and vouch age ──────
+
+    const ROT_DAY: u64 = 24 * 60 * 60;
+
+    fn rotation_env() -> (Env, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, token) = setup_contract(&env);
+        env.ledger().set_timestamp(1_000);
+        (env, contract_id, token)
+    }
+
+    fn vouch_as(
+        env: &Env,
+        contract_id: &Address,
+        token: &Address,
+        voucher: &Address,
+        borrower: &Address,
+        stake: i128,
+    ) {
+        StellarAssetClient::new(env, token).mint(voucher, &stake);
+        QuorumCreditContractClient::new(env, contract_id)
+            .vouch(voucher, borrower, &stake, token)
+            .unwrap();
+    }
+
+    fn rotate(
+        env: &Env,
+        contract_id: &Address,
+        voucher: &Address,
+        old: &Address,
+        new: &Address,
+    ) -> Result<(), ContractError> {
+        env.as_contract(contract_id, || {
+            rotate_to_new_borrower(env.clone(), voucher.clone(), old.clone(), new.clone())
+        })
+    }
+
+    fn vouches_of(env: &Env, contract_id: &Address, borrower: &Address) -> Vec<VouchRecord> {
+        env.as_contract(contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, Vec<VouchRecord>>(&DataKey::Vouches(borrower.clone()))
+                .unwrap_or(Vec::new(env))
+        })
+    }
+
+    #[test]
+    fn test_rotate_keeps_original_vouch_timestamp_and_moves_stake() {
+        let (env, cid, token) = rotation_env();
+        let voucher = Address::generate(&env);
+        let old = Address::generate(&env);
+        let new = Address::generate(&env);
+
+        vouch_as(&env, &cid, &token, &voucher, &old, 1_000);
+        let original_ts = vouches_of(&env, &cid, &old).get(0).unwrap().vouch_timestamp;
+        assert_eq!(original_ts, 1_000);
+
+        env.ledger().set_timestamp(1_000 + 31 * ROT_DAY);
+        // The voucher's balance is zero now (stake is held by the contract),
+        // yet rotation must still succeed because it moves an existing stake.
+        rotate(&env, &cid, &voucher, &old, &new).unwrap();
+
+        assert_eq!(vouches_of(&env, &cid, &old).len(), 0);
+        let moved = vouches_of(&env, &cid, &new);
+        assert_eq!(moved.len(), 1);
+        let rec = moved.get(0).unwrap();
+        assert_eq!(rec.voucher, voucher);
+        assert_eq!(rec.stake, 1_000);
+        assert_eq!(rec.vouch_timestamp, original_ts);
+    }
+
+    #[test]
+    fn test_rotate_rejects_blacklisted_new_borrower() {
+        let (env, cid, token) = rotation_env();
+        let voucher = Address::generate(&env);
+        let old = Address::generate(&env);
+        let new = Address::generate(&env);
+        vouch_as(&env, &cid, &token, &voucher, &old, 1_000);
+
+        env.as_contract(&cid, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Blacklisted(new.clone()), &true);
+        });
+        env.ledger().set_timestamp(1_000 + 31 * ROT_DAY);
+
+        assert_eq!(
+            rotate(&env, &cid, &voucher, &old, &new),
+            Err(ContractError::Blacklisted)
+        );
+    }
+
+    #[test]
+    fn test_rotate_rejects_voucher_within_vouch_cooldown() {
+        let (env, cid, token) = rotation_env();
+        let voucher = Address::generate(&env);
+        let old = Address::generate(&env);
+        let new = Address::generate(&env);
+        vouch_as(&env, &cid, &token, &voucher, &old, 1_000);
+
+        // One second after the vouch is still inside the vouch cooldown.
+        env.ledger().set_timestamp(1_001);
+        assert_eq!(
+            rotate(&env, &cid, &voucher, &old, &new),
+            Err(ContractError::VouchCooldownActive)
+        );
+    }
+
+    #[test]
+    fn test_rotate_rejects_non_whitelisted_voucher() {
+        let (env, cid, token) = rotation_env();
+        let voucher = Address::generate(&env);
+        let old = Address::generate(&env);
+        let new = Address::generate(&env);
+        vouch_as(&env, &cid, &token, &voucher, &old, 1_000);
+
+        env.as_contract(&cid, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::WhitelistEnabled, &true);
+        });
+        env.ledger().set_timestamp(1_000 + 31 * ROT_DAY);
+
+        assert_eq!(
+            rotate(&env, &cid, &voucher, &old, &new),
+            Err(ContractError::VoucherNotWhitelisted)
+        );
+    }
+
+    #[test]
+    fn test_rotate_rejects_stake_below_min_stake() {
+        let (env, cid, token) = rotation_env();
+        let voucher = Address::generate(&env);
+        let old = Address::generate(&env);
+        let new = Address::generate(&env);
+        vouch_as(&env, &cid, &token, &voucher, &old, 1_000);
+
+        env.as_contract(&cid, || {
+            env.storage().instance().set(&DataKey::MinStake, &5_000i128);
+        });
+        env.ledger().set_timestamp(1_000 + 31 * ROT_DAY);
+
+        assert_eq!(
+            rotate(&env, &cid, &voucher, &old, &new),
+            Err(ContractError::MinStakeNotMet)
+        );
+    }
+
+    #[test]
+    fn test_rotate_rejects_new_borrower_at_max_vouchers() {
+        let (env, cid, token) = rotation_env();
+        let voucher = Address::generate(&env);
+        let other = Address::generate(&env);
+        let old = Address::generate(&env);
+        let new = Address::generate(&env);
+        vouch_as(&env, &cid, &token, &voucher, &old, 1_000);
+        vouch_as(&env, &cid, &token, &other, &new, 1_000);
+
+        env.as_contract(&cid, || {
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxVouchersPerBorrower, &1u32);
+        });
+        env.ledger().set_timestamp(1_000 + 31 * ROT_DAY);
+
+        assert_eq!(
+            rotate(&env, &cid, &voucher, &old, &new),
+            Err(ContractError::MaxVouchersPerBorrowerExceeded)
+        );
+    }
+
+    #[test]
+    fn test_rotate_rejects_duplicate_voucher_for_new_borrower() {
+        let (env, cid, token) = rotation_env();
+        let voucher = Address::generate(&env);
+        let old = Address::generate(&env);
+        let new = Address::generate(&env);
+        vouch_as(&env, &cid, &token, &voucher, &old, 1_000);
+        env.ledger().set_timestamp(1_000 + 31 * ROT_DAY);
+        vouch_as(&env, &cid, &token, &voucher, &new, 1_000);
+
+        env.ledger().set_timestamp(1_000 + 62 * ROT_DAY);
+        assert_eq!(
+            rotate(&env, &cid, &voucher, &old, &new),
+            Err(ContractError::DuplicateVouch)
+        );
     }
 
     #[test]
@@ -2327,7 +2538,10 @@ pub const STAGNANT_VOUCH_THRESHOLD_DAYS: u64 = 180;
 /// this function simply never assesses one). Enforces a 14-day cooling off
 /// period between rotations, and records a 5% yield bonus
 /// (`DataKey::RotationBonusBps`) when the voucher rotates on a quarterly
-/// cadence or better.
+/// cadence or better. The new borrower is checked with the same policy as a
+/// fresh vouch (blacklist, whitelist, cooldown, min stake, max vouchers,
+/// duplicate and active-loan checks), and the original `vouch_timestamp` is
+/// preserved.
 pub fn rotate_to_new_borrower(
     env: Env,
     voucher: Address,
@@ -2372,6 +2586,21 @@ pub fn rotate_to_new_borrower(
     let vouch_rec = old_vouches.get(idx).ok_or(ContractError::VoucherNotFound)?;
     let token = vouch_rec.token.clone();
 
+    // Apply the same policy as a fresh vouch to the new borrower (blacklist,
+    // whitelist, cooldown, min stake, max vouchers, duplicate, active loan),
+    // so rotation cannot bypass it. Balance is not checked: the stake is
+    // already held by the contract and is only being re-assigned.
+    let cfg = VouchConfig::load(&env);
+    validate_vouch_policy(
+        &env,
+        &cfg,
+        &voucher,
+        &new_borrower,
+        vouch_rec.stake,
+        &token,
+        None,
+    )?;
+
     let mut new_borrower_vouches: Vec<VouchRecord> = env
         .storage()
         .persistent()
@@ -2385,17 +2614,15 @@ pub fn rotate_to_new_borrower(
         return Err(ContractError::DuplicateVouch);
     }
 
-    // Move the record: remove from old_borrower, append (with a fresh
-    // timestamp) under new_borrower.
+    // Move the record: remove from old_borrower, append under new_borrower.
+    // The original vouch_timestamp is kept so age-based bonuses carry over.
     old_vouches.remove(idx);
     env.storage()
         .persistent()
         .set(&DataKey::Vouches(old_borrower.clone()), &old_vouches);
     invalidate_weighted_stake_cache(&env, &old_borrower, &token);
 
-    let mut rotated = vouch_rec.clone();
-    rotated.vouch_timestamp = now;
-    new_borrower_vouches.push_back(rotated);
+    new_borrower_vouches.push_back(vouch_rec.clone());
     env.storage().persistent().set(
         &DataKey::Vouches(new_borrower.clone()),
         &new_borrower_vouches,

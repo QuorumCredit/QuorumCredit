@@ -131,14 +131,17 @@ pub struct OptionOpenInterest {
 /// The square root is approximated via integer Newton's method.
 ///
 /// All values are in stroops / basis-points.
+///
+/// # Errors
+/// - `ArithmeticError` — an intermediate product or the fee addition overflows `i128`.
 pub fn calculate_premium(
     notional: i128,
     strike_bps: u32,
     days_to_expiry: u64,
     implied_vol_bps: u32,
-) -> i128 {
+) -> Result<i128, ContractError> {
     if days_to_expiry == 0 || notional <= 0 {
-        return 0;
+        return Ok(0);
     }
 
     // Integer square root of days_to_expiry (Newton's method).
@@ -148,11 +151,28 @@ pub fn calculate_premium(
     // divisor chosen so that for typical values (notional=1e10, strike=200,
     // vol=5, days=30) the premium is a few basis points of notional.
     let divisor: i128 = 10_000 * 10_000 * 100;
-    let premium = notional * strike_bps as i128 * implied_vol_bps as i128 * sqrt_days / divisor;
+    let risk_term = notional
+        .checked_mul(strike_bps as i128)
+        .and_then(|v| v.checked_mul(implied_vol_bps as i128))
+        .and_then(|v| v.checked_mul(sqrt_days))
+        .ok_or(ContractError::ArithmeticError)?;
+    // Round up (ceiling division) so any positive risk term costs at least one stroop.
+    // Plain truncation let small notionals price to zero and be granted for free.
+    let premium = if risk_term > 0 {
+        risk_term
+            .checked_add(divisor - 1)
+            .ok_or(ContractError::ArithmeticError)?
+            / divisor
+    } else {
+        0
+    };
 
     // Apply protocol fee on top (embed in premium).
-    let fee = premium * OPTION_PROTOCOL_FEE_BPS as i128 / 10_000;
-    premium + fee
+    let fee = premium
+        .checked_mul(OPTION_PROTOCOL_FEE_BPS as i128)
+        .ok_or(ContractError::ArithmeticError)?
+        / 10_000;
+    premium.checked_add(fee).ok_or(ContractError::ArithmeticError)
 }
 
 /// Integer square root via Newton's method.
@@ -210,7 +230,7 @@ pub fn get_implied_volatility(env: &Env) -> u32 {
 /// - `token_addr`   — protocol token for premium transfer.
 ///
 /// # Errors
-/// - `InvalidAmount`    — notional ≤ 0, strike = 0, or duration = 0.
+/// - `InvalidAmount`    — notional ≤ 0, strike = 0, duration = 0, or computed premium is 0.
 /// - `ContractPaused`   — contract is paused.
 pub fn buy_option(
     env: &Env,
@@ -233,7 +253,11 @@ pub fn buy_option(
     let days_to_expiry = (duration_secs / SECS_PER_DAY).max(1);
     let vol = get_implied_volatility(env);
 
-    let premium = calculate_premium(notional, strike_bps, days_to_expiry, vol);
+    let premium = calculate_premium(notional, strike_bps, days_to_expiry, vol)?;
+    // A zero premium would grant an option for free; refuse it.
+    if premium <= 0 {
+        return Err(ContractError::InvalidAmount);
+    }
 
     // Transfer premium from holder to contract.
     if premium > 0 {
@@ -543,19 +567,59 @@ mod tests {
             30,             // 30 days
             5,              // 5 bps/day vol
         );
-        assert!(premium > 0, "Premium should be positive");
+        assert!(premium.unwrap() > 0, "Premium should be positive");
     }
 
     #[test]
     fn test_premium_zero_for_zero_days() {
         let premium = calculate_premium(10_000_000_000, 200, 0, 5);
-        assert_eq!(premium, 0);
+        assert_eq!(premium, Ok(0));
+    }
+
+    #[test]
+    fn test_premium_rounds_up_small_notional_to_one_stroop() {
+        // Issue example: raw risk term 1_000_000 / divisor 1e8 truncates to 0.
+        // Rounding up must charge at least one stroop instead.
+        assert_eq!(calculate_premium(1_000, 200, 1, 5), Ok(1));
+    }
+
+    #[test]
+    fn test_buy_option_rejects_zero_premium() {
+        let (env, contract_id) = make_env();
+        let holder = Address::generate(&env);
+        let token = Address::generate(&env);
+
+        // Zero implied volatility makes the risk term zero, so the premium is zero.
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ImpliedVolatility, &0u32);
+        });
+
+        let r = env.as_contract(&contract_id, || {
+            buy_option(&env, holder, OptionType::Call, 200, 1_000, 3600, token)
+        });
+        assert_eq!(r, Err(ContractError::InvalidAmount));
     }
 
     #[test]
     fn test_premium_zero_for_zero_notional() {
         let premium = calculate_premium(0, 200, 30, 5);
-        assert_eq!(premium, 0);
+        assert_eq!(premium, Ok(0));
+    }
+
+    #[test]
+    fn test_premium_overflow_returns_arithmetic_error() {
+        // notional * strike * vol * sqrt(days) overflows i128.
+        let r = calculate_premium(i128::MAX / 100, 10_000, 30, 10_000);
+        assert_eq!(r, Err(ContractError::ArithmeticError));
+    }
+
+    #[test]
+    fn test_premium_large_notional_near_limit_does_not_panic() {
+        // Near i128::MAX / 10_000 with normal parameters stays in range.
+        let r = calculate_premium(i128::MAX / 10_000, 200, 30, 5);
+        assert!(r.is_ok());
     }
 
     #[test]

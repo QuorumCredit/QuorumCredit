@@ -543,13 +543,14 @@ pub fn apply_tier_rewards_to_fee(
 /// **Decay mechanics:**
 /// - Reads the borrower's current credit score and last_decay_timestamp
 /// - Calculates months elapsed since last decay
-/// - For each month elapsed, applies decay_bps percentage reduction
-/// - Updates last_decay_timestamp and stores updated score
+/// - For each month elapsed, applies decay_bps percentage reduction (compounding)
+/// - Advances last_decay_timestamp by the whole months consumed, keeping any partial month
+/// - Stores updated score
 /// - Emits event with decay amount applied
 ///
 /// **Example:** With score=700 and decay_bps=100 (1% per month):
 /// - After 1 month: 700 * (10000 - 100) / 10000 = 693
-/// - After 12 months: 700 * (9900/10000)^12 ≈ 616.5
+/// - After 12 months: 700 * (9900/10000)^12 ≈ 620 (each month compounds on the last)
 pub fn apply_reputation_decay(env: &Env, borrower: &Address) -> Result<(), ContractError> {
     let cfg = crate::helpers::config(&env);
     
@@ -577,19 +578,30 @@ pub fn apply_reputation_decay(env: &Env, borrower: &Address) -> Result<(), Contr
     }
 
     let original_score = credit_score.score;
-    
-    // Apply decay for each month: score *= (10000 - decay_bps) / 10000
-    // Simplified: apply total decay = score - (score * decay_bps * months / 10000)
-    let decay_per_month_bps = cfg.score_decay_per_month as i128;
-    let total_decay_basis = decay_per_month_bps * months_elapsed as i128;
-    
-    // Cap total decay at 100% (10000 bps) to prevent negative scores
-    let capped_decay = total_decay_basis.min(10000);
-    let decay_amount = (credit_score.score as i128 * capped_decay / 10000) as u32;
-    
-    credit_score.score = credit_score.score.saturating_sub(decay_amount);
-    credit_score.last_decay_timestamp = now;
-    
+
+    // Compound the decay once per whole elapsed month:
+    //   score_{n+1} = score_n * (10000 - decay_bps) / 10000
+    // Each month applies to the result of the previous month, matching the
+    // documented rule. Because every month is one identical step, two checks
+    // that together cover N whole months give the same score as one check
+    // covering N months.
+    let keep_bps = 10_000u128.saturating_sub(cfg.score_decay_per_month as u128);
+    let mut score = original_score as u128;
+    for _ in 0..months_elapsed {
+        if score == 0 {
+            break;
+        }
+        score = score * keep_bps / 10_000;
+    }
+    credit_score.score = score as u32;
+    let decay_amount = original_score - credit_score.score;
+
+    // Advance only by the whole months consumed, so the remainder of a
+    // partial month keeps accruing toward the next decay step.
+    credit_score.last_decay_timestamp = credit_score
+        .last_decay_timestamp
+        .saturating_add(months_elapsed as u64 * secs_per_month);
+
     // Recalculate tier based on new score
     credit_score.tier = calculate_tier(credit_score.score);
 

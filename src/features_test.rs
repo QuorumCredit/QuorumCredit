@@ -97,6 +97,67 @@ fn test_apply_reputation_decay_single_borrower() {
 }
 
 #[test]
+fn test_reputation_decay_partial_month_is_not_dropped() {
+    use crate::types::{CreditScore, CreditTier, DataKey};
+
+    let TestSetup { env, client, contract_id, .. } = setup_test();
+    let day: u64 = 24 * 60 * 60;
+    let start: u64 = 1_000_000;
+
+    let seed = |borrower: &Address| {
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(
+                &DataKey::CreditScore(borrower.clone()),
+                &CreditScore {
+                    score: 1000,
+                    tier: CreditTier::Excellent,
+                    last_updated: start,
+                    last_decay_timestamp: start,
+                    total_loans: 0,
+                    successful_repayments: 0,
+                    defaults: 0,
+                    total_borrowed: 0,
+                    total_repaid: 0,
+                    account_age: 0,
+                    voucher_count: 0,
+                    avg_repayment_time: 0,
+                },
+            );
+        });
+    };
+    let read_score = |borrower: &Address| -> u32 {
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get::<DataKey, CreditScore>(&DataKey::CreditScore(borrower.clone()))
+                .unwrap()
+                .score
+        })
+    };
+
+    // Borrower A: checked at 59 days, then at 118 days.
+    let a = Address::generate(&env);
+    seed(&a);
+    env.ledger().set_timestamp(start + 59 * day);
+    client.apply_reputation_decay(&a).unwrap();
+    env.ledger().set_timestamp(start + 118 * day);
+    client.apply_reputation_decay(&a).unwrap();
+    let two_checks = read_score(&a);
+
+    // Borrower B: checked once at 118 days.
+    let b = Address::generate(&env);
+    seed(&b);
+    env.ledger().set_timestamp(start + 118 * day);
+    client.apply_reputation_decay(&b).unwrap();
+    let one_check = read_score(&b);
+
+    // 118 days covers three whole months; the 28-day remainder must not be
+    // discarded by the first check, so both paths decay by the same amount.
+    assert_eq!(two_checks, one_check);
+    assert!(one_check < 1000);
+}
+
+#[test]
 fn test_apply_reputation_decay_batch() {
     let TestSetup { env, client, .. } = setup_test();
     
