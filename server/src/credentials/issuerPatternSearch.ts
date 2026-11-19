@@ -18,10 +18,99 @@ export type PatternValidation =
   | { valid: true; regex: RegExp }
   | { valid: false; error: string };
 
-// A quantified group that itself contains a quantifier, e.g. (a+)+, (a*)*, (a|aa)+.
-const NESTED_QUANTIFIER = /\((?:[^()\\]|\\.)*[+*}](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d+,?\d*\})/;
 // Backreferences make matching non-linear.
 const BACKREFERENCE = /\\[1-9]|\\k</;
+// A quantifier token at the start of the string: *, +, ?, {n}, {n,}, {n,m}.
+const QUANTIFIER_AT = /^(?:[+*?]|\{\d+(?:,\d*)?\})/;
+
+/**
+ * Structural check for ReDoS-prone shapes: a repeated group whose body contains
+ * another quantifier or an alternation, e.g. (a+)+, (a*)*, (a|aa)+, (a|a)*, (.*a){10}.
+ * Such groups can be matched in exponentially many ways.
+ *
+ * Walks the pattern rather than matching a regex over it, so escaped characters
+ * and character classes (e.g. [(|]) are not mistaken for group syntax. Malformed
+ * nesting is reported as risky; RegExp construction will reject it separately.
+ */
+function hasRiskyRepeatedGroup(pattern: string): boolean {
+  interface Frame {
+    hasQuantifier: boolean;
+    hasAlternation: boolean;
+  }
+  const stack: Frame[] = [{ hasQuantifier: false, hasAlternation: false }];
+  const top = (): Frame => stack[stack.length - 1];
+
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+
+    if (ch === "[") {
+      // Skip the character class, honouring escapes inside it.
+      i++;
+      if (pattern[i] === "^") i++;
+      while (i < pattern.length && pattern[i] !== "]") {
+        i += pattern[i] === "\\" ? 2 : 1;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === "(") {
+      stack.push({ hasQuantifier: false, hasAlternation: false });
+      i++;
+      if (pattern[i] === "?") {
+        i++;
+        if (pattern[i] === "<" && pattern[i + 1] !== "=" && pattern[i + 1] !== "!") {
+          // Named group: (?<name>...)
+          const close = pattern.indexOf(">", i);
+          if (close === -1) return true;
+          i = close + 1;
+        } else if (pattern[i] === "<") {
+          // Lookbehind: (?<= or (?<!
+          i += 2;
+        } else {
+          // (?: (?= (?!
+          i++;
+        }
+      }
+      continue;
+    }
+
+    if (ch === ")") {
+      if (stack.length === 1) return true; // unbalanced
+      const frame = stack.pop() as Frame;
+      i++;
+      const quantified = QUANTIFIER_AT.test(pattern.slice(i));
+      if (quantified && (frame.hasQuantifier || frame.hasAlternation)) return true;
+      const parent = top();
+      parent.hasQuantifier = parent.hasQuantifier || frame.hasQuantifier || quantified;
+      parent.hasAlternation = parent.hasAlternation || frame.hasAlternation;
+      continue;
+    }
+
+    if (ch === "|") {
+      top().hasAlternation = true;
+      i++;
+      continue;
+    }
+
+    const quantifier = pattern.slice(i).match(QUANTIFIER_AT);
+    if (quantifier) {
+      top().hasQuantifier = true;
+      i += quantifier[0].length;
+      continue;
+    }
+
+    i++;
+  }
+
+  return stack.length !== 1;
+}
 
 interface CacheEntry {
   regex: RegExp;
@@ -38,8 +127,11 @@ export function validateIssuerPattern(pattern: string, flags = "i"): PatternVali
   if (pattern.length > MAX_PATTERN_LENGTH) {
     return { valid: false, error: `issuer_pattern exceeds ${MAX_PATTERN_LENGTH} characters` };
   }
-  if (NESTED_QUANTIFIER.test(pattern)) {
-    return { valid: false, error: "issuer_pattern contains nested quantifiers, which are not allowed" };
+  if (hasRiskyRepeatedGroup(pattern)) {
+    return {
+      valid: false,
+      error: "issuer_pattern repeats a group that contains a quantifier or alternation, which is not allowed",
+    };
   }
   if (BACKREFERENCE.test(pattern)) {
     return { valid: false, error: "issuer_pattern contains backreferences, which are not allowed" };

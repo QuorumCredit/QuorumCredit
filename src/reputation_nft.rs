@@ -29,7 +29,7 @@
 use soroban_sdk::{contracttype, symbol_short, Address, Env, Vec};
 
 use crate::errors::ContractError;
-use crate::helpers::require_not_paused;
+use crate::helpers::{require_allowed_token, require_not_paused};
 use crate::types::DataKey;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -464,13 +464,21 @@ pub fn purchase_badge(
         return Err(ContractError::InvalidAmount);
     }
 
-    // Enforce on-chain payment: buyer must send at least the listing price.
+    // Only tokens on the contract allowlist may settle a purchase.
+    let token_client = require_allowed_token(env, &token)?;
+
+    // Enforce on-chain payment: buyer must send exactly the listing price.
+    // Underpayment is InsufficientFunds; overpayment is refused rather than
+    // silently transferred to the seller.
     if payment_amount < badge.listing_price {
         return Err(ContractError::InsufficientFunds);
     }
+    if payment_amount != badge.listing_price {
+        return Err(ContractError::InvalidAmount);
+    }
 
     // Transfer payment from buyer to seller on-chain.
-    soroban_sdk::token::Client::new(env, &token).transfer(&buyer, &seller, &payment_amount);
+    token_client.transfer(&buyer, &seller, &payment_amount);
 
     // Remove badge from seller.
     env.storage().persistent().remove(&key);
@@ -501,7 +509,7 @@ pub fn purchase_badge(
 
     env.events().publish(
         (symbol_short!("badge"), symbol_short!("sold")),
-        (seller, buyer, badge_type, badge.listing_price),
+        (seller, buyer, badge_type, payment_amount),
     );
 
     Ok(())
@@ -633,6 +641,66 @@ mod tests {
             assert_eq!(b.owner, buyer);
             assert!(!b.listed_for_sale);
         });
+    }
+
+    #[test]
+    fn test_purchase_badge_rejects_disallowed_token() {
+        let (env, contract_id, seller, _token_address) = setup();
+        let buyer = Address::generate(&env);
+
+        // A token the contract has never allowlisted, minted freely by the buyer.
+        let rogue_token = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        soroban_sdk::token::StellarAssetClient::new(&env, &rogue_token).mint(&buyer, &500_000i128);
+
+        env.as_contract(&contract_id, || {
+            mint_badge(&env, &seller, BadgeType::TopVoucher);
+            list_badge_for_sale(&env, seller.clone(), BadgeType::TopVoucher, 500_000).unwrap();
+            let result = purchase_badge(
+                &env,
+                buyer.clone(),
+                seller.clone(),
+                BadgeType::TopVoucher,
+                rogue_token.clone(),
+                500_000i128,
+            );
+            assert_eq!(result, Err(ContractError::InvalidToken));
+        });
+
+        env.as_contract(&contract_id, || {
+            // Badge stays with the seller; nothing was transferred.
+            assert!(get_badge(&env, &seller, BadgeType::TopVoucher).is_some());
+            assert!(get_badge(&env, &buyer, BadgeType::TopVoucher).is_none());
+        });
+    }
+
+    #[test]
+    fn test_purchase_badge_rejects_overpayment() {
+        let (env, contract_id, seller, token_address) = setup();
+        let buyer = Address::generate(&env);
+        let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token_address);
+        token_client.mint(&buyer, &600_000i128);
+
+        env.as_contract(&contract_id, || {
+            mint_badge(&env, &seller, BadgeType::TopVoucher);
+            list_badge_for_sale(&env, seller.clone(), BadgeType::TopVoucher, 500_000).unwrap();
+            let result = purchase_badge(
+                &env,
+                buyer.clone(),
+                seller.clone(),
+                BadgeType::TopVoucher,
+                token_address.clone(),
+                600_000i128,
+            );
+            assert_eq!(result, Err(ContractError::InvalidAmount));
+            // Badge remains listed with the seller.
+            assert!(get_badge(&env, &seller, BadgeType::TopVoucher).is_some());
+        });
+
+        // Buyer keeps their funds; the excess was never transferred.
+        let balance = soroban_sdk::token::Client::new(&env, &token_address).balance(&buyer);
+        assert_eq!(balance, 600_000i128);
     }
 
     #[test]

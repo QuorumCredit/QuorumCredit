@@ -21,7 +21,7 @@ export interface PrivacyShieldOptions {
   epsilon?: number;
   auditLimit?: number;
   now?: () => number;
-  /** Uniform sampler in (0, 1). Injected for deterministic tests. */
+  /** Uniform sampler in (0, 1). Defaults to a CSPRNG; inject only for deterministic tests. */
   random?: () => number;
 }
 
@@ -53,7 +53,7 @@ export class PrivacyShield {
     this.key = key;
     this.epsilon = epsilon;
     this.now = options.now ?? Date.now;
-    this.random = options.random ?? Math.random;
+    this.random = options.random ?? secureUniform;
     this.auditLimit = options.auditLimit ?? DEFAULT_AUDIT_LIMIT;
   }
 
@@ -113,8 +113,18 @@ export class PrivacyShield {
   }
 }
 
+/**
+ * Uniform sample in (0, 1) drawn from the OS CSPRNG. Math.random is not used because
+ * its output stream can be inferred from observed values, which would let an attacker
+ * predict the noise added to released counts. 48 random bits are used and offset by
+ * half a step so the result is never 0 or 1.
+ */
+export function secureUniform(): number {
+  return (randomBytes(6).readUIntBE(0, 6) + 0.5) / 2 ** 48;
+}
+
 /** Sample Laplace(0, scale) by inverse CDF. `random` must return values in (0, 1). */
-export function laplaceNoise(scale: number, random: () => number = Math.random): number {
+export function laplaceNoise(scale: number, random: () => number = secureUniform): number {
   const u = random() - 0.5;
   // Guard the log argument: random() == 0 would otherwise yield -Infinity.
   const tail = Math.max(1 - 2 * Math.abs(u), Number.MIN_VALUE);
