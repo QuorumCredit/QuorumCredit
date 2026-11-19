@@ -128,15 +128,18 @@ def simulate_contract_call(
     if not result_xdr:
         raise ValueError("No result XDR in simulateTransaction response")
 
-    return parse_contract_result(result_xdr)
+    return extract_result_xdr(result_xdr)
 
 
-def parse_contract_result(result_xdr_b64: str) -> str:
-    """Return the base64-encoded contract result for comparison.
+def extract_result_xdr(result_xdr_b64: str) -> str:
+    """Validate and return the base64 contract result XDR, unchanged.
 
-    The result XDR from simulateTransaction is returned as-is for
-    byte-for-byte comparison across validators. This preserves the exact
-    binary representation from each endpoint without decoding/re-encoding.
+    This function does NOT decode the XDR. The value
+    returned is compared byte-for-byte (as base64 text) across validators by
+    ``compare_results``. Two validators that return logically equal results
+    with different XDR encodings are therefore reported as divergent. If
+    semantic comparison is needed, decode the SCVal here and compare the
+    structured values instead.
     """
     if not result_xdr_b64:
         raise ValueError("Empty result XDR")

@@ -23,10 +23,12 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, asdict
+from typing import Callable
 
 
 @dataclass
@@ -83,17 +85,57 @@ def fetch_snapshot(config: dict) -> StateSnapshot:
     )
 
 
-def load_history(history_path: str) -> list[dict]:
+def load_history(
+    history_path: str, on_quarantine: Callable[[str], None] | None = None
+) -> list[dict]:
+    """Load history, quarantining an unreadable file instead of crashing.
+
+    If the file is not valid JSON, it is moved aside to
+    ``<history_path>.corrupt-<unix_ts>`` so the next run can start fresh, an
+    empty history is returned, and ``on_quarantine`` (if given) is called with
+    a human-readable message so the condition can be alerted on.
+    """
     if not os.path.exists(history_path):
         return []
-    with open(history_path) as f:
-        return json.load(f)
+    try:
+        with open(history_path) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        quarantine_path = f"{history_path}.corrupt-{int(time.time())}"
+        os.replace(history_path, quarantine_path)
+        message = (
+            f"history file {history_path} was corrupt ({exc}); "
+            f"moved to {quarantine_path} and starting with empty history"
+        )
+        if on_quarantine is not None:
+            on_quarantine(message)
+        else:
+            print(f"WARNING: {message}", file=sys.stderr)
+        return []
 
 
 def save_history(history_path: str, history: list[dict], max_entries: int) -> None:
+    """Atomically replace the history file.
+
+    The payload is written to a temporary file in the same directory, flushed
+    to disk, and then moved over the target with ``os.replace``. A crash or
+    kill mid-write leaves the previous file intact instead of a truncated one.
+    """
     trimmed = history[-max_entries:]
-    with open(history_path, "w") as f:
-        json.dump(trimmed, f, indent=2)
+    directory = os.path.dirname(os.path.abspath(history_path))
+    fd, tmp_path = tempfile.mkstemp(
+        dir=directory, prefix=".state_history.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(trimmed, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, history_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def detect_anomalies(
@@ -242,7 +284,10 @@ def main() -> int:
         print(f"Failed to fetch state snapshot: {exc}", file=sys.stderr)
         return 2
 
-    history = load_history(history_path)
+    def alert_on_quarantine(message: str) -> None:
+        send_alert(message, config, args.dry_run)
+
+    history = load_history(history_path, on_quarantine=alert_on_quarantine)
 
     if args.report_only:
         print(generate_daily_report(snapshot, history))

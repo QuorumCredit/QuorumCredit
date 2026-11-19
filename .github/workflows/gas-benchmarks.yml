@@ -65,7 +65,6 @@ jobs:
             --profile docs/gas_profile.json \
             --baseline docs/benchmarks.json \
             --output docs/gas_comparison.md
-        continue-on-error: true
 
       - name: Track gas cost trends over time
         run: |

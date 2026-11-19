@@ -196,6 +196,55 @@ class TestStateAnomalyMonitor(unittest.TestCase):
             if os.path.exists(path):
                 os.remove(path)
 
+    def test_save_history_crash_mid_write_preserves_original(self):
+        """A crash after a partial write must not corrupt the existing history file."""
+        import scripts.state_anomaly_monitor as sam
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state_history.json")
+            original = [{"captured_at": "2026-08-30T00:00:00Z", "total_loans": 1}]
+            save_history(path, original, max_entries=10)
+            with open(path) as f:
+                original_text = f.read()
+
+            def partial_then_crash(obj, fp, **kwargs):
+                fp.write('[{"captured_at": "2026-08-30T01')
+                fp.flush()
+                raise KeyboardInterrupt("simulated kill mid-write")
+
+            with patch.object(sam.json, "dump", side_effect=partial_then_crash):
+                with self.assertRaises(KeyboardInterrupt):
+                    save_history(
+                        path,
+                        [{"captured_at": "2026-08-30T02:00:00Z", "total_loans": 2}],
+                        max_entries=10,
+                    )
+
+            with open(path) as f:
+                self.assertEqual(f.read(), original_text)
+            self.assertEqual(load_history(path), original)
+            self.assertEqual(os.listdir(tmpdir), ["state_history.json"])
+
+    def test_load_history_quarantines_corrupt_file_and_alerts(self):
+        """A corrupt history file is moved aside, history starts empty, and an alert is raised."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state_history.json")
+            with open(path, "w") as f:
+                f.write('[{"captured_at": "2026-08-30T00:00')  # truncated JSON
+
+            alerts: list[str] = []
+            history = load_history(path, on_quarantine=alerts.append)
+
+            self.assertEqual(history, [])
+            self.assertFalse(os.path.exists(path))
+            quarantined = [n for n in os.listdir(tmpdir) if n.startswith("state_history.json.corrupt-")]
+            self.assertEqual(len(quarantined), 1)
+            with open(os.path.join(tmpdir, quarantined[0])) as f:
+                self.assertIn("captured_at", f.read())
+            self.assertEqual(len(alerts), 1)
+            self.assertIn("was corrupt", alerts[0])
+            self.assertIn(quarantined[0], alerts[0])
+
     # ── Sybil Simulation & Shared Fixture Integration Tests ────────────────────
 
     def test_state_anomaly_monitor_flags_sybil_loan_spam_attack(self):

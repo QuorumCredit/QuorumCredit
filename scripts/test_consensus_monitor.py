@@ -17,6 +17,7 @@ from scripts.consensus_monitor import (
     send_alert,
     reconcile,
     poll_validator,
+    extract_result_xdr,
     DEFAULT_CHECKS,
 )
 from scripts.fixtures.vouch_graph import SAMPLE_VALIDATOR_STATES
@@ -159,6 +160,32 @@ class TestConsensusMonitor(unittest.TestCase):
 
         self.assertIsNotNone(result.error)
         self.assertIn("RPC connection failed", result.error)
+
+    def test_extract_result_xdr_is_byte_preserving(self):
+        """The extractor returns the XDR unchanged and rejects empty input."""
+        xdr = "AAAAAQAAAAE="
+        self.assertEqual(extract_result_xdr(xdr), xdr)
+        with self.assertRaises(ValueError):
+            extract_result_xdr("")
+
+    def test_two_encodings_of_same_value_are_reported_divergent(self):
+        """Byte-level contract: two different XDR encodings are compared as text and flagged.
+
+        Both strings are encodings a validator could return for the same logical
+        result; compare_results must report them as a mismatch because the
+        comparison is byte-for-byte, as documented on extract_result_xdr.
+        """
+        encoding_a = "AAAAAwAAAAEAAAAA"
+        encoding_b = "AAAAAwAAAAEAAAAAAAAAAA=="
+        results = [
+            ValidatorResult(name="v1", endpoint="http://v1", ledger=100,
+                            values={"get_config": extract_result_xdr(encoding_a)}),
+            ValidatorResult(name="v2", endpoint="http://v2", ledger=100,
+                            values={"get_config": extract_result_xdr(encoding_b)}),
+        ]
+        problems = compare_results(results, ledger_tolerance=2)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("state mismatch on 'get_config'", problems[0])
 
     def test_validator_result_dataclass(self):
         """Test ValidatorResult dataclass."""
