@@ -38,6 +38,8 @@ export interface ScheduledExport {
   frequency: "daily" | "weekly" | "monthly";
   startDate: number;
   nextExportAt: number;
+  /** Periods that passed without a run, counted when the next run is scheduled (#2126). */
+  missedRuns?: number;
   active: boolean;
   createdAt: number;
 }
@@ -232,7 +234,20 @@ export class ExportStore {
           : scheduled.frequency === "weekly"
             ? 7 * 24 * 60 * 60 * 1000
             : 30 * 24 * 60 * 60 * 1000;
-      scheduled.nextExportAt = Date.now() + frequencyMs;
+      // Advance from the scheduled time, not from when the run happened, so a late
+      // run does not push every later run back (#2126). Missed periods are skipped
+      // and counted in missedRuns.
+      const now = Date.now();
+      let next = scheduled.nextExportAt + frequencyMs;
+      let skipped = 0;
+      while (next <= now) {
+        next += frequencyMs;
+        skipped++;
+      }
+      scheduled.nextExportAt = next;
+      if (skipped > 0) {
+        scheduled.missedRuns = (scheduled.missedRuns ?? 0) + skipped;
+      }
     }
   }
 
