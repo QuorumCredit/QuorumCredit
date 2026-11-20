@@ -22,6 +22,9 @@ import { metrics } from "./metricsRegistry.js";
 import { verifyToken } from "../auth/tokens.js";
 import type { ApiKeyStore } from "../auth/apiKeyStore.js";
 
+/** In-flight test deliveries. Module state, not globalThis, so it is not shared (#2124). */
+let testDeliveriesInFlight = 0;
+
 export interface WebhookRoutesContext {
   webhookSecret?: string; // Secret for receiving webhooks (if this service receives webhooks)
   /**
@@ -473,7 +476,7 @@ async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: 
     const clientIp = req.socket.remoteAddress ?? "unknown";
     const rateLimiter = ctx.testDeliveryRateLimiter;
     const maxConcurrent = ctx.maxConcurrentTestDeliveries ?? 10;
-    const inFlight = (globalThis as any).__qcTestDeliveriesInFlight ?? 0;
+    const inFlight = testDeliveriesInFlight;
     if (inFlight >= maxConcurrent) {
       metrics.incCounter("qc_webhook_test_delivery_throttled_total");
       res.writeHead(429, { "content-type": "application/json" });
@@ -487,7 +490,7 @@ async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: 
       return;
     }
 
-    (globalThis as any).__qcTestDeliveriesInFlight = inFlight + 1;
+    testDeliveriesInFlight = inFlight + 1;
     try {
       // Simulate a test delivery to measure latency and retries without spamming
       // the subscriber URL. We reuse the delivery service's retry/backoff logic
@@ -502,7 +505,7 @@ async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: 
         delivery: record,
       }));
     } finally {
-      (globalThis as any).__qcTestDeliveriesInFlight = Math.max(0, (globalThis as any).__qcTestDeliveriesInFlight - 1);
+      testDeliveriesInFlight = Math.max(0, testDeliveriesInFlight - 1);
       if (rateLimiter) {
         await rateLimiter.recordFailure(clientIp);
       }
