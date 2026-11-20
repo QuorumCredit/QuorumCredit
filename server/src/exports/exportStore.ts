@@ -138,6 +138,8 @@ export class ExportStore {
    * Get pending exports for processing.
    */
   getPendingExports(limit: number = 100): ExportRequest[] {
+    // Expired exports were never removed, so the map grew with every request (#2125).
+    this.cleanupExpiredExports();
     return [...this.exports.values()]
       .filter(
         (e) =>
