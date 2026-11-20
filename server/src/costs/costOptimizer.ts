@@ -177,7 +177,7 @@ export class CostOptimizer {
           priority: "medium",
           title: "Implement transaction batching",
           description:
-            "Transaction volume varies significantly across months (${volatility.toFixed(1)}%). " +
+            `Transaction volume varies significantly across months (${volatility.toFixed(1)}%). ` +
             "Implementing batching could smooth costs and reduce infrastructure overhead.",
           estimatedSavingsCents: Math.round(
             report.totalCostCents * 0.15
