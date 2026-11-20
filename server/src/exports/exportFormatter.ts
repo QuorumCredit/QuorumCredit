@@ -5,6 +5,20 @@ import type { CredentialData, ExportFormat } from "./exportStore.js";
  * (JSON, PDF, CSV) for credential holder export functionality.
  */
 
+/**
+ * Quote a CSV cell and neutralise spreadsheet formulas (#2128).
+ *
+ * Quoting alone does not stop a spreadsheet from evaluating a cell that starts
+ * with one of these characters, so a leading single quote is added.
+ */
+function csvCell(value: unknown): string {
+  let text = String(value);
+  if (/^[=+\-@\t\r]/.test(text)) {
+    text = `'${text}`;
+  }
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 export class ExportFormatter {
   /**
    * Format credential data to the specified format.
@@ -57,7 +71,7 @@ export class ExportFormatter {
         data.status,
         JSON.stringify(data.metadata || {}),
       ]
-        .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+        .map((v) => csvCell(v))
         .join(","),
     ];
 

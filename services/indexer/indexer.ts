@@ -48,6 +48,38 @@ interface EventData {
   transactionHash: string;
 }
 
+/** Write a file and flush it to disk before returning, so a crash cannot leave it empty (#2130). */
+function writeFileDurable(filePath: string, data: string): void {
+  const fd = fs.openSync(filePath, 'w');
+  try {
+    fs.writeSync(fd, data);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Flush a directory entry so a rename survives a power loss (#2130). */
+function fsyncDirectory(dirPath: string): void {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(dirPath, 'r');
+    fs.fsyncSync(fd);
+  } catch {
+    // Directory fsync is not supported on every platform, Windows among them.
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+/** An event that could not be parsed, kept with its raw payload for replay (#2129). */
+interface DeadLetter {
+  ledger: number;
+  recordedAt: number;
+  error: string;
+  raw: unknown;
+}
+
 interface CursorData {
   lastProcessedLedger: number;
   lastUpdated: number;
@@ -216,10 +248,11 @@ class EventIndexer extends EventEmitter {
       const tempPath = `${this.dbPath}.tmp`;
 
       // Write to temporary file
-      fs.writeFileSync(tempPath, JSON.stringify(this.database, null, 2));
+      writeFileDurable(tempPath, JSON.stringify(this.database, null, 2));
 
-      // Atomic rename (OS-level atomic operation)
+      // Atomic rename (OS-level atomic operation), then flush the directory (#2130)
       fs.renameSync(tempPath, this.dbPath);
+      fsyncDirectory(path.dirname(this.dbPath));
     } catch (error) {
       console.error('Error saving database:', error);
       throw error;
@@ -270,10 +303,11 @@ class EventIndexer extends EventEmitter {
       const tempPath = `${this.cursorPath}.tmp`;
 
       // Write to temporary file
-      fs.writeFileSync(tempPath, JSON.stringify(cursor, null, 2));
+      writeFileDurable(tempPath, JSON.stringify(cursor, null, 2));
 
-      // Atomic rename (OS-level atomic operation)
+      // Atomic rename (OS-level atomic operation), then flush the directory (#2130)
       fs.renameSync(tempPath, this.cursorPath);
+      fsyncDirectory(path.dirname(this.cursorPath));
     } catch (error) {
       console.error('Error saving cursor:', error);
       throw error;
@@ -401,9 +435,38 @@ class EventIndexer extends EventEmitter {
         };
       } catch (error) {
         console.error('Error parsing event:', error);
+        // Keep the raw event so it can be replayed. This is written before any cursor
+        // save, so the cursor cannot move past an unrecorded failure (#2129).
+        this.recordDeadLetter(event, error);
         return null;
       }
     }).filter(event => event !== null) as EventData[];
+  }
+
+  /**
+   * Append an unparseable event to the dead-letter file (#2129).
+   *
+   * Reads the file first, so earlier dead letters survive a restart.
+   */
+  private recordDeadLetter(event: any, error: unknown): void {
+    const filePath = `${this.dbPath}.deadletter.json`;
+    let entries: DeadLetter[] = [];
+    try {
+      if (fs.existsSync(filePath)) {
+        entries = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      }
+    } catch (readError) {
+      console.error('Error reading dead-letter file:', readError);
+    }
+    entries.push({
+      ledger: Number(event?.ledger),
+      recordedAt: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+      raw: event,
+    });
+    writeFileDurable(`${filePath}.tmp`, JSON.stringify(entries, null, 2));
+    fs.renameSync(`${filePath}.tmp`, filePath);
+    fsyncDirectory(path.dirname(filePath));
   }
 
   /**

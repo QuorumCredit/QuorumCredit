@@ -55,11 +55,15 @@ const CredentialAnalyticsDashboard: React.FC<CredentialAnalyticsDashboardProps> 
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // A response for an earlier holder must not overwrite a newer one (#2131).
+    const controller = new AbortController();
+
     const fetchAnalytics = async () => {
       try {
         setLoading(true);
         const response = await fetch(
-          `${apiBaseUrl}/analytics/credentials/${encodeURIComponent(holderId)}`
+          `${apiBaseUrl}/analytics/credentials/${encodeURIComponent(holderId)}`,
+          { signal: controller.signal }
         );
 
         if (!response.ok) {
@@ -67,13 +71,15 @@ const CredentialAnalyticsDashboard: React.FC<CredentialAnalyticsDashboardProps> 
         }
 
         const data = await response.json();
+        if (controller.signal.aborted) return;
         setDashboardData(data);
         setError(null);
       } catch (err) {
+        if (controller.signal.aborted) return;
+        // Keep the last successful data on a transient error. The stale notice shows it is old (#2131).
         setError(err instanceof Error ? err.message : "Unknown error");
-        setDashboardData(null);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
 
@@ -81,7 +87,10 @@ const CredentialAnalyticsDashboard: React.FC<CredentialAnalyticsDashboardProps> 
     // Refresh every 5 minutes
     const interval = setInterval(fetchAnalytics, 5 * 60 * 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
   }, [holderId, apiBaseUrl]);
 
   const getHealthScoreColor = (score: number): string => {
@@ -104,7 +113,7 @@ const CredentialAnalyticsDashboard: React.FC<CredentialAnalyticsDashboardProps> 
     );
   }
 
-  if (error) {
+  if (error && !dashboardData) {
     return (
       <div className="bg-red-50 border border-red-200 rounded-lg p-4">
         <p className="text-red-800">Error: {error}</p>
@@ -125,6 +134,11 @@ const CredentialAnalyticsDashboard: React.FC<CredentialAnalyticsDashboardProps> 
 
   return (
     <div className="w-full bg-white rounded-lg shadow-lg p-6 space-y-6">
+      {error && (
+        <p className="text-sm text-amber-700" role="status">
+          Showing last successful data. Refresh failed: {error}
+        </p>
+      )}
       {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900">Credential Analytics</h1>
