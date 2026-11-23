@@ -2164,9 +2164,13 @@ pub fn request_forbearance(
 
     let now = env.ledger().timestamp();
     let duration = duration_secs.unwrap_or(DEFAULT_FORBEARANCE_DURATION_SECS);
-    let ends_at = now + duration;
+    let ends_at = now
+        .checked_add(duration)
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
-    loan.deadline = loan.deadline + duration;
+    loan.deadline = loan.deadline
+        .checked_add(duration)
+        .ok_or(ContractError::ArithmeticOverflow)?;
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);

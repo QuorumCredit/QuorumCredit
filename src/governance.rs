@@ -326,7 +326,9 @@ pub fn vote_slash(
         // Instead of immediately executing, create a pending slash record
         let cfg = config(&env);
         let now = env.ledger().timestamp();
-        let executable_at = now + cfg.slash_delay_seconds;
+        let executable_at = now
+            .checked_add(cfg.slash_delay_seconds)
+            .ok_or(ContractError::ArithmeticOverflow)?;
 
         let pending_slash = PendingSlashRecord {
             borrower: borrower.clone(),

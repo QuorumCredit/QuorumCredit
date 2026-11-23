@@ -286,6 +286,9 @@ mod credential_batch_test;
 #[cfg(test)]
 mod credential_rate_limit_test;
 
+#[cfg(test)]
+mod issue_2140_2141_2142_2143_test;
+
 pub use errors::ContractError;
 pub use types::*;
 
@@ -397,6 +400,19 @@ impl QuorumCreditContract {
     ) -> Result<(), ContractError> {
         // Issue #2100: the entrypoint targets native Stellar (chain_id = None -> 0).
         vouch::vouch(env, voucher, borrower, stake, token, None)
+    }
+
+    /// Vouch with an optional sector label (e.g. "real-estate", "tech") that is
+    /// stored alongside the vouch so risk reports can slice by sector.
+    pub fn vouch_with_sector(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        stake: i128,
+        token: Address,
+        sector: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
     }
 
     pub fn increase_stake(

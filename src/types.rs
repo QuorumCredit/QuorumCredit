@@ -1138,6 +1138,12 @@ pub enum DataKey {
     VerificationRateLimit(Address),
     /// holder → TokenBucket
     VerificationBucket(Address),
+    // ── Issue #2141: Sector-labelled vouches ─────────────────────────────────
+    /// (voucher, borrower) → String: sector label attached to this vouch
+    VouchSector(Address, Address),
+    // ── Issue #2140: Config patch queue ──────────────────────────────────────
+    /// Vec<ConfigPatch>: ordered queue of pending config patches
+    ConfigPatchQueue,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

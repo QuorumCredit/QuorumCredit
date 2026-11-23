@@ -141,7 +141,7 @@ pub fn check_and_mark_default(
 
     env.storage().persistent().set(
         &DataKey::DefaultCount(borrower.clone()),
-        &(current_count + 1),
+        &(current_count.checked_add(1).ok_or(ContractError::ArithmeticOverflow)?),
     );
     crate::helpers::increment_total_default_count(env);
 

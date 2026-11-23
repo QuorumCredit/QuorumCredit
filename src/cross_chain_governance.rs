@@ -151,8 +151,12 @@ pub fn create_cross_chain_proposal(
     let proposal_id = env.ledger().timestamp() as u64;
 
     let now = env.ledger().timestamp();
-    let voting_ends_at = now + voting_period_seconds;
-    let execution_time = voting_ends_at + (24 * 60 * 60); // 24h timelock
+    let voting_ends_at = now
+        .checked_add(voting_period_seconds)
+        .ok_or(ContractError::ArithmeticOverflow)?;
+    let execution_time = voting_ends_at
+        .checked_add(24 * 60 * 60)
+        .ok_or(ContractError::ArithmeticOverflow)?; // 24h timelock
 
     let proposal = CrossChainProposal {
         proposal_id,
