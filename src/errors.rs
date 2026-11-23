@@ -385,6 +385,10 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "NotInitialized"),
             String::from_str(env, "Contract has not been initialized. Call initialize() first."),
         ),
+        ContractError::NotImplemented => (
+            String::from_str(env, "NotImplemented"),
+            String::from_str(env, "This entry point is not yet implemented."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown error occurred."),
@@ -871,4 +875,6 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1797: Verification rate limit window ──────────────────────────
     /// Rate-limit refill window is outside the allowed range.
     InvalidRateLimitWindow = 265,
+    /// Entry point is not yet implemented; the feature is scaffolded but not built.
+    NotImplemented = 270,
 }

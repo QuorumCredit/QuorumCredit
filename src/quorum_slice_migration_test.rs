@@ -224,4 +224,41 @@ mod quorum_slice_migration_tests {
             assert_eq!(quorum_slice_migration::get_migration_history_count(&env, &credential_id), 3);
         });
     }
+
+    /// Issue #2134: migrating with a wrong old_slice must return an error.
+    #[test]
+    fn test_migrate_wrong_old_slice_is_rejected() {
+        let (env, contract_id) = setup();
+        let credential_id = Address::generate(&env);
+        let slice1 = Address::generate(&env);
+        let slice2 = Address::generate(&env);
+        let wrong_slice = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            // First migration establishes current slice as slice2.
+            quorum_slice_migration::migrate_credential_slice(&env, &credential_id, &slice1, &slice2).unwrap();
+            assert_eq!(
+                quorum_slice_migration::get_credential_current_slice(&env, &credential_id),
+                Some(slice2.clone())
+            );
+
+            // Second migration supplies wrong_slice instead of slice2 as old_slice.
+            let slice3 = Address::generate(&env);
+            let result = quorum_slice_migration::migrate_credential_slice(
+                &env,
+                &credential_id,
+                &wrong_slice,
+                &slice3,
+            );
+            assert!(result.is_err(), "migration with wrong old_slice must fail");
+
+            // Current slice must remain slice2.
+            assert_eq!(
+                quorum_slice_migration::get_credential_current_slice(&env, &credential_id),
+                Some(slice2)
+            );
+            // History count must still be 1.
+            assert_eq!(quorum_slice_migration::get_migration_history_count(&env, &credential_id), 1);
+        });
+    }
 }

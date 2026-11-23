@@ -3541,7 +3541,7 @@ pub fn get_periodic_payment_status(_env: Env, _loan_id: u64) -> Option<PeriodicP
 }
 
 pub fn make_periodic_payment(_env: Env, _caller: Address, _loan_id: u64, _amount: i128) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn set_periodic_payment(
@@ -3552,7 +3552,7 @@ pub fn set_periodic_payment(
     _period_count: u32,
     _period_interest_bps: u32,
 ) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn get_voucher_yield_claim(_env: Env, _loan_id: u64, _voucher: Address) -> Option<VoucherYieldClaim> {

@@ -97,12 +97,23 @@ pub fn detect_automatic_failure(
 /// Replace failed attestor automatically
 pub fn replace_failed_attestor(
     env: &Env,
+    caller: &Address,
     slice: &mut QuorumSlice,
     failed_attestor: Address,
     replacement_attestor: Address,
 ) -> Result<HealingEvent, ContractError> {
     if !slice.self_healing_enabled {
         return Err(ContractError::SelfHealingDisabled);
+    }
+
+    caller.require_auth();
+
+    // Reject if replacement is already a validator in this slice.
+    for i in 0..slice.validators.len() {
+        let validator = slice.validators.get(i).ok_or(ContractError::NotFound)?;
+        if validator == &replacement_attestor {
+            return Err(ContractError::DuplicateVouch);
+        }
     }
 
     // Find and replace the failed attestor
@@ -129,7 +140,7 @@ pub fn replace_failed_attestor(
         failed_attestor,
         replacement_attestor,
         executed_at: now,
-        executed_by: Address::from_contract_id(&env.self_address()),
+        executed_by: caller.clone(),
     })
 }
 
@@ -231,4 +242,68 @@ pub fn create_quorum_slice(
         last_healed_at: 0,
         failed_count: 0,
     })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Env, Vec};
+
+    fn make_slice(env: &Env, validators: Vec<Address>) -> QuorumSlice {
+        QuorumSlice {
+            id: 1,
+            validators,
+            threshold: 1,
+            self_healing_enabled: true,
+            created_at: 0,
+            last_healed_at: 0,
+            failed_count: 0,
+        }
+    }
+
+    /// Issue #2133: replacing with an attestor already in the validators list
+    /// must be rejected.
+    #[test]
+    fn replace_failed_attestor_rejects_duplicate_replacement() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let caller = Address::generate(&env);
+        let v1 = Address::generate(&env);
+        let v2 = Address::generate(&env); // already a validator
+        let validators = Vec::from_array(&env, [v1.clone(), v2.clone()]);
+        let mut slice = make_slice(&env, validators);
+
+        // Try to replace v1 with v2, but v2 is already in the slice.
+        let result = replace_failed_attestor(&env, &caller, &mut slice, v1.clone(), v2.clone());
+        assert_eq!(result, Err(ContractError::DuplicateVouch));
+
+        // The slice must be unchanged.
+        assert_eq!(slice.validators.get(0).unwrap(), v1);
+        assert_eq!(slice.validators.get(1).unwrap(), v2);
+    }
+
+    /// Issue #2133: the HealingEvent records the caller, not the contract.
+    #[test]
+    fn replace_failed_attestor_records_caller_as_executed_by() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let caller = Address::generate(&env);
+        let v1 = Address::generate(&env);
+        let replacement = Address::generate(&env);
+        let validators = Vec::from_array(&env, [v1.clone()]);
+        let mut slice = make_slice(&env, validators);
+
+        let event = replace_failed_attestor(
+            &env,
+            &caller,
+            &mut slice,
+            v1.clone(),
+            replacement.clone(),
+        )
+        .unwrap();
+
+        assert_eq!(event.executed_by, caller);
+        assert_eq!(event.replacement_attestor, replacement);
+    }
 }

@@ -5,9 +5,9 @@ they either always return a hardcoded error or silently do nothing. This
 document is the audit trail for that finding: which functions, whether they
 are reachable from outside the contract today, and what they actually do.
 
-## Audit result: none are exposed as contract entry points
+## Audit result: loan.rs stubs are not exposed; two additional stubs ARE exposed
 
-All seven are `pub fn`s in `loan.rs`, but **none of them are wired up as
+All seven `loan.rs` stubs are `pub fn`s, but **none of them are wired up as
 `#[contractimpl]` entry points in `lib.rs`**, and nothing else in this crate
 calls them either. From an external caller's perspective (the API server,
 the dashboard, a client SDK) these functions do not exist — there is no way
@@ -22,6 +22,17 @@ built yet. Each is marked with a `STUB` doc comment at its definition in
 **If any of these is ever wired into `lib.rs`, implement it first.** Exposing
 one of these as a live entry point without implementing it is exactly the
 silent-no-op risk this audit exists to prevent.
+
+## Additional exposed stubs (issue #2135)
+
+The following entry points **are** wired into the contract ABI but are not yet
+implemented. They return `Err(ContractError::NotImplemented)` so callers receive
+a clear failure rather than a silent no-op:
+
+| Entry point | Location | Status |
+|---|---|---|
+| `make_periodic_payment` | `src/lib.rs` (`impl QuorumCreditContract`) | Returns `NotImplemented` |
+| `set_periodic_payment` | `src/lib.rs` (free function, also unimplemented) | Returns `NotImplemented` |
 
 ## Current behavior, function by function
 
