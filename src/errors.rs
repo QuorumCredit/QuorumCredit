@@ -49,6 +49,10 @@ impl ApiError {
 /// off-chain tooling that imports this crate.
 pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
     match err {
+        ContractError::NotEligibleYet => (
+            String::from_str(env, "NotEligibleYet"),
+            String::from_str(env, "Query anniversary_bonus_eligible_at for the next claim timestamp."),
+        ),
         ContractError::InsufficientFunds => (
             String::from_str(env, "InsufficientFunds"),
             String::from_str(env, "Stake or amount is zero/negative; or contract balance is insufficient for disbursement."),
@@ -588,6 +592,7 @@ EmergencyBypassNotAuthorised = 131,
     TreasuryTransferFailed = 268,
     /// Voter has no active vouched stake and cannot vote on treasury proposals.
     NoVouchedStake = 269,
+    NotEligibleYet = 270,
     /// Cross-collateral pool not found.
     CollateralPoolNotFound = 132,
     /// Cross-collateral pool is already active (has an assigned borrower).

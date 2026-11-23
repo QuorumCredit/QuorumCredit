@@ -4666,7 +4666,16 @@ impl QuorumCreditContract {
         loyalty::get_loyalty_benefits(env, user)
     }
 
+    /// Earliest Unix timestamp for the next anniversary bonus, or None if the tier has no bonus.
+    pub fn anniversary_bonus_eligible_at(
+        env: Env,
+        user: Address,
+    ) -> Result<Option<u64>, ContractError> {
+        loyalty::anniversary_bonus_eligible_at(&env, &user)
+    }
+
     /// Claim the annual anniversary loyalty bonus. Returns bonus in basis points.
+    /// Claims before `anniversary_bonus_eligible_at` return `NotEligibleYet`.
     pub fn claim_anniversary_bonus(
         env: Env,
         user: Address,
@@ -5300,6 +5309,7 @@ impl QuorumCreditContract {
         monitoring_period_secs: u64,
         breach_tolerance: u32,
     ) -> Result<(), ContractError> {
+        borrower.require_auth();
         // Issue #2100: the module is keyed by loan ID, so resolve the borrower's
         // active loan. A borrower without an active loan gets `NoActiveLoan`.
         let loan = helpers::get_active_loan_record(&env, &borrower)?;
@@ -5318,14 +5328,16 @@ impl QuorumCreditContract {
 
     /// Issue #2001: Re-evaluate all covenants for a borrower's active loan.
     ///
-    /// Should be called periodically (or by a keeper) during the loan lifecycle.
+    /// Requires the configured admin quorum. Internal loan lifecycle checks call the module directly.
     /// Returns the loan's covenant status; `breach_count` is zero when all
     /// covenants (LTV, DTI, PaymentSchedule, ActivityRequirement,
     /// CollateralMaintenance, CrossDefault) are satisfied.
     pub fn monitor_loan_covenants(
         env: Env,
+        admin_signers: Vec<Address>,
         borrower: Address,
     ) -> Result<crate::types::LoanCovenantStatus, ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
         // Issue #2100: resolve the borrower to its active loan ID.
         let loan = helpers::get_active_loan_record(&env, &borrower)?;
         covenant_monitoring::monitor_loan_covenants(&env, loan.id)
