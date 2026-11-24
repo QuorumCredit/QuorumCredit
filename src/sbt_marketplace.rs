@@ -163,6 +163,7 @@ fn save_stats(env: &Env, stats: &SbtMarketplaceStats) {
 /// - [`ContractError::ContractPaused`]
 /// - [`ContractError::InvalidAmount`] — `sbt_id` is 0, or `metadata` / `tag`
 ///   exceed their respective byte-length limits.
+/// - [`ContractError::UnauthorizedCaller`] — caller is not the owner of the SBT.
 /// - [`ContractError::InvalidStateTransition`] — an active listing for
 ///   `sbt_id` already exists.
 pub fn list_sbt_in_marketplace(
@@ -183,6 +184,23 @@ pub fn list_sbt_in_marketplace(
     }
     if tag.len() > SBT_LISTING_TAG_MAX_BYTES {
         return Err(ContractError::InvalidAmount);
+    }
+
+    // Verify ownership against the SBT ownership record if one exists
+    if let Some(privacy) = env.storage().persistent().get::<_, crate::sbt_privacy_modes::SbtPrivacyRecord>(&DataKey::SbtPrivacy(sbt_id)) {
+        if privacy.holder != holder {
+            return Err(ContractError::UnauthorizedCaller);
+        }
+    }
+    if let Some(lineage) = env.storage().persistent().get::<_, crate::sbt_lineage::SbtLineageNode>(&DataKey::SbtLineage(sbt_id)) {
+        if lineage.holder != holder {
+            return Err(ContractError::UnauthorizedCaller);
+        }
+    }
+    if let Some(insurance) = env.storage().persistent().get::<_, crate::sbt_insurance::SbtInsuranceRecord>(&DataKey::SbtInsurance(sbt_id)) {
+        if insurance.holder != holder {
+            return Err(ContractError::UnauthorizedCaller);
+        }
     }
 
     // Reject if an active listing already exists

@@ -193,6 +193,7 @@ mod loan_cart_test;
 #[cfg(test)]
 mod repay_validation_test;
 mod sbt_stake_not_unlocked_test;
+mod sbt_marketplace_ownership_test;
 mod weighted_stake_overflow_test;
 mod diversification_empty_history_test;
 mod loan_accrued_interest_overflow_test;
