@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { handleWebhookRequest } from "../src/http/webhookRoutes.js";
 import { signWebhookPayload } from "../src/webhooks/signature.js";
+import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
 
 const SECRET = "test-webhook-secret";
 
@@ -17,7 +18,7 @@ describe("incoming webhook logging", () => {
 
   it("logs the event type and ID but not the payload body", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    server = createServer((req, res) => handleWebhookRequest(req, res, { webhookSecret: SECRET }));
+    server = createServer((req, res) => handleWebhookRequest(req, res, { webhookSecret: SECRET, revocationStore: new LocalRevocationStore() }));
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
     const { port } = server.address() as AddressInfo;
 

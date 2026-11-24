@@ -21,6 +21,7 @@ import {
 import { metrics } from "./metricsRegistry.js";
 import { verifyToken } from "../auth/tokens.js";
 import type { ApiKeyStore } from "../auth/apiKeyStore.js";
+import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 
 /** In-flight test deliveries. Module state, not globalThis, so it is not shared (#2124). */
 let testDeliveriesInFlight = 0;
@@ -33,6 +34,7 @@ export interface WebhookRoutesContext {
    * handler could never authenticate a token.
    */
   authSecret?: string;
+  revocationStore: RevocationStore;
   /** Provisioned API key store backing `X-Api-Key` authentication. */
   apiKeyStore?: ApiKeyStore;
   /**
@@ -616,7 +618,7 @@ async function requireWebhookAuth(req: IncomingMessage, res: ServerResponse, ctx
   }
 
   if (token && ctx.authSecret) {
-    const result = verifyToken(ctx.authSecret, token);
+    const result = await verifyToken(ctx.authSecret, token, ctx.revocationStore);
     if (result.valid) return false;
   }
 

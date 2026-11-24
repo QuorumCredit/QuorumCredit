@@ -9,6 +9,7 @@ import type { EventStore } from "../bridge/eventStore.js";
 import type { PubSubBus } from "../pubsub/PubSubBus.js";
 import { EVENTS_CHANNEL, type BroadcastEvent, type SubscribePayload } from "../types.js";
 import { metrics } from "../http/metricsRegistry.js";
+import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 
 export interface LoanSocketServerOptions {
   httpServer: HttpServer;
@@ -17,6 +18,7 @@ export interface LoanSocketServerOptions {
   bus: PubSubBus;
   store: EventStore;
   authSecret: string;
+  revocationStore: RevocationStore;
   connectionQueueMax: number;
   /** How long before hard expiry to warn the client so it can refresh proactively. */
   authExpiryWarningMs?: number;
@@ -102,10 +104,10 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 30_000;
   const idleTimeoutMs = opts.idleTimeoutMs ?? 60_000;
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
     if (typeof token !== "string") return next(new Error("auth_required"));
-    const result = verifyToken(opts.authSecret, token);
+    const result = await verifyToken(opts.authSecret, token, opts.revocationStore);
     if (!result.valid) return next(new Error(result.reason));
     next();
   });
@@ -162,7 +164,7 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
     const state: SocketState = {
       borrower: null,
       queue: new ConnectionQueue(opts.connectionQueueMax),
-      authTimer: setInterval(() => checkAuthExpiry(socket, opts.authSecret, warningMs), 5000),
+      authTimer: setInterval(() => void checkAuthExpiry(socket, opts.authSecret, warningMs, opts.revocationStore), 5000),
       rateLimiter: new WsRateLimiter({
         windowMs: opts.rateLimitWindowMs,
         maxMessages: opts.rateLimitMaxMessages,
@@ -183,7 +185,7 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
 
     // ── rate-limited event handlers ──────────────────────────────────────────
 
-    socket.on("subscribe", (payload: SubscribePayload) => {
+    socket.on("subscribe", async (payload: SubscribePayload) => {
       const aggregateKey = (socket.handshake.address ?? "unknown") + "|" + (socket.handshake.auth?.token ?? "anon");
       const aggregateBlocked = await state.aggregateRateLimiter.isBlocked(aggregateKey);
       if (aggregateBlocked) {
@@ -223,7 +225,7 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
       }
     });
 
-    socket.on("unsubscribe", () => {
+    socket.on("unsubscribe", async () => {
       const aggregateKey = (socket.handshake.address ?? "unknown") + "|" + (socket.handshake.auth?.token ?? "anon");
       if (await state.aggregateRateLimiter.isBlocked(aggregateKey)) {
         metrics.incCounter("qc_ws_rate_limited_total");
@@ -249,7 +251,7 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
       state.borrower = null;
     });
 
-    socket.on("auth:refresh", (payload: { token?: string }) => {
+    socket.on("auth:refresh", async (payload: { token?: string }) => {
       const aggregateKey = (socket.handshake.address ?? "unknown") + "|" + (payload.token ?? socket.handshake.auth?.token ?? "anon");
       if (await state.aggregateRateLimiter.isBlocked(aggregateKey)) {
         metrics.incCounter("qc_ws_rate_limited_total");
@@ -274,7 +276,7 @@ export function attachLoanSocketServer(opts: LoanSocketServerOptions): SocketIOS
       await state.aggregateRateLimiter.recordHit(aggregateKey);
 
       if (!payload || typeof payload.token !== "string") return;
-      const result = verifyToken(opts.authSecret, payload.token);
+      const result = await verifyToken(opts.authSecret, payload.token, opts.revocationStore);
       if (!result.valid) {
         socket.emit("auth_expired");
         socket.disconnect(true);
@@ -302,10 +304,10 @@ function flush(socket: Socket, state: SocketState): void {
   for (const item of items) socket.emit("loan:update", item);
 }
 
-function checkAuthExpiry(socket: Socket, secret: string, warningMs: number): void {
+async function checkAuthExpiry(socket: Socket, secret: string, warningMs: number, revocationStore: RevocationStore): Promise<void> {
   const token = socket.handshake.auth?.token;
   if (typeof token !== "string") return;
-  const result = verifyToken(secret, token);
+  const result = await verifyToken(secret, token, revocationStore);
   if (!result.valid) {
     socket.emit("auth_expired");
     socket.disconnect(true);

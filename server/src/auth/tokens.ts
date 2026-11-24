@@ -1,15 +1,9 @@
 /**
  * Issue #1292: JTI-based token revocation.
  *
- * Every issued token now carries a `jti` (JWT ID) claim — a random 128-bit
- * hex string.  `verifyToken` accepts an optional `RevocationStore`; when
- * supplied it checks the denylist before accepting the token.  A revoked
- * token is rejected with reason `"revoked"` regardless of its signature or
- * expiry.
- *
- * Backward-compatible: tokens issued without a `jti` (old format) are still
- * accepted unless the subject's entire history has been revoked via
- * `revokeAllForSubject`.
+ * Every issued token carries a `jti` (JWT ID) claim — a random 128-bit
+ * hex string. `verifyToken` requires a RevocationStore and checks the
+ * denylist before accepting the token.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { RevocationStore } from "./jtiRevocationStore.js";
@@ -21,7 +15,7 @@ export interface TokenPayload {
   iat: number;
   exp: number;
   /** Issue #1292: unique token identifier for targeted revocation. */
-  jti?: string;
+  jti: string;
 }
 
 export interface IssuedToken {
@@ -86,16 +80,13 @@ export type VerifyResult =
  * When `revocationStore` is provided, the JTI denylist is consulted after
  * signature verification — a revoked token is rejected with reason `"revoked"`.
  *
- * The function is intentionally synchronous for the common path (no Redis),
- * and returns a Promise only when a revocation store is supplied.
+ * Verification is async because revocation-store checks may use Redis.
  */
-export function verifyToken(secret: string, token: string): VerifyResult;
-export function verifyToken(secret: string, token: string, revocationStore: RevocationStore): Promise<VerifyResult>;
-export function verifyToken(
+export async function verifyToken(
   secret: string,
   token: string,
-  revocationStore?: RevocationStore
-): VerifyResult | Promise<VerifyResult> {
+  revocationStore: RevocationStore
+): Promise<VerifyResult> {
   const parts = token.split(".");
   if (parts.length !== 2) return { valid: false, reason: "malformed" };
   const [encodedPayload, signature] = parts;
@@ -117,10 +108,8 @@ export function verifyToken(
   if (typeof payload.exp !== "number" || payload.exp * 1000 < Date.now()) {
     return { valid: false, reason: "expired" };
   }
-
-  // No revocation store — accept the token.
-  if (!revocationStore) {
-    return { valid: true, payload };
+  if (typeof payload.jti !== "string" || payload.jti.length === 0) {
+    return { valid: false, reason: "malformed" };
   }
 
   // Async denylist check.

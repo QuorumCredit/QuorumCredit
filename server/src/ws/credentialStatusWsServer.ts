@@ -19,10 +19,12 @@ import {
   type CredentialStatusChange,
 } from "../credentials/credentialStore.js";
 import { metrics as opsMetrics } from "../http/metricsRegistry.js";
+import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 
 export interface CredentialStatusWsOptions {
   httpServer: HttpServer;
   authSecret: string;
+  revocationStore: RevocationStore;
   path?: string;
   /** Max concurrent connections for this instance. Default 1000. */
   maxConnections?: number;
@@ -241,12 +243,12 @@ export function attachCredentialStatusWsServer(opts: CredentialStatusWsOptions):
     unsubscribeStatus();
   });
 
-  opts.httpServer.on("upgrade", (req: IncomingMessage, socket, head) => {
+  opts.httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = new URL(req.url ?? "", "http://internal");
     if (url.pathname !== path) return;
 
     const token = url.searchParams.get("token") ?? "";
-    const result = verifyToken(opts.authSecret, token);
+    const result = await verifyToken(opts.authSecret, token, opts.revocationStore);
     if (!result.valid) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();

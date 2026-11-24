@@ -23,6 +23,7 @@ import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { attachMetricsWsServer } from "../src/ws/metricsWsServer.js";
 import { LocalBus } from "../src/pubsub/LocalBus.js";
+import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -155,6 +156,7 @@ describe("metricsWsServer — heartbeat / idle-timeout integration", () => {
       bus,
       store,
       authSecret: "test-secret",
+      revocationStore: new LocalRevocationStore(),
       connectionQueueMax: 10,
       heartbeatIntervalMs: 500,   // ping every 500 ms
       idleTimeoutMs: 150,         // disconnect 150 ms after last pong / connect

@@ -14,12 +14,14 @@ import {
 } from "../types.js";
 import { metrics as opsMetrics } from "../http/metricsRegistry.js";
 import { buildWsAggregateRateLimiter } from "./wsAggregateRateLimiter.js";
+import type { RevocationStore } from "../auth/jtiRevocationStore.js";
 
 export interface MetricsWsServerOptions {
   httpServer: HttpServer;
   bus: PubSubBus;
   store: EventStore;
   authSecret: string;
+  revocationStore: RevocationStore;
   connectionQueueMax: number;
   path?: string;
   authExpiryWarningMs?: number;
@@ -105,12 +107,12 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
 
   void opts.bus.subscribe(EVENTS_CHANNEL, busHandler);
 
-  opts.httpServer.on("upgrade", (req: IncomingMessage, socket, head) => {
+  opts.httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = new URL(req.url ?? "", "http://internal");
     if (url.pathname !== path) return;
 
     const token = url.searchParams.get("token") ?? "";
-    const result = verifyToken(opts.authSecret, token);
+    const result = await verifyToken(opts.authSecret, token, opts.revocationStore);
     if (!result.valid) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
       socket.destroy();
@@ -141,7 +143,7 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
       const state: ConnState = {
         queue: new ConnectionQueue(opts.connectionQueueMax),
         token,
-        authTimer: setInterval(() => checkAuthExpiry(ws, states, opts.authSecret, warningMs), 5000),
+        authTimer: setInterval(() => void checkAuthExpiry(ws, states, opts.authSecret, warningMs, opts.revocationStore), 5000),
         aggregateRateLimiter: buildWsAggregateRateLimiter(opts.redisUrl),
         heartbeatTimer,
         idleTimer: scheduleIdleTimer(),
@@ -163,7 +165,7 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
       const { id, metrics } = computeCurrentSnapshot(opts.store);
       send(ws, { type: "snapshot", id, metrics });
 
-      ws.on("message", (data) => {
+      ws.on("message", async (data) => {
         let frame: MetricsClientFrame;
         try {
           frame = JSON.parse(data.toString());
@@ -179,7 +181,7 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
         await state.aggregateRateLimiter.recordHit(aggregateKey);
 
         if (frame.type === "refresh_auth" && typeof frame.token === "string") {
-          const refreshed = verifyToken(opts.authSecret, frame.token);
+          const refreshed = await verifyToken(opts.authSecret, frame.token, opts.revocationStore);
           if (refreshed.valid) {
             state.token = frame.token;
           } else {
@@ -211,15 +213,16 @@ function send(socket: WebSocket, frame: MetricsServerFrame): void {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
 }
 
-function checkAuthExpiry(
+async function checkAuthExpiry(
   socket: WebSocket,
   states: Map<WebSocket, ConnState>,
   secret: string,
-  warningMs: number
-): void {
+  warningMs: number,
+  revocationStore: RevocationStore
+): Promise<void> {
   const state = states.get(socket);
   if (!state) return;
-  const result = verifyToken(secret, state.token);
+  const result = await verifyToken(secret, state.token, revocationStore);
   if (!result.valid) {
     send(socket, { type: "auth_expired" });
     socket.close(4001, "auth_expired");

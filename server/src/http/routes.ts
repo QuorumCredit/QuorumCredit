@@ -1553,6 +1553,7 @@ export function handleHttpRequest(
     const webhookCtx: WebhookRoutesContext = {
       webhookSecret: ctx.webhookSecret,
       authSecret: ctx.authSecret,
+      revocationStore: ctx.revocationStore!,
       apiKeyStore: ctx.apiKeyStore,
     };
     handleWebhookRequest(req, res, webhookCtx);

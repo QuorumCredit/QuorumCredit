@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { attachCredentialStatusWsServer } from "../src/ws/credentialStatusWsServer.js";
 import { issueToken } from "../src/auth/tokens.js";
+import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
 
 describe("credential status socket authentication", () => {
   let server: Server | undefined;
@@ -15,7 +16,7 @@ describe("credential status socket authentication", () => {
 
   it("refuses a connection from an unauthenticated client", async () => {
     server = createServer();
-    attachCredentialStatusWsServer({ httpServer: server, authSecret: "x".repeat(32) });
+    attachCredentialStatusWsServer({ httpServer: server, authSecret: "x".repeat(32), revocationStore: new LocalRevocationStore() });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
     const { port } = server.address() as AddressInfo;
 
@@ -43,7 +44,7 @@ describe("credential status socket subscriptions", () => {
 
   it("confirms a subscription from an authenticated client", async () => {
     server = createServer();
-    attachCredentialStatusWsServer({ httpServer: server, authSecret: SECRET });
+    attachCredentialStatusWsServer({ httpServer: server, authSecret: SECRET, revocationStore: new LocalRevocationStore() });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
     const { port } = server.address() as AddressInfo;
     const { token } = issueToken(SECRET, "holder-subscriber", 300);
@@ -61,5 +62,23 @@ describe("credential status socket subscriptions", () => {
       ws.on("error", reject);
     });
     expect(reply.credentialIds).toContain("cred-1");
+  });
+
+  it("refuses a revoked bearer token", async () => {
+    server = createServer();
+    const revocationStore = new LocalRevocationStore();
+    attachCredentialStatusWsServer({ httpServer: server, authSecret: SECRET, revocationStore });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
+    const { port } = server.address() as AddressInfo;
+    const issued = issueToken(SECRET, "holder-subscriber", 300);
+    await revocationStore.revoke(issued.jti, issued.expiresAt);
+
+    const outcome = await new Promise<string>((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/credentials/status?token=${issued.token}`);
+      ws.on("open", () => resolve("open"));
+      ws.on("error", () => resolve("refused"));
+      ws.on("close", () => resolve("closed"));
+    });
+    expect(outcome).not.toBe("open");
   });
 });
