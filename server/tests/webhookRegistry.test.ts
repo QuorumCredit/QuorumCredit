@@ -164,6 +164,35 @@ describe('LocalWebhookRegistry', () => {
     expect(webhooks).toHaveLength(2);
   });
 
+  it('registers a webhook with an owner and preserves it', async () => {
+    const webhook = await registry.registerWebhook(
+      'https://example.com/webhook',
+      ['loan.requested'],
+      'owner-alice'
+    );
+    expect(webhook.owner).toBe('owner-alice');
+
+    const retrieved = await registry.getWebhook(webhook.id);
+    expect(retrieved?.owner).toBe('owner-alice');
+  });
+
+  it('filters webhooks by owner in listWebhooks', async () => {
+    await registry.registerWebhook('https://example.com/wh1', ['loan.requested'], 'alice');
+    await registry.registerWebhook('https://example.com/wh2', ['loan.requested'], 'bob');
+    await registry.registerWebhook('https://example.com/wh3', ['loan.requested'], 'alice');
+
+    const all = await registry.listWebhooks();
+    expect(all).toHaveLength(3);
+
+    const aliceWebhooks = await registry.listWebhooks('alice');
+    expect(aliceWebhooks).toHaveLength(2);
+    expect(aliceWebhooks.every((w) => w.owner === 'alice')).toBe(true);
+
+    const bobWebhooks = await registry.listWebhooks('bob');
+    expect(bobWebhooks).toHaveLength(1);
+    expect(bobWebhooks[0].owner).toBe('bob');
+  });
+
   it('filters webhooks by event', async () => {
     await registry.registerWebhook('https://example.com/webhook1', ['loan.requested', 'loan.repaid']);
     await registry.registerWebhook('https://example.com/webhook2', ['vouch.created']);

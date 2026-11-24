@@ -21,19 +21,24 @@ describe("incoming webhook logging", () => {
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
     const { port } = server.address() as AddressInfo;
 
+    const now = Date.now();
+    const data = { borrower: "GSECRETBORROWER" };
     const payload = {
       event: "loan.repaid",
+      data,
+      timestamp: now,
       webhookId: "wh_test_1",
-      timestamp: 1700000000,
-      data: { borrower: "GSECRETBORROWER" },
     };
     await fetch(`http://127.0.0.1:${port}/webhook`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-webhook-signature": signWebhookPayload(payload as never, SECRET),
+        "x-webhook-timestamp": now.toString(),
+        "x-webhook-id": "wh_test_1",
+        "x-webhook-event": "loan.repaid",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(data),
     });
 
     const logged = JSON.stringify(logSpy.mock.calls);

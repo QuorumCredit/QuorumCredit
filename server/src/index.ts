@@ -82,7 +82,7 @@ async function main(): Promise<void> {
       paymentStore,
       searchService,
       eventStore: store,
-    });
+    }));
   });
 
   attachLoanSocketServer({

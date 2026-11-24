@@ -19,6 +19,7 @@ export interface WebhookRegistration {
   lastUsed?: Date;
   events: string[];
   enabled: boolean;
+  owner?: string;
 }
 
 export interface WebhookPayload {
@@ -193,7 +194,7 @@ export interface WebhookRegistry {
   /**
    * Register a new webhook
    */
-  registerWebhook(url: string, events: string[]): Promise<WebhookRegistration>;
+  registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration>;
 
   /**
    * Get webhook registration by ID
@@ -221,9 +222,9 @@ export interface WebhookRegistry {
   deleteWebhook(id: string): Promise<boolean>;
 
   /**
-   * List all webhooks
+   * List all webhooks, optionally filtered by owner
    */
-  listWebhooks(): Promise<WebhookRegistration[]>;
+  listWebhooks(owner?: string): Promise<WebhookRegistration[]>;
 
   /**
    * Get webhooks for a specific event
@@ -245,7 +246,7 @@ export interface WebhookRegistry {
 export class LocalWebhookRegistry implements WebhookRegistry {
   private registrations: Map<string, WebhookRegistration> = new Map();
 
-  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+  async registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration> {
     const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const secret = generateWebhookSecret();
     
@@ -256,6 +257,7 @@ export class LocalWebhookRegistry implements WebhookRegistry {
       createdAt: new Date(),
       events,
       enabled: true,
+      ...(owner !== undefined ? { owner } : {}),
     };
 
     this.registrations.set(id, registration);
@@ -294,8 +296,12 @@ export class LocalWebhookRegistry implements WebhookRegistry {
     return this.registrations.delete(id);
   }
 
-  async listWebhooks(): Promise<WebhookRegistration[]> {
-    return Array.from(this.registrations.values());
+  async listWebhooks(owner?: string): Promise<WebhookRegistration[]> {
+    const all = Array.from(this.registrations.values());
+    if (owner !== undefined) {
+      return all.filter((reg) => reg.owner === owner);
+    }
+    return all;
   }
 
   async getWebhooksForEvent(event: string): Promise<WebhookRegistration[]> {
@@ -324,7 +330,7 @@ const REDIS_WEBHOOK_IDS_KEY = 'qc:webhook:ids';
 export class RedisWebhookRegistry implements WebhookRegistry {
   constructor(private readonly redis: Redis) {}
 
-  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+  async registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration> {
     const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const secret = generateWebhookSecret();
     
@@ -335,6 +341,7 @@ export class RedisWebhookRegistry implements WebhookRegistry {
       createdAt: new Date(),
       events,
       enabled: true,
+      ...(owner !== undefined ? { owner } : {}),
     };
 
     await this.redis.set(
@@ -398,13 +405,17 @@ export class RedisWebhookRegistry implements WebhookRegistry {
     return deleted > 0;
   }
 
-  async listWebhooks(): Promise<WebhookRegistration[]> {
+  async listWebhooks(owner?: string): Promise<WebhookRegistration[]> {
     const ids = await this.redis.smembers(REDIS_WEBHOOK_IDS_KEY);
     const webhooks: WebhookRegistration[] = [];
     
     for (const id of ids) {
       const webhook = await this.getWebhook(id);
-      if (webhook) webhooks.push(webhook);
+      if (webhook) {
+        if (owner === undefined || webhook.owner === owner) {
+          webhooks.push(webhook);
+        }
+      }
     }
     
     return webhooks;
