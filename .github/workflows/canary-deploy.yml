@@ -41,12 +41,53 @@ jobs:
         # operator instruction instead of applying it, while still running the real
         # metrics-based promote/rollback decision logic. Plug in a real adapter script
         # (see docs/canary-deployment-guide.md) once your target environment has one.
+        env:
+          CANARY_URL: ${{ inputs.canary_url }}
+          STABLE_URL: ${{ inputs.stable_url }}
+          STEPS: ${{ inputs.steps }}
+          WINDOW_SECONDS: ${{ inputs.window_seconds }}
         run: |
-          ./scripts/canary_deploy.sh \
-            --canary-url "${{ github.event.inputs.canary_url }}" \
-            ${{ github.event.inputs.stable_url != '' && format('--stable-url {0}', github.event.inputs.stable_url) || '' }} \
-            --steps "${{ github.event.inputs.steps }}" \
-            --window-seconds "${{ github.event.inputs.window_seconds }}"
+          set -euo pipefail
+
+          url_regex='^https?://[^[:space:][:cntrl:]]+$'
+          if [[ ! "$CANARY_URL" =~ $url_regex ]]; then
+            echo "Error: canary_url must be a valid http:// or https:// URL" >&2
+            exit 1
+          fi
+
+          if [[ -n "$STABLE_URL" && ! "$STABLE_URL" =~ $url_regex ]]; then
+            echo "Error: stable_url must be a valid http:// or https:// URL" >&2
+            exit 1
+          fi
+
+          if [[ ! "$WINDOW_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Error: window_seconds must be a positive integer" >&2
+            exit 1
+          fi
+
+          if [[ -z "${STEPS//[,[:space:]]/}" ]]; then
+            echo "Error: steps must contain at least one traffic percentage" >&2
+            exit 1
+          fi
+          IFS=', ' read -ra step_values <<< "$STEPS"
+          for step in "${step_values[@]}"; do
+            [[ -z "$step" ]] && continue
+            if [[ ! "$step" =~ ^[0-9]+$ ]] || (( step < 1 || step > 100 )); then
+              echo "Error: each step in steps must be an integer between 1 and 100 (got '$step')" >&2
+              exit 1
+            fi
+          done
+
+          args=(
+            --canary-url "$CANARY_URL"
+            --steps "$STEPS"
+            --window-seconds "$WINDOW_SECONDS"
+          )
+          if [[ -n "$STABLE_URL" ]]; then
+            args+=(--stable-url "$STABLE_URL")
+          fi
+
+          ./scripts/canary_deploy.sh "${args[@]}"
 
       - name: Upload canary decision history
         if: always()
