@@ -12,6 +12,9 @@ import {
   validateIncomingWebhook,
   createSignedWebhookRequest,
   validateWebhookUrl,
+  resolveAndValidateWebhookUrl,
+  type WebhookUrlValidationOptions,
+  type ValidatedWebhookTarget,
 } from "../webhooks/signature.js";
 import {
   webhookDeliveryService,
@@ -392,40 +395,93 @@ async function handleDeliveryStats(res: ServerResponse, id: string): Promise<voi
 }
 
 /**
+ * Create an HTTP(S) webhook sender that resolves and validates the target
+ * hostname via DNS on every delivery attempt, checks every returned IP address,
+ * and pins the validated IP address on the outgoing connection to prevent
+ * DNS rebinding between check and use.
+ */
+export function createPinnedWebhookSender(
+  options?: WebhookUrlValidationOptions
+): WebhookSender {
+  return async (url, headers, body) => {
+    let validated: ValidatedWebhookTarget;
+    try {
+      validated = await resolveAndValidateWebhookUrl(
+        url,
+        options ?? { allowPrivateHosts: getDevModeFlag() }
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : "invalid webhook URL",
+      };
+    }
+
+    return new Promise((resolve) => {
+      const target = validated.url;
+      const transport = target.protocol === "http:" ? httpRequest : httpsRequest;
+      const payload = JSON.stringify(body);
+
+      const pinnedLookup =
+        validated.address && validated.family
+          ? (
+              _hostname: string,
+              opts: unknown,
+              cb?: (
+                err: NodeJS.ErrnoException | null,
+                address: string | Array<{ address: string; family: number }>,
+                family?: number
+              ) => void
+            ) => {
+              const pinnedAddress = validated.address!;
+              const pinnedFamily = validated.family!;
+              if (typeof opts === "function") {
+                (opts as (err: NodeJS.ErrnoException | null, address: string, family: number) => void)(
+                  null,
+                  pinnedAddress,
+                  pinnedFamily
+                );
+              } else if (opts && typeof opts === "object" && (opts as { all?: boolean }).all) {
+                cb?.(null, [{ address: pinnedAddress, family: pinnedFamily }]);
+              } else {
+                cb?.(null, pinnedAddress, pinnedFamily);
+              }
+            }
+          : undefined;
+
+      const req = transport(
+        {
+          hostname: target.hostname,
+          port: target.port || (target.protocol === "http:" ? 80 : 443),
+          path: `${target.pathname}${target.search}`,
+          method: "POST",
+          headers: { ...headers, "content-length": Buffer.byteLength(payload) },
+          timeout: 10_000,
+          ...(pinnedLookup ? { lookup: pinnedLookup as never } : {}),
+        },
+        (res) => {
+          res.on("data", () => undefined);
+          res.on("end", () => {
+            const statusCode = res.statusCode ?? 0;
+            resolve({ ok: statusCode >= 200 && statusCode < 300, statusCode });
+          });
+        }
+      );
+
+      req.on("timeout", () => req.destroy(new Error("webhook delivery timed out")));
+      req.on("error", (error) => resolve({ ok: false, error: error.message }));
+      req.write(payload);
+      req.end();
+    });
+  };
+}
+
+/**
  * Real HTTP(S) sender used to actually deliver webhook payloads to
  * subscriber URLs. Kept separate from WebhookDeliveryService so the retry
  * logic there stays transport-agnostic and unit-testable.
  */
-const sendWebhookOverHttp: WebhookSender = (url, headers, body) => {
-  return new Promise((resolve) => {
-    const target = new URL(url);
-    const transport = target.protocol === "http:" ? httpRequest : httpsRequest;
-    const payload = JSON.stringify(body);
-
-    const req = transport(
-      {
-        hostname: target.hostname,
-        port: target.port || (target.protocol === "http:" ? 80 : 443),
-        path: `${target.pathname}${target.search}`,
-        method: "POST",
-        headers: { ...headers, "content-length": Buffer.byteLength(payload) },
-        timeout: 10_000,
-      },
-      (res) => {
-        res.on("data", () => undefined);
-        res.on("end", () => {
-          const statusCode = res.statusCode ?? 0;
-          resolve({ ok: statusCode >= 200 && statusCode < 300, statusCode });
-        });
-      }
-    );
-
-    req.on("timeout", () => req.destroy(new Error("webhook delivery timed out")));
-    req.on("error", (error) => resolve({ ok: false, error: error.message }));
-    req.write(payload);
-    req.end();
-  });
-};
+const sendWebhookOverHttp: WebhookSender = createPinnedWebhookSender();
 
 /**
  * Dispatch an event to every enabled subscriber registered for it, with
