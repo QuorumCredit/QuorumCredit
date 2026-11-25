@@ -454,7 +454,6 @@ export const webhookRegistry = new LocalWebhookRegistry();
 const ALLOWED_SCHEMES = new Set(["http", "https"]);
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
-  "127.0.0.1",
   "::1",
   "0.0.0.0",
   "169.254.169.254",
@@ -464,6 +463,42 @@ const BLOCKED_HOSTNAMES = new Set([
 
 const PRIVATE_IPV4_RE = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/;
 const LINK_LOCAL_IPV4_RE = /^169\.254\./;
+
+/**
+ * Convert IPv4 address string to numeric value for range checking.
+ * Returns undefined if the string is not a valid IPv4 address.
+ */
+function ipv4ToNumber(ip: string): number | undefined {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return undefined;
+  
+  const nums = parts.map(p => parseInt(p, 10));
+  if (nums.some(n => isNaN(n) || n < 0 || n > 255)) return undefined;
+  
+  return (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3];
+}
+
+/**
+ * Check if an IP address falls within a blocked range using numeric comparison.
+ * Blocked ranges:
+ * - 127.0.0.0/8 (loopback)
+ * - 100.64.0.0/10 (CGNAT shared address space)
+ */
+function isBlockedIpRange(ip: string): boolean {
+  const ipNum = ipv4ToNumber(ip);
+  if (ipNum === undefined) return false;
+  
+  // 127.0.0.0/8: 127.0.0.0 - 127.255.255.255
+  const loopbackStart = 127 << 24; // 127.0.0.0
+  const loopbackEnd = (127 << 24) | 0xFFFFFF; // 127.255.255.255
+  
+  // 100.64.0.0/10: 100.64.0.0 - 100.127.255.255
+  const cgnatStart = (100 << 24) | (64 << 16); // 100.64.0.0
+  const cgnatEnd = (100 << 24) | (127 << 16) | 0xFFFF; // 100.127.255.255
+  
+  return (ipNum >= loopbackStart && ipNum <= loopbackEnd) ||
+         (ipNum >= cgnatStart && ipNum <= cgnatEnd);
+}
 
 export interface WebhookUrlValidationOptions {
   /** When true, skip scheme/host validation. Intended for local/dev environments only. */
@@ -475,7 +510,8 @@ export interface WebhookUrlValidationOptions {
  *
  * Rejects:
  * - non-http(s) schemes
- * - loopback/link-local/private IPv4 ranges
+ * - loopback (127.0.0.0/8) and CGNAT (100.64.0.0/10) ranges
+ * - link-local/private IPv4 ranges
  * - cloud metadata endpoints
  *
  * Returns the normalized URL when valid, or throws with a descriptive message.
@@ -495,6 +531,11 @@ export function validateWebhookUrl(rawUrl: string, options: WebhookUrlValidation
 
   if (BLOCKED_HOSTNAMES.has(hostname)) {
     throw new Error(`blocked host: ${hostname}`);
+  }
+
+  // Check numeric IP ranges (127.0.0.0/8 and 100.64.0.0/10)
+  if (isBlockedIpRange(hostname)) {
+    throw new Error(`blocked IP range: ${hostname}`);
   }
 
   if (PRIVATE_IPV4_RE.test(hostname) || LINK_LOCAL_IPV4_RE.test(hostname)) {
