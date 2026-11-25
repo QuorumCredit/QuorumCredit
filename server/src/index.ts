@@ -78,11 +78,12 @@ async function main(): Promise<void> {
       revocationStore,
       apiRateLimiter,
       apiKeyStore,
+      allowPrivateWebhookHosts: config.allowPrivateWebhookHosts,
       rpcClient,
       paymentStore,
       searchService,
       eventStore: store,
-    });
+    }));
   });
 
   attachLoanSocketServer({

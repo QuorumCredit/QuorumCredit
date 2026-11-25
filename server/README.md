@@ -55,6 +55,7 @@ docker compose up   # redis + two broadcast-server replicas, ports 4000 and 4001
 | `REDIS_URL` | unset | Redis pub/sub backbone; required for >1 instance |
 | `INDEXER_DB_PATH` | `indexer.db` | Path to the indexer's SQLite file (read-only) |
 | `AUTH_SECRET` | dev default — **override in production** | HMAC signing key for tokens |
+| `ALLOW_PRIVATE_WEBHOOK_HOSTS` | `false` | Allow private webhook destinations outside production only; setting `true` in production prevents startup |
 | `TOKEN_TTL_SECONDS` | `300` | Issued-token lifetime |
 | `CONN_QUEUE_MAX` | `500` | Per-connection outgoing queue capacity (see Backpressure) |
 | `BRIDGE_POLL_INTERVAL_MS` | `250` | How often the bridge polls the indexer DB for new rows |

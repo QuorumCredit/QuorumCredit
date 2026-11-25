@@ -20,6 +20,8 @@ export interface ServerConfig {
   /** Deployed version identifier, surfaced on /health for canary release monitoring
    * (issue #1231) — e.g. a git SHA or semver tag set by the deploy pipeline. */
   serviceVersion: string;
+  /** Allows private webhook destinations only when explicitly enabled outside production. */
+  allowPrivateWebhookHosts: boolean;
   /**
    * Application-level WebSocket heartbeat / idle-timeout settings.
    * Both loanSocketServer (socket.io) and metricsWsServer (raw ws) use these.
@@ -120,6 +122,11 @@ function validateAuthSecret(secret: string): void {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const allowPrivateWebhookHosts = env.ALLOW_PRIVATE_WEBHOOK_HOSTS === "true";
+  if (allowPrivateWebhookHosts && env.NODE_ENV === "production") {
+    throw new Error("ALLOW_PRIVATE_WEBHOOK_HOSTS=true is not allowed when NODE_ENV=production");
+  }
+
   const authSecret = env.AUTH_SECRET ?? INSECURE_DEFAULT_SECRET;
   validateAuthSecret(authSecret);
 
@@ -143,6 +150,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     leaderLockTtlMs: envInt("LEADER_LOCK_TTL_MS", 5000),
     instanceId: env.INSTANCE_ID ?? `inst-${process.pid}-${Math.random().toString(36).slice(2, 8)}`,
     serviceVersion: env.SERVICE_VERSION ?? "dev",
+    allowPrivateWebhookHosts,
     costAllocation: {
       contractFeeStroopsPerTx: envInt("CONTRACT_FEE_STROOPS_PER_TX", 100_000),
       apiServerMonthlyCostCents: envInt("API_SERVER_MONTHLY_COST_CENTS", 0),
