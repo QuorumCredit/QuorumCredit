@@ -12,6 +12,7 @@ import {
   validateIncomingWebhook,
   createSignedWebhookRequest,
   validateWebhookUrl,
+  type WebhookRegistration,
 } from "../webhooks/signature.js";
 import {
   webhookDeliveryService,
@@ -50,6 +51,14 @@ export interface WebhookRoutesContext {
    * When the limit is reached, additional requests are rejected with 429.
    */
   maxConcurrentTestDeliveries?: number;
+  /** Configured admin role name (defaults to "admin") */
+  adminRole?: string;
+}
+
+export interface WebhookCaller {
+  owner: string;
+  role?: string;
+  isAdmin: boolean;
 }
 
 interface RegisterWebhookBody {
@@ -92,25 +101,25 @@ export function handleWebhookRequest(
   // Delivery success-rate tracking for a subscription.
   if (req.method === "GET" && url.pathname.match(/^\/api\/webhooks\/[^/]+\/deliveries$/)) {
     const id = url.pathname.split("/")[3] as string;
-    void handleListDeliveries(res, id);
+    void handleListDeliveries(req, res, id, ctx);
     return;
   }
 
   if (req.method === "GET" && url.pathname.match(/^\/api\/webhooks\/[^/]+\/stats$/)) {
     const id = url.pathname.split("/")[3] as string;
-    void handleDeliveryStats(res, id);
+    void handleDeliveryStats(req, res, id, ctx);
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/webhooks") {
-    void handleListWebhooks(req, res);
+    void handleListWebhooks(req, res, ctx);
     return;
   }
 
   if (req.method === "GET" && url.pathname.startsWith("/api/webhooks/")) {
     const id = url.pathname.split("/").pop();
     if (id && id !== "register") {
-      void handleGetWebhook(req, res, id);
+      void handleGetWebhook(req, res, id, ctx);
       return;
     }
   }
@@ -154,7 +163,8 @@ export function handleWebhookRequest(
  */
 async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse, ctx: WebhookRoutesContext): Promise<void> {
   try {
-    if (await requireWebhookAuth(req, res, ctx)) return;
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
 
     const body = await readJsonBody<RegisterWebhookBody>(req);
     
@@ -201,8 +211,9 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse, 
       return;
     }
 
-    // Register webhook
-    const registration = await webhookRegistry.registerWebhook(validatedUrl.toString(), body.events);
+    // Register webhook with owner scoped to caller (or specified owner for admin)
+    const owner = (caller.isAdmin && (body as any).owner) ? (body as any).owner : caller.owner;
+    const registration = await webhookRegistry.registerWebhook(validatedUrl.toString(), body.events, owner);
 
     // Return registration (excluding secret for security)
     const { secret, ...safeRegistration } = registration;
@@ -223,12 +234,16 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse, 
 /**
  * List all webhooks
  */
-async function handleListWebhooks(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleListWebhooks(req: IncomingMessage, res: ServerResponse, ctx: WebhookRoutesContext): Promise<void> {
   try {
-    const webhooks = await webhookRegistry.listWebhooks();
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
+
+    const webhooks = await webhookRegistry.listWebhooks(caller.isAdmin ? undefined : caller.owner);
+    const filteredWebhooks = caller.isAdmin ? webhooks : webhooks.filter((w) => w.owner === caller.owner);
     
     // Remove secrets from response
-    const safeWebhooks = webhooks.map(({ secret, ...rest }) => rest);
+    const safeWebhooks = filteredWebhooks.map(({ secret, ...rest }) => rest);
     
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(safeWebhooks));
@@ -242,13 +257,22 @@ async function handleListWebhooks(_req: IncomingMessage, res: ServerResponse): P
 /**
  * Get a specific webhook
  */
-async function handleGetWebhook(_req: IncomingMessage, res: ServerResponse, id: string): Promise<void> {
+async function handleGetWebhook(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
+
     const webhook = await webhookRegistry.getWebhook(id);
     
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    if (!isAuthorizedOwner(webhook, caller)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden: not owner of webhook" }));
       return;
     }
 
@@ -269,13 +293,20 @@ async function handleGetWebhook(_req: IncomingMessage, res: ServerResponse, id: 
  */
 async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
-    if (await requireWebhookAuth(req, res, ctx)) return;
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
 
     const webhook = await webhookRegistry.getWebhook(id);
     
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    if (!isAuthorizedOwner(webhook, caller)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden: not owner of webhook" }));
       return;
     }
 
@@ -331,7 +362,22 @@ async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id
  */
 async function handleDeleteWebhook(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
-    if (await requireWebhookAuth(req, res, ctx)) return;
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
+
+    const webhook = await webhookRegistry.getWebhook(id);
+    
+    if (!webhook) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    if (!isAuthorizedOwner(webhook, caller)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden: not owner of webhook" }));
+      return;
+    }
 
     const deleted = await webhookRegistry.deleteWebhook(id);
     
@@ -353,12 +399,21 @@ async function handleDeleteWebhook(req: IncomingMessage, res: ServerResponse, id
 /**
  * List delivery attempts recorded for a webhook subscription.
  */
-async function handleListDeliveries(res: ServerResponse, id: string): Promise<void> {
+async function handleListDeliveries(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
+
     const webhook = await webhookRegistry.getWebhook(id);
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    if (!isAuthorizedOwner(webhook, caller)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden: not owner of webhook" }));
       return;
     }
 
@@ -375,12 +430,21 @@ async function handleListDeliveries(res: ServerResponse, id: string): Promise<vo
  * Report the delivery success rate for a webhook subscription, per the
  * "track webhook delivery success rates" requirement.
  */
-async function handleDeliveryStats(res: ServerResponse, id: string): Promise<void> {
+async function handleDeliveryStats(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
+
     const webhook = await webhookRegistry.getWebhook(id);
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    if (!isAuthorizedOwner(webhook, caller)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden: not owner of webhook" }));
       return;
     }
 
@@ -450,13 +514,20 @@ export async function dispatchEventToSubscribers(event: string, data: unknown): 
  */
 async function handleTestWebhook(req: IncomingMessage, res: ServerResponse, id: string, ctx: WebhookRoutesContext): Promise<void> {
   try {
-    if (await requireWebhookAuth(req, res, ctx)) return;
+    const caller = await requireWebhookAuth(req, res, ctx);
+    if (!caller) return;
 
     const webhook = await webhookRegistry.getWebhook(id);
 
     if (!webhook) {
       res.writeHead(404, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "webhook not found" }));
+      return;
+    }
+
+    if (!isAuthorizedOwner(webhook, caller)) {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "forbidden: not owner of webhook" }));
       return;
     }
 
@@ -594,7 +665,7 @@ function readJsonBody<T>(req: IncomingMessage): Promise<T> {
   });
 }
 
-// ── Auth helpers (issue #1487) ─────────────────────────────────────────────────
+// ── Auth helpers (issue #1487, #2149) ──────────────────────────────────────────
 
 function extractBearerToken(req: IncomingMessage): string | undefined {
   const authHeader = req.headers["authorization"];
@@ -607,28 +678,54 @@ function extractApiKey(req: IncomingMessage): string | undefined {
   return (req.headers["x-api-key"] as string | undefined) ?? undefined;
 }
 
-async function requireWebhookAuth(req: IncomingMessage, res: ServerResponse, ctx: WebhookRoutesContext): Promise<boolean> {
+async function requireWebhookAuth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  ctx: WebhookRoutesContext
+): Promise<WebhookCaller | null> {
   const token = extractBearerToken(req);
   const apiKey = extractApiKey(req);
 
   if (!token && !apiKey) {
     res.writeHead(401, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: "missing credentials; provide Authorization: Bearer <token> or X-Api-Key" }));
-    return true;
+    return null;
   }
 
+  const adminRole = ctx.adminRole ?? "admin";
+
   if (token && ctx.authSecret) {
-    const result = await verifyToken(ctx.authSecret, token, ctx.revocationStore);
-    if (result.valid) return false;
+    const result = verifyToken(ctx.authSecret, token);
+    if (result.valid) {
+      const payload = result.payload;
+      const owner = payload.sub;
+      const role = payload.role;
+      const isAdmin =
+        role === adminRole ||
+        owner === "admin" ||
+        (Array.isArray((payload as any).roles) && (payload as any).roles.includes(adminRole)) ||
+        (payload as any).admin === true;
+      return { owner, role, isAdmin };
+    }
   }
 
   if (apiKey && ctx.apiKeyStore) {
-    if (ctx.apiKeyStore.isValid(apiKey)) return false;
+    if (ctx.apiKeyStore.isValid(apiKey)) {
+      const role = ctx.apiKeyStore.getRole ? ctx.apiKeyStore.getRole(apiKey) : undefined;
+      const isAdmin = role === adminRole || apiKey === "admin" || role === "admin";
+      return { owner: apiKey, role, isAdmin };
+    }
   }
 
   res.writeHead(401, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: "invalid credentials" }));
-  return true;
+  return null;
+}
+
+function isAuthorizedOwner(webhook: WebhookRegistration, caller: WebhookCaller): boolean {
+  if (caller.isAdmin) return true;
+  if (!webhook.owner) return false;
+  return webhook.owner === caller.owner;
 }
 
 // ── SSRF validation helpers (issue #1486) ─────────────────────────────────────

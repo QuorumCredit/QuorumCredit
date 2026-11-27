@@ -162,6 +162,14 @@ pub(crate) fn weighted_stake(stake: i128, weight: i128) -> Result<i128, Contract
         .ok_or(ContractError::ArithmeticError)
 }
 
+fn checked_repayment_add(left: i128, right: i128) -> Result<i128, ContractError> {
+    left.checked_add(right).ok_or(ContractError::ArithmeticError)
+}
+
+fn repayment_total(principal: i128, yield_amount: i128, interest: i128) -> Result<i128, ContractError> {
+    checked_repayment_add(checked_repayment_add(principal, yield_amount)?, interest)
+}
+
 /// Request loan.
 ///
 /// Covenant enforcement (Issue #2001): after the loan is persisted and
@@ -500,11 +508,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     // ── Step 2: Validate payment against total obligation ────────────────────
     //
     // total_owed = principal + static_yield + accrued_compound_interest
-    let total_owed = loan
-        .amount
-        .checked_add(loan.total_yield)
-        .and_then(|v| v.checked_add(loan.accrued_interest))
-        .expect("total_owed overflow");
+    let total_owed = repayment_total(loan.amount, loan.total_yield, loan.accrued_interest)?;
 
     let outstanding = total_owed
         .checked_sub(loan.amount_repaid)
@@ -516,12 +520,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     }
 
     // ── Step 3: Apply payment ─────────────────────────────────────────────────
-    let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
-    token.transfer(&borrower, &env.current_contract_address(), &payment);
-    loan.amount_repaid = loan
-        .amount_repaid
-        .checked_add(payment)
-        .expect("amount_repaid overflow");
+    loan.amount_repaid = checked_repayment_add(loan.amount_repaid, payment)?;
 
     // ── Step 4: Check milestones (post-payment) ───────────────────────────────
     // total_obligation for milestone fraction: principal + static yield only.
@@ -541,13 +540,12 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     loan.milestone_bonus_applied = new_flags;
 
     // ── Step 5: Re-check whether fully repaid (with updated accrued_interest) ─
-    let total_owed_final = loan
-        .amount
-        .checked_add(loan.total_yield)
-        .and_then(|v| v.checked_add(loan.accrued_interest))
-        .expect("total_owed_final overflow");
+    let total_owed_final = repayment_total(loan.amount, loan.total_yield, loan.accrued_interest)?;
 
     let _fully_repaid = loan.amount_repaid >= total_owed_final;
+
+    let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
+    token.transfer(&borrower, &env.current_contract_address(), &payment);
 
     let now = env.ledger().timestamp();
     
@@ -2164,9 +2162,13 @@ pub fn request_forbearance(
 
     let now = env.ledger().timestamp();
     let duration = duration_secs.unwrap_or(DEFAULT_FORBEARANCE_DURATION_SECS);
-    let ends_at = now + duration;
+    let ends_at = now
+        .checked_add(duration)
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
-    loan.deadline = loan.deadline + duration;
+    loan.deadline = loan.deadline
+        .checked_add(duration)
+        .ok_or(ContractError::ArithmeticOverflow)?;
     env.storage()
         .persistent()
         .set(&DataKey::Loan(loan.id), &loan);
@@ -2383,3 +2385,26 @@ pub fn get_borrower_dynamic_rate(env: Env, borrower: Address) -> Option<Borrower
         .get(&DataKey::BorrowerDynamicRate(borrower))
 }
 
+
+#[cfg(test)]
+mod repayment_arithmetic_tests {
+    use super::{checked_repayment_add, repayment_total, ContractError};
+
+    #[test]
+    fn initial_obligation_checks_principal_and_yield() {
+        assert_eq!(repayment_total(i128::MAX - 1, 1, 0), Ok(i128::MAX));
+        assert_eq!(repayment_total(i128::MAX, 1, 0), Err(ContractError::ArithmeticError));
+    }
+
+    #[test]
+    fn amount_repaid_checks_payment_boundary() {
+        assert_eq!(checked_repayment_add(i128::MAX - 1, 1), Ok(i128::MAX));
+        assert_eq!(checked_repayment_add(i128::MAX, 1), Err(ContractError::ArithmeticError));
+    }
+
+    #[test]
+    fn final_obligation_checks_accrued_interest_boundary() {
+        assert_eq!(repayment_total(i128::MAX - 2, 1, 1), Ok(i128::MAX));
+        assert_eq!(repayment_total(i128::MAX - 2, 1, 2), Err(ContractError::ArithmeticError));
+    }
+}

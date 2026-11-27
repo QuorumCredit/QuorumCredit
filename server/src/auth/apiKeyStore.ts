@@ -25,6 +25,10 @@ export interface ApiKeyStore {
   registerHash(hash: KeyHash): void;
   /** Returns the provisioned tier, defaulting valid keys to the free tier. */
   getTier(rawKey: string): "free" | "pro" | "enterprise" | undefined;
+  /** Returns the role associated with the key, if any. */
+  getRole?(rawKey: string): string | undefined;
+  /** Register a role for a key hash at runtime. */
+  registerRole?(hash: KeyHash, role: string): void;
 }
 
 function sha256hex(input: string): string {
@@ -40,7 +44,8 @@ function safeHexEqual(a: string, b: string): boolean {
 /** Build the store from a comma-separated list of SHA-256 hex digests. */
 export function buildApiKeyStore(
   hashList: string,
-  tiers: Record<string, "free" | "pro" | "enterprise"> = {}
+  tiers: Record<string, "free" | "pro" | "enterprise"> = {},
+  roles: Record<string, string> = {}
 ): ApiKeyStore {
   const hashes = new Set<string>(
     hashList
@@ -52,6 +57,11 @@ export function buildApiKeyStore(
     Object.entries(tiers)
       .filter(([hash, tier]) => hashes.has(hash.toLowerCase()) && isApiTier(tier))
       .map(([hash, tier]) => [hash.toLowerCase(), tier])
+  );
+  const roleByHash = new Map<string, string>(
+    Object.entries(roles)
+      .filter(([hash]) => hashes.has(hash.toLowerCase()))
+      .map(([hash, role]) => [hash.toLowerCase(), role])
   );
 
   return {
@@ -69,6 +79,17 @@ export function buildApiKeyStore(
     getTier(rawKey: string): "free" | "pro" | "enterprise" | undefined {
       const digest = sha256hex(rawKey);
       return hashes.has(digest) ? tierByHash.get(digest) ?? "free" : undefined;
+    },
+    getRole(rawKey: string): string | undefined {
+      const digest = sha256hex(rawKey);
+      return hashes.has(digest) ? roleByHash.get(digest) : undefined;
+    },
+    registerRole(hash: KeyHash, role: string): void {
+      const normalised = hash.trim().toLowerCase();
+      if (normalised.length === 64) {
+        hashes.add(normalised);
+        roleByHash.set(normalised, role);
+      }
     },
   };
 }
@@ -96,7 +117,22 @@ export function loadApiKeyStore(env: NodeJS.ProcessEnv = process.env): ApiKeySto
       tiers[hash.toLowerCase()] = tier;
     }
   }
-  return buildApiKeyStore(env.API_KEY_HASHES ?? "", tiers);
+  let roles: Record<string, string> = {};
+  if (env.API_KEY_ROLES) {
+    try {
+      const parsed: unknown = JSON.parse(env.API_KEY_ROLES);
+      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        for (const [hash, role] of Object.entries(parsed)) {
+          if (/^[a-f0-9]{64}$/i.test(hash) && typeof role === "string") {
+            roles[hash.toLowerCase()] = role;
+          }
+        }
+      }
+    } catch {
+      // ignore invalid json in env
+    }
+  }
+  return buildApiKeyStore(env.API_KEY_HASHES ?? "", tiers, roles);
 }
 
 function isApiTier(value: unknown): value is "free" | "pro" | "enterprise" {

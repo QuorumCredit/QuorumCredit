@@ -49,6 +49,10 @@ impl ApiError {
 /// off-chain tooling that imports this crate.
 pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
     match err {
+        ContractError::NotEligibleYet => (
+            String::from_str(env, "NotEligibleYet"),
+            String::from_str(env, "Query anniversary_bonus_eligible_at for the next claim timestamp."),
+        ),
         ContractError::InsufficientFunds => (
             String::from_str(env, "InsufficientFunds"),
             String::from_str(env, "Stake or amount is zero/negative; or contract balance is insufficient for disbursement."),
@@ -385,13 +389,16 @@ pub fn contract_error_meta(env: &Env, err: ContractError) -> (String, String) {
             String::from_str(env, "NotInitialized"),
             String::from_str(env, "Contract has not been initialized. Call initialize() first."),
         ),
+        ContractError::NotImplemented => (
+            String::from_str(env, "NotImplemented"),
+            String::from_str(env, "This entry point is not yet implemented."),
+        ),
         _ => (
             String::from_str(env, "UnknownError"),
             String::from_str(env, "An unknown error occurred."),
         ),
     }
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -588,6 +595,7 @@ EmergencyBypassNotAuthorised = 131,
     TreasuryTransferFailed = 268,
     /// Voter has no active vouched stake and cannot vote on treasury proposals.
     NoVouchedStake = 269,
+    NotEligibleYet = 270,
     /// Cross-collateral pool not found.
     CollateralPoolNotFound = 132,
     /// Cross-collateral pool is already active (has an assigned borrower).
@@ -871,4 +879,6 @@ EmergencyBypassNotAuthorised = 131,
     // ── Issue #1797: Verification rate limit window ──────────────────────────
     /// Rate-limit refill window is outside the allowed range.
     InvalidRateLimitWindow = 265,
+    /// Entry point is not yet implemented; the feature is scaffolded but not built.
+    NotImplemented = 270,
 }

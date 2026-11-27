@@ -158,7 +158,7 @@ impl ReputationNftContract {
             .unwrap_or(0);
         env.storage()
             .persistent()
-            .set(&RepKey::Score(to), &(score + 1));
+            .set(&RepKey::Score(to), &score.saturating_add(1));
     }
 
     /// Burn one reputation point from `from` (floor at 0). Only callable by the registered minter.

@@ -193,6 +193,7 @@ mod loan_cart_test;
 #[cfg(test)]
 mod repay_validation_test;
 mod sbt_stake_not_unlocked_test;
+mod sbt_marketplace_ownership_test;
 mod weighted_stake_overflow_test;
 mod diversification_empty_history_test;
 mod loan_accrued_interest_overflow_test;
@@ -275,6 +276,8 @@ mod initialize_test;
 #[cfg(test)]
 mod monitoring_setup_test;
 #[cfg(test)]
+mod issue_2136_2137_2138_2139_stubs_test;
+#[cfg(test)]
 mod operations_runbook_test;
 
 #[cfg(test)]
@@ -285,6 +288,9 @@ mod credential_batch_test;
 
 #[cfg(test)]
 mod credential_rate_limit_test;
+
+#[cfg(test)]
+mod issue_2140_2141_2142_2143_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -397,6 +403,19 @@ impl QuorumCreditContract {
     ) -> Result<(), ContractError> {
         // Issue #2100: the entrypoint targets native Stellar (chain_id = None -> 0).
         vouch::vouch(env, voucher, borrower, stake, token, None)
+    }
+
+    /// Vouch with an optional sector label (e.g. "real-estate", "tech") that is
+    /// stored alongside the vouch so risk reports can slice by sector.
+    pub fn vouch_with_sector(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        stake: i128,
+        token: Address,
+        sector: soroban_sdk::String,
+    ) -> Result<(), ContractError> {
+        vouch::vouch_with_sector(env, voucher, borrower, stake, token, sector)
     }
 
     pub fn increase_stake(
@@ -1966,8 +1985,7 @@ impl QuorumCreditContract {
         _consent: bool,
     ) -> Result<(), ContractError> {
         borrower.require_auth();
-        // TODO: Implement when social feature types are defined
-        Ok(())
+        Err(ContractError::NotImplemented)
     }
 
     /// Submit a success story (Issue #1176) - NOT YET IMPLEMENTED.
@@ -1979,8 +1997,7 @@ impl QuorumCreditContract {
         _content: String,
     ) -> Result<u64, ContractError> {
         borrower.require_auth();
-        // TODO: Implement when social feature types are defined
-        Ok(0)
+        Err(ContractError::NotImplemented)
     }
 
     /// Publish a success story (Issue #1176) - NOT YET IMPLEMENTED.
@@ -1991,8 +2008,7 @@ impl QuorumCreditContract {
         _story_id: u64,
     ) -> Result<(), ContractError> {
         borrower.require_auth();
-        // TODO: Implement when social feature types are defined
-        Ok(())
+        Err(ContractError::NotImplemented)
     }
 
     /// Get a success story (Issue #1176) - NOT YET IMPLEMENTED.
@@ -2000,17 +2016,15 @@ impl QuorumCreditContract {
         _env: Env,
         _story_id: u64,
     ) -> Result<String, ContractError> {
-        // TODO: Implement when social feature types are defined
-        Ok(String::from_str(&_env, ""))
+        Err(ContractError::NotImplemented)
     }
 
     /// Get all success stories for a borrower (Issue #1176) - NOT YET IMPLEMENTED.
     pub fn get_borrower_success_stories(
-        env: Env,
+        _env: Env,
         _borrower: Address,
     ) -> Result<Vec<String>, ContractError> {
-        // TODO: Implement when social feature types are defined
-        Ok(Vec::new(&env))
+        Err(ContractError::NotImplemented)
     }
 
     /// Get retention metrics for a borrower (Issue #1176) - NOT YET IMPLEMENTED.
@@ -2019,19 +2033,17 @@ impl QuorumCreditContract {
         _env: Env,
         _borrower: Address,
     ) -> Result<String, ContractError> {
-        // TODO: Implement when social feature types are defined
-        Ok(String::from_str(&_env, ""))
+        Err(ContractError::NotImplemented)
     }
 
     /// Find similar borrowers for peer discovery (Issue #1176) - NOT YET IMPLEMENTED.
     /// Returns borrowers with similar sector/region characteristics.
     pub fn find_similar_borrowers(
-        env: Env,
+        _env: Env,
         _borrower: Address,
         _limit: u32,
     ) -> Result<Vec<String>, ContractError> {
-        // TODO: Implement when social feature types are defined
-        Ok(Vec::new(&env))
+        Err(ContractError::NotImplemented)
     }
 
     /// Calculate engagement score for a borrower (Issue #1176).
@@ -3453,15 +3465,15 @@ impl QuorumCreditContract {
 }
 
 pub fn add_voucher_to_group(_env: Env, _caller: Address, _group_id: u64, _voucher: Address) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn remove_voucher_from_group(_env: Env, _caller: Address, _group_id: u64, _voucher: Address) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn create_vouch_group(_env: Env, _caller: Address, _name: soroban_sdk::String) -> Result<u64, ContractError> {
-    Ok(0)
+    Err(ContractError::NotImplemented)
 }
 
 pub fn get_vouch_group(_env: Env, _group_id: u64) -> Option<VouchGroup> {
@@ -3481,7 +3493,7 @@ pub fn rebalance_pools(
     _target_pool_id: u64,
     _amount: i128,
 ) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn auto_rebalance_pools(
@@ -3489,19 +3501,19 @@ pub fn auto_rebalance_pools(
     _admin_signers: Vec<Address>,
     _target_stake: i128,
 ) -> Result<u32, ContractError> {
-    Ok(0)
+    Err(ContractError::NotImplemented)
 }
 
 pub fn get_pool_liquidity(_env: Env, _pool_id: u64) -> Result<i128, ContractError> {
-    Ok(0)
+    Err(ContractError::NotImplemented)
 }
 
 pub fn claim_insurance(_env: Env, _voucher: Address, _loan_id: u64) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn contribute_to_insurance(_env: Env, _caller: Address, _amount: i128) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn is_voucher_insured(_env: Env, _voucher: Address, _borrower: Address) -> bool {
@@ -3521,15 +3533,15 @@ pub fn get_insurance_pool_balance(env: Env) -> i128 {
 }
 
 pub fn set_insurance_coverage_bps(_env: Env, _admin_signers: Vec<Address>, _bps: u32) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn set_insurance_fee_bps(_env: Env, _admin_signers: Vec<Address>, _bps: u32) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn purchase_slash_insurance(_env: Env, _voucher: Address, _borrower: Address) -> Result<i128, ContractError> {
-    Ok(0)
+    Err(ContractError::NotImplemented)
 }
 
 pub fn get_periodic_payment_config(_env: Env, _loan_id: u64) -> Option<PeriodicPaymentConfig> {
@@ -3541,7 +3553,7 @@ pub fn get_periodic_payment_status(_env: Env, _loan_id: u64) -> Option<PeriodicP
 }
 
 pub fn make_periodic_payment(_env: Env, _caller: Address, _loan_id: u64, _amount: i128) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn set_periodic_payment(
@@ -3552,7 +3564,7 @@ pub fn set_periodic_payment(
     _period_count: u32,
     _period_interest_bps: u32,
 ) -> Result<(), ContractError> {
-    Ok(())
+    Err(ContractError::NotImplemented)
 }
 
 pub fn get_voucher_yield_claim(_env: Env, _loan_id: u64, _voucher: Address) -> Option<VoucherYieldClaim> {
@@ -3809,7 +3821,7 @@ pub fn remove_attribute(env: Env, caller: Address, key: soroban_sdk::String) -> 
 }
 
 pub fn claim_streamed_yield(_env: Env, _caller: Address, _loan_id: u64) -> Result<i128, ContractError> {
-    Ok(0)
+    Err(ContractError::NotImplemented)
 }
 
 pub fn get_yield_stream_state(_env: Env, _loan_id: u64) -> Option<YieldStreamState> {
@@ -4666,7 +4678,16 @@ impl QuorumCreditContract {
         loyalty::get_loyalty_benefits(env, user)
     }
 
+    /// Earliest Unix timestamp for the next anniversary bonus, or None if the tier has no bonus.
+    pub fn anniversary_bonus_eligible_at(
+        env: Env,
+        user: Address,
+    ) -> Result<Option<u64>, ContractError> {
+        loyalty::anniversary_bonus_eligible_at(&env, &user)
+    }
+
     /// Claim the annual anniversary loyalty bonus. Returns bonus in basis points.
+    /// Claims before `anniversary_bonus_eligible_at` return `NotEligibleYet`.
     pub fn claim_anniversary_bonus(
         env: Env,
         user: Address,
@@ -5300,6 +5321,7 @@ impl QuorumCreditContract {
         monitoring_period_secs: u64,
         breach_tolerance: u32,
     ) -> Result<(), ContractError> {
+        borrower.require_auth();
         // Issue #2100: the module is keyed by loan ID, so resolve the borrower's
         // active loan. A borrower without an active loan gets `NoActiveLoan`.
         let loan = helpers::get_active_loan_record(&env, &borrower)?;
@@ -5318,14 +5340,16 @@ impl QuorumCreditContract {
 
     /// Issue #2001: Re-evaluate all covenants for a borrower's active loan.
     ///
-    /// Should be called periodically (or by a keeper) during the loan lifecycle.
+    /// Requires the configured admin quorum. Internal loan lifecycle checks call the module directly.
     /// Returns the loan's covenant status; `breach_count` is zero when all
     /// covenants (LTV, DTI, PaymentSchedule, ActivityRequirement,
     /// CollateralMaintenance, CrossDefault) are satisfied.
     pub fn monitor_loan_covenants(
         env: Env,
+        admin_signers: Vec<Address>,
         borrower: Address,
     ) -> Result<crate::types::LoanCovenantStatus, ContractError> {
+        helpers::require_admin_approval(&env, &admin_signers);
         // Issue #2100: resolve the borrower to its active loan ID.
         let loan = helpers::get_active_loan_record(&env, &borrower)?;
         covenant_monitoring::monitor_loan_covenants(&env, loan.id)

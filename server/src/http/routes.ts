@@ -42,6 +42,7 @@ import { parseBoundedInt } from "./queryParams.js";
 import { applyDeprecationHeaders, deprecationRegistry } from "./deprecation.js";
 import { tokenExpirationMonitor } from "../auth/tokenExpirationMonitor.js";
 import { analyticsService } from "../credentials/analyticsService.js";
+import { getClientIp } from "./clientIp.js";
 
 export interface RouteContext {
   authSecret: string;
@@ -73,6 +74,8 @@ export interface RouteContext {
   eventStore?: EventStore;
   /** Issue #1748 — shared/local user-tier API request limiter. */
   apiRateLimiter?: ApiRateLimiter;
+  /** Issue #2155 — Configured trusted proxy addresses for secure client IP extraction. */
+  trustedProxies?: string[] | Set<string>;
 }
 
 /**
@@ -786,10 +789,8 @@ export function handleHttpRequest(
     // as an async IIFE rather than the previous synchronous isBlocked() check.
     const keyStore = ctx.apiKeyStore ?? loadApiKeyStore();
     const rateLimiter = ctx.authRateLimiter ?? defaultAuthRateLimiter;
-    const sourceIp =
-      (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
-      req.socket.remoteAddress ??
-      "unknown";
+    // Issue #2155: Use socket address unless request arrives from a configured trusted proxy
+    const sourceIp = getClientIp(req, ctx.trustedProxies);
 
     void (async () => {
       if (await rateLimiter.isBlocked(sourceIp)) {

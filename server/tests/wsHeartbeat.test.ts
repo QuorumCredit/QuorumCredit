@@ -186,8 +186,10 @@ describe("metricsWsServer — heartbeat / idle-timeout integration", () => {
     const closed = { code: 0, received: false };
 
     await new Promise<void>((resolve, reject) => {
+      // Issue #2156: token in the Sec-WebSocket-Protocol header, not the URL.
       const ws = new WebSocket(
-        `ws://127.0.0.1:${serverPort}/ws/metrics?token=${encodeURIComponent(token)}`
+        `ws://127.0.0.1:${serverPort}/ws/metrics`,
+        ["bearer", `bearer.${token}`]
       );
 
       ws.on("close", (code) => {
@@ -220,8 +222,10 @@ describe("metricsWsServer — heartbeat / idle-timeout integration", () => {
 
     let closeReceived = false;
 
+    // Issue #2156: token in the Sec-WebSocket-Protocol header, not the URL.
     const ws = new WebSocket(
-      `ws://127.0.0.1:${serverPort}/ws/metrics?token=${encodeURIComponent(token)}`
+      `ws://127.0.0.1:${serverPort}/ws/metrics`,
+      ["bearer", `bearer.${token}`]
     );
 
     ws.on("close", () => {

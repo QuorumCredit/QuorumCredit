@@ -19,6 +19,7 @@ export interface WebhookRegistration {
   lastUsed?: Date;
   events: string[];
   enabled: boolean;
+  owner?: string;
 }
 
 export interface WebhookPayload {
@@ -193,7 +194,7 @@ export interface WebhookRegistry {
   /**
    * Register a new webhook
    */
-  registerWebhook(url: string, events: string[]): Promise<WebhookRegistration>;
+  registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration>;
 
   /**
    * Get webhook registration by ID
@@ -221,9 +222,9 @@ export interface WebhookRegistry {
   deleteWebhook(id: string): Promise<boolean>;
 
   /**
-   * List all webhooks
+   * List all webhooks, optionally filtered by owner
    */
-  listWebhooks(): Promise<WebhookRegistration[]>;
+  listWebhooks(owner?: string): Promise<WebhookRegistration[]>;
 
   /**
    * Get webhooks for a specific event
@@ -245,7 +246,7 @@ export interface WebhookRegistry {
 export class LocalWebhookRegistry implements WebhookRegistry {
   private registrations: Map<string, WebhookRegistration> = new Map();
 
-  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+  async registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration> {
     const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const secret = generateWebhookSecret();
     
@@ -256,6 +257,7 @@ export class LocalWebhookRegistry implements WebhookRegistry {
       createdAt: new Date(),
       events,
       enabled: true,
+      ...(owner !== undefined ? { owner } : {}),
     };
 
     this.registrations.set(id, registration);
@@ -294,8 +296,12 @@ export class LocalWebhookRegistry implements WebhookRegistry {
     return this.registrations.delete(id);
   }
 
-  async listWebhooks(): Promise<WebhookRegistration[]> {
-    return Array.from(this.registrations.values());
+  async listWebhooks(owner?: string): Promise<WebhookRegistration[]> {
+    const all = Array.from(this.registrations.values());
+    if (owner !== undefined) {
+      return all.filter((reg) => reg.owner === owner);
+    }
+    return all;
   }
 
   async getWebhooksForEvent(event: string): Promise<WebhookRegistration[]> {
@@ -324,7 +330,7 @@ const REDIS_WEBHOOK_IDS_KEY = 'qc:webhook:ids';
 export class RedisWebhookRegistry implements WebhookRegistry {
   constructor(private readonly redis: Redis) {}
 
-  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+  async registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration> {
     const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const secret = generateWebhookSecret();
     
@@ -335,6 +341,7 @@ export class RedisWebhookRegistry implements WebhookRegistry {
       createdAt: new Date(),
       events,
       enabled: true,
+      ...(owner !== undefined ? { owner } : {}),
     };
 
     await this.redis.set(
@@ -398,13 +405,17 @@ export class RedisWebhookRegistry implements WebhookRegistry {
     return deleted > 0;
   }
 
-  async listWebhooks(): Promise<WebhookRegistration[]> {
+  async listWebhooks(owner?: string): Promise<WebhookRegistration[]> {
     const ids = await this.redis.smembers(REDIS_WEBHOOK_IDS_KEY);
     const webhooks: WebhookRegistration[] = [];
     
     for (const id of ids) {
       const webhook = await this.getWebhook(id);
-      if (webhook) webhooks.push(webhook);
+      if (webhook) {
+        if (owner === undefined || webhook.owner === owner) {
+          webhooks.push(webhook);
+        }
+      }
     }
     
     return webhooks;
@@ -491,18 +502,40 @@ export function validateWebhookUrl(rawUrl: string, options: WebhookUrlValidation
 
   if (allowPrivateHosts) return url;
 
-  const hostname = url.hostname.toLowerCase();
+  const rawHostname = url.hostname.toLowerCase();
+  const hostname =
+    rawHostname.startsWith("[") && rawHostname.endsWith("]")
+      ? rawHostname.slice(1, -1)
+      : rawHostname;
 
-  if (BLOCKED_HOSTNAMES.has(hostname)) {
-    throw new Error(`blocked host: ${hostname}`);
+  if (BLOCKED_HOSTNAMES.has(rawHostname) || BLOCKED_HOSTNAMES.has(hostname)) {
+    throw new Error(`blocked host: ${rawHostname}`);
   }
 
   if (PRIVATE_IPV4_RE.test(hostname) || LINK_LOCAL_IPV4_RE.test(hostname)) {
-    throw new Error(`private IP range not allowed: ${hostname}`);
+    throw new Error(`private IP range not allowed: ${rawHostname}`);
   }
 
-  if (hostname === "::1" || hostname.startsWith("0.") || hostname === "0") {
-    throw new Error(`loopback address not allowed: ${hostname}`);
+  if (
+    hostname === "::1" ||
+    hostname === "::" ||
+    hostname.startsWith("0.") ||
+    hostname === "0"
+  ) {
+    throw new Error(`loopback address not allowed: ${rawHostname}`);
+  }
+
+  // Issue #2150: Block IPv4-mapped, unique-local (fc00::/7), and link-local (fe80::/10) IPv6 ranges
+  if (hostname.startsWith("::ffff:")) {
+    throw new Error(`IPv4-mapped address not allowed: ${rawHostname}`);
+  }
+
+  if (/^f[cd][0-9a-f]{2}:/i.test(hostname) || hostname.startsWith("fc") || hostname.startsWith("fd")) {
+    throw new Error(`unique-local IPv6 address not allowed: ${rawHostname}`);
+  }
+
+  if (/^fe[89ab][0-9a-f]:/i.test(hostname) || hostname.startsWith("fe80:")) {
+    throw new Error(`link-local IPv6 address not allowed: ${rawHostname}`);
   }
 
   return url;

@@ -5,6 +5,7 @@ Analyzes parameterized gas budget measurements to detect complexity regressions.
 Generates historical reports and complexity-class fitting.
 """
 
+import html
 import json
 import sys
 import os
@@ -370,24 +371,26 @@ class BenchmarkAnalyzer:
 """
 
     def _generate_regression_section(self, regressions: Dict) -> str:
-        html = '<div class="warning-box">'
-        html += '<strong>⚠️ Detected Regressions:</strong><ul style="margin-top: 0.5rem;">'
+        html_out = '<div class="warning-box">'
+        html_out += '<strong>⚠️ Detected Regressions:</strong><ul style="margin-top: 0.5rem;">'
 
         for op_name, findings in regressions.items():
+            escaped_op_name = html.escape(str(op_name))
             for finding in findings:
-                html += f"""
-                <li><strong>{op_name}</strong> (n={finding['size']}):
-                    +{finding['increase_pct']:.1f}% ({finding['severity']})</li>
+                html_out += f"""
+                <li><strong>{escaped_op_name}</strong> (n={finding['size']}):
+                    +{finding['increase_pct']:.1f}% ({html.escape(str(finding['severity']))})</li>
 """
 
-        html += '</ul></div>'
-        return html
+        html_out += '</ul></div>'
+        return html_out
 
     def _generate_operation_section(self, op_name: str, op_data: Dict) -> str:
-        html = f'<div class="operation">'
+        escaped_op_name = html.escape(str(op_name))
+        html_out = f'<div class="operation">'
 
-        description = op_data.get('description', 'N/A')
-        expected = op_data.get('expected_complexity', 'Unknown')
+        description = html.escape(str(op_data.get('description', 'N/A')))
+        expected = html.escape(str(op_data.get('expected_complexity', 'Unknown')))
         measurements = op_data.get('measurements', [])
 
         if measurements:
@@ -396,23 +399,24 @@ class BenchmarkAnalyzer:
             costs = [v['cpu_instructions'] for v in latest['size_variants']]
 
             fitted_complexity, goodness = self.fit_complexity_class(sizes, costs)
+            escaped_fitted = html.escape(str(fitted_complexity))
 
             warning = ""
             if fitted_complexity != expected and expected != "Unknown":
                 warning = f"""
                 <div class="warning-box" style="margin-bottom: 1rem;">
-                    <strong>⚠️ Complexity Mismatch:</strong> Expected {expected} but detected {fitted_complexity}
+                    <strong>⚠️ Complexity Mismatch:</strong> Expected {expected} but detected {escaped_fitted}
                 </div>
 """
 
-            html += f"""
+            html_out += f"""
             <div class="operation-header">
                 <div>
-                    <div class="operation-title">{op_name}</div>
+                    <div class="operation-title">{escaped_op_name}</div>
                     <div class="operation-description">{description}</div>
                 </div>
                 <div class="complexity-badge {'detected-quadratic' if 'n²' in fitted_complexity else ''}">
-                    Detected: {fitted_complexity}
+                    Detected: {escaped_fitted}
                 </div>
             </div>
             {warning}
@@ -448,7 +452,7 @@ class BenchmarkAnalyzer:
                 mem = variant['memory_bytes']
                 cost_per_unit = cpu // size if size > 0 else 0
 
-                html += f"""
+                html_out += f"""
                     <tr>
                         <td>{size}</td>
                         <td>{cpu:,}</td>
@@ -457,16 +461,17 @@ class BenchmarkAnalyzer:
                     </tr>
 """
 
-            html += """
+            html_out += """
                 </tbody>
             </table>
 """
 
             if latest.get('notes'):
-                html += f'<div class="note"><strong>Notes:</strong> {latest["notes"]}</div>'
+                escaped_notes = html.escape(str(latest["notes"]))
+                html_out += f'<div class="note"><strong>Notes:</strong> {escaped_notes}</div>'
 
-        html += '</div>'
-        return html
+        html_out += '</div>'
+        return html_out
 
 
 def main():

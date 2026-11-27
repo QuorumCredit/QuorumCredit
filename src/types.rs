@@ -1101,6 +1101,10 @@ pub enum DataKey {
     // ── Issue #1735: SBT Insurance Coverage ──────────────────────────────────
     /// sbt_id → SbtInsuranceRecord
     SbtInsurance(u64),
+    /// Issue #2167: Total committed insurance coverage across active policies: i128
+    SbtInsuranceCommittedCoverage,
+    /// Issue #2167: SBT owner record: sbt_id → Address
+    SbtOwner(u64),
 
     // ── Issue #1736: SBT Marketplace Integration ──────────────────────────────
     /// sbt_id → SbtMarketplaceListing
@@ -1109,6 +1113,10 @@ pub enum DataKey {
     SbtMarketplaceIndex,
     /// Global marketplace statistics: SbtMarketplaceStats
     SbtMarketplaceStats,
+    /// Issue #2166: Per-tag marketplace index: tag → Vec<u64>
+    SbtMarketplaceTagIndex(soroban_sdk::Bytes),
+    /// Issue #2166: Secondary marketplace index for evicted active listings: Vec<u64>
+    SbtMarketplaceSecondaryIndex,
 
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
     /// (credential_id, field) → u32 permission level
@@ -1138,6 +1146,12 @@ pub enum DataKey {
     VerificationRateLimit(Address),
     /// holder → TokenBucket
     VerificationBucket(Address),
+    // ── Issue #2141: Sector-labelled vouches ─────────────────────────────────
+    /// (voucher, borrower) → String: sector label attached to this vouch
+    VouchSector(Address, Address),
+    // ── Issue #2140: Config patch queue ──────────────────────────────────────
+    /// Vec<ConfigPatch>: ordered queue of pending config patches
+    ConfigPatchQueue,
 }
 
 /// Issue #867: Shared collateral pool backed by multiple vouchers.

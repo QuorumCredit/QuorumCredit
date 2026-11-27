@@ -12,6 +12,7 @@ export interface TokenPayload {
   sub: string;
   borrower?: string;
   tier?: "free" | "pro" | "enterprise";
+  role?: string;
   iat: number;
   exp: number;
   /** Issue #1292: unique token identifier for targeted revocation. */
@@ -49,7 +50,8 @@ export function issueToken(
   subject: string,
   ttlSeconds: number,
   borrower?: string,
-  tier?: TokenPayload["tier"]
+  tier?: TokenPayload["tier"],
+  role?: string
 ): IssuedToken {
   const now = Math.floor(Date.now() / 1000);
   const jti = generateJti();
@@ -57,6 +59,7 @@ export function issueToken(
     sub: subject,
     borrower,
     tier,
+    ...(role !== undefined ? { role } : {}),
     iat: now,
     exp: now + ttlSeconds,
     jti,
