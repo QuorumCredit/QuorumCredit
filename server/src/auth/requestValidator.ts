@@ -22,11 +22,81 @@ export interface ValidationResult {
   data?: Record<string, unknown>;
 }
 
+export interface RequestValidatorOptions {
+  /**
+   * Whether HTTPS is required for incoming requests.
+   * Defaults to `true` (fail-closed) unless `ALLOW_INSECURE_HTTP=true` is set.
+   * Set explicitly to `false` only when plain HTTP is intentionally permitted
+   * (e.g. local development or isolated testing).
+   */
+  requireHttps?: boolean;
+  /**
+   * IP addresses of trusted reverse proxies / TLS-terminating load balancers
+   * whose `X-Forwarded-Proto` header may be trusted.
+   * Defaults to the comma-separated `TRUSTED_PROXIES` environment variable if set.
+   */
+  trustedProxies?: string[];
+}
+
+function normalizeIp(ip: string): string {
+  const trimmed = ip.trim();
+  return trimmed.startsWith("::ffff:") ? trimmed.slice(7) : trimmed;
+}
+
+function parseTrustedProxiesEnv(): string[] {
+  const raw = process.env.TRUSTED_PROXIES;
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 /**
  * Validates request headers and body against zero-trust rules.
  */
 export class RequestValidator {
   private readonly rules = new Map<string, ValidationRule[]>();
+  private readonly requireHttps: boolean;
+  private readonly trustedProxies: ReadonlySet<string>;
+
+  constructor(options: RequestValidatorOptions = {}) {
+    this.requireHttps =
+      options.requireHttps ?? process.env.ALLOW_INSECURE_HTTP !== "true";
+    const proxies = options.trustedProxies ?? parseTrustedProxiesEnv();
+    this.trustedProxies = new Set(proxies.map(normalizeIp));
+  }
+
+  /**
+   * Determine whether the incoming request arrived over HTTPS, either via
+   * direct TLS or via a configured trusted proxy setting `X-Forwarded-Proto: https`.
+   */
+  private isHttpsRequest(req: IncomingMessage): boolean {
+    const socket = req.socket as
+      | { encrypted?: boolean; remoteAddress?: string }
+      | undefined;
+
+    if (socket?.encrypted === true) {
+      return true;
+    }
+
+    const remoteAddress = socket?.remoteAddress;
+    if (!remoteAddress || !this.trustedProxies.has(normalizeIp(remoteAddress))) {
+      return false;
+    }
+
+    const forwardedProto = req.headers["x-forwarded-proto"];
+    const rawProto = Array.isArray(forwardedProto)
+      ? forwardedProto[0]
+      : forwardedProto;
+
+    if (typeof rawProto !== "string") {
+      return false;
+    }
+
+    const clientProto = rawProto.split(",")[0]?.trim().toLowerCase();
+    return clientProto === "https";
+  }
 
   /**
    * Register validation rules for an endpoint.
@@ -41,9 +111,7 @@ export class RequestValidator {
   validateHeaders(req: IncomingMessage): ValidationResult {
     const errors: string[] = [];
 
-    // Require TLS in production
-    const socket = req.socket as any;
-    if (process.env.NODE_ENV === "production" && socket.encrypted !== true) {
+    if (this.requireHttps && !this.isHttpsRequest(req)) {
       errors.push("HTTPS required");
     }
 
