@@ -58,6 +58,8 @@ export interface RouteContext {
   revocationStore?: RevocationStore;
   /** Issue #1290 — provisioned API key store. */
   apiKeyStore?: ApiKeyStore;
+  /** Explicit non-production opt-in to private webhook destinations. */
+  allowPrivateWebhookHosts?: boolean;
   /** Issue #1290 — rate limiter for auth endpoint. */
   authRateLimiter?: AuthRateLimiter;
   /** Issue #1362 — Soroban RPC client for on-chain recurring payment execution. */
@@ -1556,6 +1558,7 @@ export function handleHttpRequest(
       authSecret: ctx.authSecret,
       revocationStore: ctx.revocationStore!,
       apiKeyStore: ctx.apiKeyStore,
+      allowPrivateWebhookHosts: ctx.allowPrivateWebhookHosts,
     };
     handleWebhookRequest(req, res, webhookCtx);
     return;

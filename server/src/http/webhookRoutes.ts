@@ -38,6 +38,8 @@ export interface WebhookRoutesContext {
   revocationStore: RevocationStore;
   /** Provisioned API key store backing `X-Api-Key` authentication. */
   apiKeyStore?: ApiKeyStore;
+  /** Explicit non-production opt-in to private webhook destinations. */
+  allowPrivateWebhookHosts?: boolean;
   /**
    * Rate limiter for the test-delivery endpoint. When provided, caps the number
    * of test-delivery requests per IP per minute to prevent request amplification.
@@ -177,7 +179,7 @@ async function handleRegisterWebhook(req: IncomingMessage, res: ServerResponse, 
     // Validate URL scheme and reject SSRF-prone hosts (issue #1486)
     let validatedUrl: URL;
     try {
-      validatedUrl = await validateWebhookUrlSafe(body.url);
+      validatedUrl = await validateWebhookUrlSafe(body.url, ctx.allowPrivateWebhookHosts);
     } catch (error) {
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: error instanceof Error ? error.message : "invalid URL" }));
@@ -316,7 +318,7 @@ async function handleUpdateWebhook(req: IncomingMessage, res: ServerResponse, id
     if (body.url !== undefined) {
       let validatedUrl: URL;
       try {
-        validatedUrl = await validateWebhookUrlSafe(body.url);
+        validatedUrl = await validateWebhookUrlSafe(body.url, ctx.allowPrivateWebhookHosts);
       } catch (error) {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: error instanceof Error ? error.message : "invalid URL" }));
@@ -730,10 +732,6 @@ function isAuthorizedOwner(webhook: WebhookRegistration, caller: WebhookCaller):
 
 // ── SSRF validation helpers (issue #1486) ─────────────────────────────────────
 
-function getDevModeFlag(): boolean {
-  return process.env.NODE_ENV !== "production";
-}
-
-async function validateWebhookUrlSafe(rawUrl: string): Promise<URL> {
-  return validateWebhookUrl(rawUrl, { allowPrivateHosts: getDevModeFlag() });
+async function validateWebhookUrlSafe(rawUrl: string, allowPrivateHosts = false): Promise<URL> {
+  return validateWebhookUrl(rawUrl, { allowPrivateHosts });
 }
