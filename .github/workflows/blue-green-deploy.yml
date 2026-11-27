@@ -35,7 +35,33 @@ jobs:
       matrix:
         component: [backend, indexer, dashboard]
       max-parallel: 1
+    env:
+      DEPLOY_ENV: ${{ github.event.inputs.environment }}
+      DEPLOY_VERSION: ${{ github.event.inputs.version }}
+      AUTO_PROMOTE: ${{ github.event.inputs.auto_promote }}
+      COMPONENT: ${{ matrix.component }}
     steps:
+      - name: Validate deployment inputs
+        run: |
+          case "$DEPLOY_ENV" in
+            staging|production) ;;
+            *)
+              echo "::error::Invalid environment. Allowed values: staging, production"
+              exit 1
+              ;;
+          esac
+          case "$AUTO_PROMOTE" in
+            true|false) ;;
+            *)
+              echo "::error::Invalid auto_promote value. Allowed values: true, false"
+              exit 1
+              ;;
+          esac
+          if [ -z "$DEPLOY_VERSION" ] || ! printf '%s' "$DEPLOY_VERSION" | grep -Eq '^[A-Za-z0-9._+-]+$'; then
+            echo "::error::Invalid version. Allowed characters: letters, digits, dot, underscore, plus, hyphen"
+            exit 1
+          fi
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Configure AWS credentials
@@ -49,9 +75,9 @@ jobs:
         run: |
           chmod +x ./scripts/blue-green-deploy.sh
           ./scripts/blue-green-deploy.sh \
-            --component ${{ matrix.component }} \
-            --environment ${{ github.event.inputs.environment }} \
-            --version ${{ github.event.inputs.version }} \
+            --component "$COMPONENT" \
+            --environment "$DEPLOY_ENV" \
+            --version "$DEPLOY_VERSION" \
             --target-slot green
 
       - name: Run Health Checks on Green
@@ -59,8 +85,8 @@ jobs:
         run: |
           chmod +x ./scripts/health-check.sh
           ./scripts/health-check.sh \
-            --component ${{ matrix.component }} \
-            --environment ${{ github.event.inputs.environment }} \
+            --component "$COMPONENT" \
+            --environment "$DEPLOY_ENV" \
             --slot green \
             --max-retries 30 \
             --retry-delay 10
@@ -71,18 +97,18 @@ jobs:
         run: |
           chmod +x ./scripts/smoke-tests.sh
           ./scripts/smoke-tests.sh \
-            --component ${{ matrix.component }} \
-            --environment ${{ github.event.inputs.environment }} \
+            --component "$COMPONENT" \
+            --environment "$DEPLOY_ENV" \
             --slot green
 
       - name: Promote Green to Blue
-        if: success() && github.event.inputs.auto_promote == 'true'
+        if: success() && env.AUTO_PROMOTE == 'true'
         id: promote
         run: |
           chmod +x ./scripts/traffic-switch.sh
           ./scripts/traffic-switch.sh \
-            --component ${{ matrix.component }} \
-            --environment ${{ github.event.inputs.environment }} \
+            --component "$COMPONENT" \
+            --environment "$DEPLOY_ENV" \
             --from-slot green \
             --to-slot blue
 
@@ -91,8 +117,8 @@ jobs:
         run: |
           chmod +x ./scripts/monitor-deployment.sh
           ./scripts/monitor-deployment.sh \
-            --component ${{ matrix.component }} \
-            --environment ${{ github.event.inputs.environment }} \
+            --component "$COMPONENT" \
+            --environment "$DEPLOY_ENV" \
             --duration-seconds 300 \
             --alert-threshold-error-rate 5 \
             --alert-threshold-latency-ms 500
@@ -103,11 +129,11 @@ jobs:
         run: |
           chmod +x ./scripts/traffic-switch.sh
           ./scripts/traffic-switch.sh \
-            --component ${{ matrix.component }} \
-            --environment ${{ github.event.inputs.environment }} \
+            --component "$COMPONENT" \
+            --environment "$DEPLOY_ENV" \
             --from-slot blue \
             --to-slot green
-          echo "::error::Deployment failed. Rolled back ${{ matrix.component }} to previous version."
+          echo "::error::Deployment failed. Rolled back $COMPONENT to previous version."
           exit 1
 
       - name: Upload Deployment Report
@@ -122,5 +148,5 @@ jobs:
         if: always()
         run: |
           STATUS=$([[ "${{ job.status }}" == "success" ]] && echo "✅ SUCCESS" || echo "❌ FAILED")
-          echo "Deployment $STATUS for ${{ matrix.component }} to ${{ github.event.inputs.environment }}"
+          echo "Deployment $STATUS for $COMPONENT to $DEPLOY_ENV"
           # Add Slack/Email notification integration here

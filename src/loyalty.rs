@@ -194,6 +194,26 @@ pub fn record_default_for_loyalty(env: &Env, user: &Address) {
     );
 }
 
+fn next_anniversary_at(record: &LoyaltyRecord) -> Result<u64, ContractError> {
+    let last_claim = if record.last_anniversary_bonus_at > 0 {
+        record.last_anniversary_bonus_at
+    } else {
+        record.member_since
+    };
+    last_claim
+        .checked_add(LOYALTY_ANNIVERSARY_PERIOD_SECS)
+        .ok_or(ContractError::ArithmeticError)
+}
+
+/// The earliest ledger timestamp for the next claim, or None for a tier without a bonus.
+pub fn anniversary_bonus_eligible_at(env: &Env, user: &Address) -> Result<Option<u64>, ContractError> {
+    let record = load_loyalty_record(env, user);
+    if benefits_for_tier(record.tier).anniversary_bonus_bps == 0 {
+        return Ok(None);
+    }
+    next_anniversary_at(&record).map(Some)
+}
+
 /// Claim the anniversary loyalty bonus.
 ///
 /// The anniversary bonus is available once per year from the user's `member_since` date.
@@ -233,16 +253,8 @@ pub fn claim_anniversary_bonus(
 
     let now = env.ledger().timestamp();
 
-    // Check if one full year has elapsed since the last claim (or member_since).
-    let last_claim = if record.last_anniversary_bonus_at > 0 {
-        record.last_anniversary_bonus_at
-    } else {
-        record.member_since
-    };
-
-    if now < last_claim + LOYALTY_ANNIVERSARY_PERIOD_SECS {
-        // Not yet eligible — return 0 without error so callers can check
-        return Ok(0);
+    if now < next_anniversary_at(&record)? {
+        return Err(ContractError::NotEligibleYet);
     }
 
     // Record the claim

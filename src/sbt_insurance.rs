@@ -89,6 +89,8 @@ pub struct SbtInsuranceRecord {
     pub holder: Address,
     /// Maximum payout in stroops.
     pub coverage_amount: i128,
+    /// Premium paid on registration in stroops (Issue #2167).
+    pub premium: i128,
     /// Cumulative amount already paid out in stroops.
     pub total_paid_out: i128,
     /// Current policy status.
@@ -122,26 +124,72 @@ fn save_record(env: &Env, record: &SbtInsuranceRecord) {
     );
 }
 
+pub fn load_committed_coverage(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SbtInsuranceCommittedCoverage)
+        .unwrap_or(0)
+}
+
+pub fn save_committed_coverage(env: &Env, amount: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SbtInsuranceCommittedCoverage, &amount);
+    env.storage().persistent().extend_ttl(
+        &DataKey::SbtInsuranceCommittedCoverage,
+        PERSISTENT_TTL_THRESHOLD_LEDGERS,
+        PERSISTENT_TTL_TARGET_LEDGERS,
+    );
+}
+
+pub fn get_sbt_owner(env: &Env, sbt_id: u64) -> Option<Address> {
+    if let Some(owner) = env.storage().persistent().get::<_, Address>(&DataKey::SbtOwner(sbt_id)) {
+        return Some(owner);
+    }
+    if let Some(node) = env.storage().persistent().get::<_, crate::sbt_lineage::SbtLineageNode>(&DataKey::SbtLineage(sbt_id)) {
+        return Some(node.holder);
+    }
+    if let Some(priv_rec) = env.storage().persistent().get::<_, crate::sbt_privacy_modes::SbtPrivacyRecord>(&DataKey::SbtPrivacy(sbt_id)) {
+        return Some(priv_rec.holder);
+    }
+    None
+}
+
+pub fn set_sbt_owner(env: &Env, sbt_id: u64, owner: &Address) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SbtOwner(sbt_id), owner);
+    env.storage().persistent().extend_ttl(
+        &DataKey::SbtOwner(sbt_id),
+        PERSISTENT_TTL_THRESHOLD_LEDGERS,
+        PERSISTENT_TTL_TARGET_LEDGERS,
+    );
+}
+
 // ── Public entry points ───────────────────────────────────────────────────────
 
-/// Issue #1735 — Register an insurance policy for an SBT.
+/// Issue #1735 / #2167 — Register an insurance policy for an SBT.
 ///
 /// Creates a new [`SbtInsuranceRecord`] in `Active` status.  `coverage_amount`
-/// is the maximum payout in stroops; it must be > 0.
+/// is the maximum payout in stroops; it must be > 0.  `premium` is collected
+/// on registration from the holder into contract reserves.  Total committed
+/// coverage cannot exceed contract reserves, and `holder` must own `sbt_id`.
 ///
 /// Requires admin-threshold approval.
 ///
 /// # Errors
 /// - [`ContractError::ContractPaused`]
-/// - [`ContractError::InvalidAmount`] — `sbt_id` is 0 or `coverage_amount` ≤ 0.
-/// - [`ContractError::InvalidStateTransition`] — a policy for this `sbt_id`
-///   already exists.
+/// - [`ContractError::InvalidAmount`] — `sbt_id` is 0, `coverage_amount` ≤ 0, or `premium` ≤ 0.
+/// - [`ContractError::InvalidStateTransition`] — a policy for this `sbt_id` already exists.
+/// - [`ContractError::UnauthorizedCaller`] — `holder` is not the owner of `sbt_id`.
+/// - [`ContractError::InsufficientYieldReserve`] — committed coverage exceeds contract reserves.
 pub fn register_sbt_insurance(
     env: &Env,
     admin_signers: Vec<Address>,
     sbt_id: u64,
     holder: Address,
     coverage_amount: i128,
+    premium: i128,
 ) -> Result<(), ContractError> {
     require_not_paused(env)?;
     require_admin_approval(env, &admin_signers);
@@ -149,17 +197,42 @@ pub fn register_sbt_insurance(
     if sbt_id == 0 {
         return Err(ContractError::InvalidAmount);
     }
-    if coverage_amount <= 0 {
+    if coverage_amount <= 0 || premium <= 0 {
         return Err(ContractError::InvalidAmount);
     }
     if load_record(env, sbt_id).is_some() {
         return Err(ContractError::InvalidStateTransition);
     }
 
+    // Issue #2167: Verify holder against SBT owner
+    if let Some(owner) = get_sbt_owner(env, sbt_id) {
+        if owner != holder {
+            return Err(ContractError::UnauthorizedCaller);
+        }
+    } else {
+        return Err(ContractError::UnauthorizedCaller);
+    }
+
+    // Issue #2167: Collect premium on registration
+    let tok = token_client(env);
+    tok.transfer(&holder, &env.current_contract_address(), &premium);
+
+    // Issue #2167: Track total committed coverage and refuse registrations exceeding reserves
+    let current_committed = load_committed_coverage(env);
+    let new_committed = current_committed.saturating_add(coverage_amount);
+    let contract_balance = tok.balance(&env.current_contract_address());
+
+    if new_committed > contract_balance {
+        return Err(ContractError::InsufficientYieldReserve);
+    }
+
+    save_committed_coverage(env, new_committed);
+
     let record = SbtInsuranceRecord {
         sbt_id,
         holder: holder.clone(),
         coverage_amount,
+        premium,
         total_paid_out: 0,
         status: SbtInsuranceStatus::Active,
         pending_claim_amount: 0,
@@ -290,6 +363,10 @@ pub fn approve_sbt_insurance_claim(
     record.pending_claim_reason = Bytes::new(env);
     record.status = SbtInsuranceStatus::ClaimPaid;
 
+    // Issue #2167: Release committed coverage for the disbursed payout
+    let current_committed = load_committed_coverage(env);
+    save_committed_coverage(env, current_committed.saturating_sub(payout_amount));
+
     save_record(env, &record);
 
     env.events().publish(
@@ -328,6 +405,12 @@ pub fn cancel_sbt_insurance(
     }
 
     record.status = SbtInsuranceStatus::Cancelled;
+
+    // Issue #2167: Release remaining committed coverage on policy cancellation
+    let remaining_coverage = record.coverage_amount.saturating_sub(record.total_paid_out);
+    let current_committed = load_committed_coverage(env);
+    save_committed_coverage(env, current_committed.saturating_sub(remaining_coverage));
+
     save_record(env, &record);
 
     env.events().publish(
@@ -353,4 +436,9 @@ pub fn get_sbt_insurance_payouts(
 ) -> Result<Vec<SbtInsurancePayoutEntry>, ContractError> {
     let record = load_record(env, sbt_id).ok_or(ContractError::SbtInsuranceNotFound)?;
     Ok(record.payouts)
+}
+
+/// Issue #2167 — Return total currently committed insurance coverage.
+pub fn get_sbt_insurance_committed_coverage(env: &Env) -> i128 {
+    load_committed_coverage(env)
 }

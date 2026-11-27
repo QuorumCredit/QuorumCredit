@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { handleWebhookRequest } from "../src/http/webhookRoutes.js";
 import { signWebhookPayload } from "../src/webhooks/signature.js";
+import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
 
 const SECRET = "test-webhook-secret";
 
@@ -17,23 +18,28 @@ describe("incoming webhook logging", () => {
 
   it("logs the event type and ID but not the payload body", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    server = createServer((req, res) => handleWebhookRequest(req, res, { webhookSecret: SECRET }));
+    server = createServer((req, res) => handleWebhookRequest(req, res, { webhookSecret: SECRET, revocationStore: new LocalRevocationStore() }));
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", () => resolve()));
     const { port } = server.address() as AddressInfo;
 
+    const now = Date.now();
+    const data = { borrower: "GSECRETBORROWER" };
     const payload = {
       event: "loan.repaid",
+      data,
+      timestamp: now,
       webhookId: "wh_test_1",
-      timestamp: 1700000000,
-      data: { borrower: "GSECRETBORROWER" },
     };
     await fetch(`http://127.0.0.1:${port}/webhook`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-webhook-signature": signWebhookPayload(payload as never, SECRET),
+        "x-webhook-timestamp": now.toString(),
+        "x-webhook-id": "wh_test_1",
+        "x-webhook-event": "loan.repaid",
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(data),
     });
 
     const logged = JSON.stringify(logSpy.mock.calls);

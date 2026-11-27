@@ -25,6 +25,9 @@ describe("validateWebhookUrl", () => {
     { url: "file:///etc/passwd", ok: false, contains: "unsupported scheme" },
     { url: "http://localhost/hook", ok: false, contains: "blocked host" },
     { url: "http://127.0.0.1/hook", ok: false, contains: "blocked host" },
+    { url: "http://127.0.0.2/hook", ok: false, contains: "blocked IP range" },
+    { url: "http://127.255.255.254/hook", ok: false, contains: "blocked IP range" },
+    { url: "http://100.64.0.1/hook", ok: false, contains: "blocked IP range" },
     { url: "http://169.254.169.254/latest/meta-data", ok: false, contains: "blocked host" },
     { url: "http://10.0.0.1/hook", ok: false, contains: "private IP range" },
     { url: "http://172.16.0.1/hook", ok: false, contains: "private IP range" },
@@ -32,12 +35,18 @@ describe("validateWebhookUrl", () => {
     { url: "http://169.254.1.1/hook", ok: false, contains: "private IP range" },
     { url: "http://0.0.0.0/hook", ok: false, contains: "blocked host" },
     { url: "http://metadata.google.internal/hook", ok: false, contains: "blocked host" },
+    // Issue #2150: IPv6 loopback, IPv4-mapped, unique-local, link-local addresses
+    { url: "http://[::1]/hook", ok: false, contains: "loopback" },
+    { url: "http://[::ffff:127.0.0.1]/hook", ok: false, contains: "IPv4-mapped" },
+    { url: "http://[fd00::1]/hook", ok: false, contains: "unique-local" },
+    { url: "http://[fc00::1]/hook", ok: false, contains: "unique-local" },
+    { url: "http://[fe80::1]/hook", ok: false, contains: "link-local" },
   ];
 
   for (const c of cases) {
-    it(`url=${c.url} => ${c.ok ? "accept" : "reject"}`, async () => {
+    it(`url=${c.url} => ${c.ok ? "accept" : "reject"}`, () => {
       if (c.ok) {
-        const result = await validateWebhookUrl(c.url, c.options);
+        const result = validateWebhookUrl(c.url, c.options);
         expect(result.toString()).toBe(new URL(c.url).toString());
       } else {
         await expect(validateWebhookUrl(c.url, c.options)).rejects.toThrow(

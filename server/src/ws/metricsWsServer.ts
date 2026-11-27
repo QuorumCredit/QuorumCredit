@@ -14,12 +14,14 @@ import {
 } from "../types.js";
 import { metrics as opsMetrics } from "../http/metricsRegistry.js";
 import { buildWsAggregateRateLimiter } from "./wsAggregateRateLimiter.js";
+import { extractWsToken, selectAuthSubprotocol } from "./wsAuthToken.js";
 
 export interface MetricsWsServerOptions {
   httpServer: HttpServer;
   bus: PubSubBus;
   store: EventStore;
   authSecret: string;
+  revocationStore: RevocationStore;
   connectionQueueMax: number;
   path?: string;
   authExpiryWarningMs?: number;
@@ -41,6 +43,13 @@ export interface MetricsWsServerOptions {
    * multi-replica production).
    */
   redisUrl?: string;
+  /**
+   * Issue #2156: date after which `?token=` query-string auth is refused. Before
+   * it, a query-string token still authenticates but logs a deprecation warning.
+   * Defaults to the standard shared sunset date. Token-in-header auth (the
+   * recommended path) is unaffected.
+   */
+  queryTokenSunsetDate?: Date;
 }
 
 interface ConnState {
@@ -60,9 +69,12 @@ export const WS_CLOSE_IDLE_TIMEOUT = 4008;
 
 /**
  * Raw WebSocket wiring for /ws/metrics, consumed by
- * dashboard/src/useMetricsSocket.ts. Auth + resume are both carried on the query
- * string at connect time (`?token=...&since=<lastEventId>`) since a plain WebSocket
- * handshake has no room for a custom auth exchange the way socket.io's does; token
+ * dashboard/src/useMetricsSocket.ts. Auth is carried in the
+ * `Sec-WebSocket-Protocol` handshake header (`bearer.<token>`, see
+ * wsAuthToken.ts) since a plain WebSocket handshake has no room for a custom auth
+ * exchange the way socket.io's does; the legacy `?token=` query parameter is
+ * deprecated (warns on use, refused after the sunset date). Resume is still carried
+ * on the query string as `?since=<lastEventId>` (a non-secret cursor); token
  * refresh happens via an in-band `{type:"refresh_auth", token}` client frame.
  *
  * Heartbeat / idle timeout: the server sends a WebSocket-level ping frame every
@@ -73,7 +85,7 @@ export const WS_CLOSE_IDLE_TIMEOUT = 4008;
  */
 export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketServer {
   const path = opts.path ?? "/ws/metrics";
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, handleProtocols: selectAuthSubprotocol });
   const states = new Map<WebSocket, ConnState>();
   const warningMs = opts.authExpiryWarningMs ?? 30_000;
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? 30_000;
@@ -105,11 +117,22 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
 
   void opts.bus.subscribe(EVENTS_CHANNEL, busHandler);
 
-  opts.httpServer.on("upgrade", (req: IncomingMessage, socket, head) => {
+  opts.httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = new URL(req.url ?? "", "http://internal");
     if (url.pathname !== path) return;
 
-    const token = url.searchParams.get("token") ?? "";
+    // Issue #2156: prefer the Sec-WebSocket-Protocol header over the deprecated
+    // ?token= query string, which leaks the token into proxy/browser logs.
+    const resolution = extractWsToken(req, { queryTokenSunsetDate: opts.queryTokenSunsetDate });
+    if (resolution.source === "query") {
+      opsMetrics.incLabeledCounter("qc_ws_query_token_auth_total", "server", "metrics");
+    }
+    if (resolution.refused) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const token = resolution.token ?? "";
     const result = verifyToken(opts.authSecret, token);
     if (!result.valid) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -141,7 +164,7 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
       const state: ConnState = {
         queue: new ConnectionQueue(opts.connectionQueueMax),
         token,
-        authTimer: setInterval(() => checkAuthExpiry(ws, states, opts.authSecret, warningMs), 5000),
+        authTimer: setInterval(() => void checkAuthExpiry(ws, states, opts.authSecret, warningMs, opts.revocationStore), 5000),
         aggregateRateLimiter: buildWsAggregateRateLimiter(opts.redisUrl),
         heartbeatTimer,
         idleTimer: scheduleIdleTimer(),
@@ -163,7 +186,7 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
       const { id, metrics } = computeCurrentSnapshot(opts.store);
       send(ws, { type: "snapshot", id, metrics });
 
-      ws.on("message", (data) => {
+      ws.on("message", async (data) => {
         let frame: MetricsClientFrame;
         try {
           frame = JSON.parse(data.toString());
@@ -179,7 +202,7 @@ export function attachMetricsWsServer(opts: MetricsWsServerOptions): WebSocketSe
         await state.aggregateRateLimiter.recordHit(aggregateKey);
 
         if (frame.type === "refresh_auth" && typeof frame.token === "string") {
-          const refreshed = verifyToken(opts.authSecret, frame.token);
+          const refreshed = await verifyToken(opts.authSecret, frame.token, opts.revocationStore);
           if (refreshed.valid) {
             state.token = frame.token;
           } else {
@@ -211,15 +234,16 @@ function send(socket: WebSocket, frame: MetricsServerFrame): void {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
 }
 
-function checkAuthExpiry(
+async function checkAuthExpiry(
   socket: WebSocket,
   states: Map<WebSocket, ConnState>,
   secret: string,
-  warningMs: number
-): void {
+  warningMs: number,
+  revocationStore: RevocationStore
+): Promise<void> {
   const state = states.get(socket);
   if (!state) return;
-  const result = verifyToken(secret, state.token);
+  const result = await verifyToken(secret, state.token, revocationStore);
   if (!result.valid) {
     send(socket, { type: "auth_expired" });
     socket.close(4001, "auth_expired");

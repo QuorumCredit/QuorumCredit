@@ -78,11 +78,12 @@ async function main(): Promise<void> {
       revocationStore,
       apiRateLimiter,
       apiKeyStore,
+      allowPrivateWebhookHosts: config.allowPrivateWebhookHosts,
       rpcClient,
       paymentStore,
       searchService,
       eventStore: store,
-    });
+    }));
   });
 
   attachLoanSocketServer({
@@ -91,6 +92,7 @@ async function main(): Promise<void> {
     store,
     allowedOrigins: config.wsAllowedOrigins,
     authSecret: config.authSecret,
+    revocationStore,
     connectionQueueMax: config.connectionQueueMax,
     redisUrl: config.redisUrl,
   });
@@ -100,6 +102,7 @@ async function main(): Promise<void> {
     bus,
     store,
     authSecret: config.authSecret,
+    revocationStore,
     connectionQueueMax: config.connectionQueueMax,
     redisUrl: config.redisUrl,
   });
@@ -108,6 +111,7 @@ async function main(): Promise<void> {
   attachCredentialStatusWsServer({
     httpServer,
     authSecret: config.authSecret,
+    revocationStore,
   });
 
   bridge.start();

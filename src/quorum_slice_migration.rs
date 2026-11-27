@@ -1,6 +1,14 @@
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{contracttype, Address, Env};
 
 use crate::errors::ContractError;
+
+/// A single entry in a credential's migration history.
+#[contracttype]
+#[derive(Clone)]
+pub struct MigrationHistoryEntry {
+    pub old_slice: Address,
+    pub new_slice: Address,
+}
 
 pub fn migrate_credential_slice(
     env: &Env,
@@ -9,10 +17,28 @@ pub fn migrate_credential_slice(
     new_slice: &Address,
 ) -> Result<(), ContractError> {
     let key = ("credential_slice", credential_id);
+
+    // If a current slice is recorded, it must match old_slice.
+    if let Some(current) = env.storage().persistent().get::<_, Address>(&key) {
+        if &current != old_slice {
+            return Err(ContractError::InvalidStateTransition);
+        }
+    }
+
     env.storage().persistent().set(&key, new_slice);
 
     let history_key = ("migration_history", credential_id);
     let count: u64 = env.storage().persistent().get(&history_key).unwrap_or(0);
+
+    let entry_key = ("migration_entry", credential_id, count);
+    env.storage().persistent().set(
+        &entry_key,
+        &MigrationHistoryEntry {
+            old_slice: old_slice.clone(),
+            new_slice: new_slice.clone(),
+        },
+    );
+
     env.storage()
         .persistent()
         .set(&history_key, &(count + 1));

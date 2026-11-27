@@ -55,6 +55,7 @@ docker compose up   # redis + two broadcast-server replicas, ports 4000 and 4001
 | `REDIS_URL` | unset | Redis pub/sub backbone; required for >1 instance |
 | `INDEXER_DB_PATH` | `indexer.db` | Path to the indexer's SQLite file (read-only) |
 | `AUTH_SECRET` | dev default — **override in production** | HMAC signing key for tokens |
+| `ALLOW_PRIVATE_WEBHOOK_HOSTS` | `false` | Allow private webhook destinations outside production only; setting `true` in production prevents startup |
 | `TOKEN_TTL_SECONDS` | `300` | Issued-token lifetime |
 | `CONN_QUEUE_MAX` | `500` | Per-connection outgoing queue capacity (see Backpressure) |
 | `BRIDGE_POLL_INTERVAL_MS` | `250` | How often the bridge polls the indexer DB for new rows |
@@ -64,9 +65,12 @@ docker compose up   # redis + two broadcast-server replicas, ports 4000 and 4001
 ## Protocol
 
 **Auth**: `POST /api/auth/token` with `{ "apiKey": "...", "borrower": "..." }` returns
-`{ token, expiresAt }`. socket.io clients send it as `auth: { token }`; the raw WS
-client sends it as `?token=...` on connect. The server sends `auth_expiring` ahead of
-hard expiry (30s default warning window) so clients can refresh in-band —
+`{ token, expiresAt }`. socket.io clients send it as `auth: { token }`; the raw-WS
+client sends it as a `bearer.<token>` `Sec-WebSocket-Protocol` subprotocol on connect
+(the legacy `?token=...` query parameter is deprecated — it still authenticates but
+logs a warning, and is refused after the sunset date — because query strings are
+recorded by proxies/load balancers/browser history). The server sends `auth_expiring`
+ahead of hard expiry (30s default warning window) so clients can refresh in-band —
 `auth:refresh` (socket.io) / `{type:"refresh_auth", token}` (raw WS) — without
 dropping the connection. If a client never refreshes, the server sends `auth_expired`
 and disconnects.
@@ -159,7 +163,9 @@ Run them side by side, pointed at the same `--db-path`/`INDEXER_DB_PATH`.
   (optional `case_sensitive`, `status`, `type`, `limit`, `offset`). Patterns are validated
   (max 256 chars, no nested quantifiers or backreferences), compiled regexes are LRU-cached,
   and matching runs once per distinct issuer via an issuer index.
-- **Credential status WebSocket (#1743)** — `/ws/credentials/status?token=<jwt>`. Send
+- **Credential status WebSocket (#1743)** — `/ws/credentials/status`, authenticating with
+  the token in a `bearer.<jwt>` `Sec-WebSocket-Protocol` subprotocol (the `?token=`
+  query parameter is deprecated — see #2156). Send
   `{"type":"subscribe","credentialIds":[...]}` or `{"type":"subscribe","holderId":"..."}`;
   the server replies with a `snapshot` per credential, then `delta` frames containing only
   the changed fields. Connections are admitted through a pool with global and per-client caps.

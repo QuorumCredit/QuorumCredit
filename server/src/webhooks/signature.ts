@@ -21,6 +21,7 @@ export interface WebhookRegistration {
   lastUsed?: Date;
   events: string[];
   enabled: boolean;
+  owner?: string;
 }
 
 export interface WebhookPayload {
@@ -195,7 +196,7 @@ export interface WebhookRegistry {
   /**
    * Register a new webhook
    */
-  registerWebhook(url: string, events: string[]): Promise<WebhookRegistration>;
+  registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration>;
 
   /**
    * Get webhook registration by ID
@@ -223,9 +224,9 @@ export interface WebhookRegistry {
   deleteWebhook(id: string): Promise<boolean>;
 
   /**
-   * List all webhooks
+   * List all webhooks, optionally filtered by owner
    */
-  listWebhooks(): Promise<WebhookRegistration[]>;
+  listWebhooks(owner?: string): Promise<WebhookRegistration[]>;
 
   /**
    * Get webhooks for a specific event
@@ -247,7 +248,7 @@ export interface WebhookRegistry {
 export class LocalWebhookRegistry implements WebhookRegistry {
   private registrations: Map<string, WebhookRegistration> = new Map();
 
-  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+  async registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration> {
     const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const secret = generateWebhookSecret();
     
@@ -258,6 +259,7 @@ export class LocalWebhookRegistry implements WebhookRegistry {
       createdAt: new Date(),
       events,
       enabled: true,
+      ...(owner !== undefined ? { owner } : {}),
     };
 
     this.registrations.set(id, registration);
@@ -296,8 +298,12 @@ export class LocalWebhookRegistry implements WebhookRegistry {
     return this.registrations.delete(id);
   }
 
-  async listWebhooks(): Promise<WebhookRegistration[]> {
-    return Array.from(this.registrations.values());
+  async listWebhooks(owner?: string): Promise<WebhookRegistration[]> {
+    const all = Array.from(this.registrations.values());
+    if (owner !== undefined) {
+      return all.filter((reg) => reg.owner === owner);
+    }
+    return all;
   }
 
   async getWebhooksForEvent(event: string): Promise<WebhookRegistration[]> {
@@ -326,7 +332,7 @@ const REDIS_WEBHOOK_IDS_KEY = 'qc:webhook:ids';
 export class RedisWebhookRegistry implements WebhookRegistry {
   constructor(private readonly redis: Redis) {}
 
-  async registerWebhook(url: string, events: string[]): Promise<WebhookRegistration> {
+  async registerWebhook(url: string, events: string[], owner?: string): Promise<WebhookRegistration> {
     const id = `wh_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const secret = generateWebhookSecret();
     
@@ -337,6 +343,7 @@ export class RedisWebhookRegistry implements WebhookRegistry {
       createdAt: new Date(),
       events,
       enabled: true,
+      ...(owner !== undefined ? { owner } : {}),
     };
 
     await this.redis.set(
@@ -400,13 +407,17 @@ export class RedisWebhookRegistry implements WebhookRegistry {
     return deleted > 0;
   }
 
-  async listWebhooks(): Promise<WebhookRegistration[]> {
+  async listWebhooks(owner?: string): Promise<WebhookRegistration[]> {
     const ids = await this.redis.smembers(REDIS_WEBHOOK_IDS_KEY);
     const webhooks: WebhookRegistration[] = [];
     
     for (const id of ids) {
       const webhook = await this.getWebhook(id);
-      if (webhook) webhooks.push(webhook);
+      if (webhook) {
+        if (owner === undefined || webhook.owner === owner) {
+          webhooks.push(webhook);
+        }
+      }
     }
     
     return webhooks;
@@ -456,7 +467,6 @@ export const webhookRegistry = new LocalWebhookRegistry();
 const ALLOWED_SCHEMES = new Set(["http", "https"]);
 const BLOCKED_HOSTNAMES = new Set([
   "localhost",
-  "127.0.0.1",
   "::1",
   "0.0.0.0",
   "169.254.169.254",
@@ -472,6 +482,42 @@ export interface ResolvedAddress {
 export type DnsLookupFn = (
   hostname: string
 ) => Promise<Array<{ address: string; family: number }>>;
+
+/**
+ * Convert IPv4 address string to numeric value for range checking.
+ * Returns undefined if the string is not a valid IPv4 address.
+ */
+function ipv4ToNumber(ip: string): number | undefined {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return undefined;
+  
+  const nums = parts.map(p => parseInt(p, 10));
+  if (nums.some(n => isNaN(n) || n < 0 || n > 255)) return undefined;
+  
+  return (nums[0] << 24) | (nums[1] << 16) | (nums[2] << 8) | nums[3];
+}
+
+/**
+ * Check if an IP address falls within a blocked range using numeric comparison.
+ * Blocked ranges:
+ * - 127.0.0.0/8 (loopback)
+ * - 100.64.0.0/10 (CGNAT shared address space)
+ */
+function isBlockedIpRange(ip: string): boolean {
+  const ipNum = ipv4ToNumber(ip);
+  if (ipNum === undefined) return false;
+  
+  // 127.0.0.0/8: 127.0.0.0 - 127.255.255.255
+  const loopbackStart = 127 << 24; // 127.0.0.0
+  const loopbackEnd = (127 << 24) | 0xFFFFFF; // 127.255.255.255
+  
+  // 100.64.0.0/10: 100.64.0.0 - 100.127.255.255
+  const cgnatStart = (100 << 24) | (64 << 16); // 100.64.0.0
+  const cgnatEnd = (100 << 24) | (127 << 16) | 0xFFFF; // 100.127.255.255
+  
+  return (ipNum >= loopbackStart && ipNum <= loopbackEnd) ||
+         (ipNum >= cgnatStart && ipNum <= cgnatEnd);
+}
 
 export interface WebhookUrlValidationOptions {
   /** When true, skip private-host and DNS IP checks. Intended for local/dev environments only. */
@@ -507,90 +553,13 @@ function parseIpv4Octets(ip: string): number[] | null {
 }
 
 /**
- * Throws if an IPv4 or IPv6 address is loopback, private, link-local,
- * multicast, or otherwise non-public.
- */
-export function assertPublicIpAddress(ip: string, hostname?: string): void {
-  const normalized = normalizeHostname(ip);
-  const label = hostname && hostname !== normalized ? `${hostname} (${normalized})` : normalized;
-  const family = isIP(normalized);
-
-  if (family === 4) {
-    const octets = parseIpv4Octets(normalized);
-    if (!octets) {
-      throw new Error(`invalid IPv4 address: ${label}`);
-    }
-    const [a, b, c] = octets;
-
-    if (a === 127 || a === 0) {
-      throw new Error(`loopback address not allowed: ${label}`);
-    }
-    if (
-      a === 10 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254) ||
-      (a === 100 && b >= 64 && b <= 127)
-    ) {
-      throw new Error(`private IP range not allowed: ${label}`);
-    }
-    if (
-      (a === 192 && b === 0 && c === 0) ||
-      (a === 192 && b === 0 && c === 2) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      (a === 198 && b === 51 && c === 100) ||
-      (a === 203 && b === 0 && c === 113) ||
-      a >= 224
-    ) {
-      throw new Error(`reserved IP range not allowed: ${label}`);
-    }
-    return;
-  }
-
-  if (family === 6) {
-    // Handle IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 or ::ffff:7f00:1)
-    if (normalized.startsWith("::ffff:")) {
-      const mapped = normalized.slice("::ffff:".length);
-      if (isIP(mapped) === 4) {
-        assertPublicIpAddress(mapped, hostname);
-        return;
-      }
-      const hexParts = mapped.split(":");
-      if (hexParts.length === 2) {
-        const hi = parseInt(hexParts[0], 16);
-        const lo = parseInt(hexParts[1], 16);
-        if (!Number.isNaN(hi) && !Number.isNaN(lo)) {
-          const ipv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-          assertPublicIpAddress(ipv4, hostname);
-          return;
-        }
-      }
-    }
-
-    if (normalized === "::1" || normalized === "::") {
-      throw new Error(`loopback address not allowed: ${label}`);
-    }
-    // Unique local (fc00::/7), link-local (fe80::/10), multicast (ff00::/8)
-    const firstHextet = parseInt(normalized.split(":")[0] || "0", 16);
-    if (
-      (firstHextet & 0xfe00) === 0xfc00 ||
-      (firstHextet & 0xffc0) === 0xfe80 ||
-      (firstHextet & 0xff00) === 0xff00
-    ) {
-      throw new Error(`private IP range not allowed: ${label}`);
-    }
-    return;
-  }
-
-  throw new Error(`invalid IP address: ${label}`);
-}
-
-const defaultDnsLookup: DnsLookupFn = (hostname) =>
-  dnsLookup(hostname, { all: true });
-
-/**
- * Validate a webhook URL and resolve its hostname via DNS, verifying that
- * every returned address is a public IP.
+ * Validate a webhook registration URL to prevent SSRF attacks.
+ *
+ * Rejects:
+ * - non-http(s) schemes
+ * - loopback (127.0.0.0/8) and CGNAT (100.64.0.0/10) ranges
+ * - link-local/private IPv4 ranges
+ * - cloud metadata endpoints
  *
  * Returns the validated URL along with the resolved IP address(es) so callers
  * can pin the connection to the validated address and prevent DNS rebinding.
@@ -611,26 +580,45 @@ export async function resolveAndValidateWebhookUrl(
     return { url, addresses: [] };
   }
 
-  const hostname = normalizeHostname(url.hostname);
+  const rawHostname = url.hostname.toLowerCase();
+  const hostname =
+    rawHostname.startsWith("[") && rawHostname.endsWith("]")
+      ? rawHostname.slice(1, -1)
+      : rawHostname;
 
-  if (BLOCKED_HOSTNAMES.has(hostname)) {
-    throw new Error(`blocked host: ${hostname}`);
+  if (BLOCKED_HOSTNAMES.has(rawHostname) || BLOCKED_HOSTNAMES.has(hostname)) {
+    throw new Error(`blocked host: ${rawHostname}`);
   }
 
-  const ipFamily = isIP(hostname);
-  if (ipFamily === 4 || ipFamily === 6) {
-    assertPublicIpAddress(hostname);
-    const resolved: ResolvedAddress = { address: hostname, family: ipFamily };
-    return {
-      url,
-      address: resolved.address,
-      family: resolved.family,
-      addresses: [resolved],
-    };
+  // Check numeric IP ranges (127.0.0.0/8 and 100.64.0.0/10)
+  if (isBlockedIpRange(hostname)) {
+    throw new Error(`blocked IP range: ${hostname}`);
   }
 
-  if (hostname.startsWith("0.") || hostname === "0") {
-    throw new Error(`loopback address not allowed: ${hostname}`);
+  if (PRIVATE_IPV4_RE.test(hostname) || LINK_LOCAL_IPV4_RE.test(hostname)) {
+    throw new Error(`private IP range not allowed: ${rawHostname}`);
+  }
+
+  if (
+    hostname === "::1" ||
+    hostname === "::" ||
+    hostname.startsWith("0.") ||
+    hostname === "0"
+  ) {
+    throw new Error(`loopback address not allowed: ${rawHostname}`);
+  }
+
+  // Issue #2150: Block IPv4-mapped, unique-local (fc00::/7), and link-local (fe80::/10) IPv6 ranges
+  if (hostname.startsWith("::ffff:")) {
+    throw new Error(`IPv4-mapped address not allowed: ${rawHostname}`);
+  }
+
+  if (/^f[cd][0-9a-f]{2}:/i.test(hostname) || hostname.startsWith("fc") || hostname.startsWith("fd")) {
+    throw new Error(`unique-local IPv6 address not allowed: ${rawHostname}`);
+  }
+
+  if (/^fe[89ab][0-9a-f]:/i.test(hostname) || hostname.startsWith("fe80:")) {
+    throw new Error(`link-local IPv6 address not allowed: ${rawHostname}`);
   }
 
   const records = await lookup(hostname);

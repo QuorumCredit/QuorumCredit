@@ -158,3 +158,62 @@ fn test_matching_principal_accrues_benefit_from_loan_record() {
         LOAN_AMOUNT * bps as i128 / 10_000
     );
 }
+
+#[test]
+fn anniversary_claim_reports_ineligibility_and_next_timestamp() {
+    let (env, contract_id, borrower) = setup();
+    store_loan(&env, &contract_id, &borrower, LOAN_AMOUNT);
+    let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+    env.ledger().with_mut(|l| l.timestamp = LOYALTY_ANNIVERSARY_PERIOD_SECS - 1);
+    assert_eq!(
+        client.try_claim_anniversary_bonus(&borrower, &LOAN_AMOUNT),
+        Err(Ok(ContractError::NotEligibleYet))
+    );
+    assert_eq!(client.anniversary_bonus_eligible_at(&borrower), Some(LOYALTY_ANNIVERSARY_PERIOD_SECS));
+    assert_eq!(benefits_total(&env, &contract_id, &borrower), 0);
+
+    env.ledger().with_mut(|l| l.timestamp = LOYALTY_ANNIVERSARY_PERIOD_SECS);
+    assert_eq!(
+        client.claim_anniversary_bonus(&borrower, &LOAN_AMOUNT),
+        benefits_for_tier(LoyaltyTier::Gold).anniversary_bonus_bps
+    );
+    assert_eq!(client.anniversary_bonus_eligible_at(&borrower), Some(2 * LOYALTY_ANNIVERSARY_PERIOD_SECS));
+}
+
+#[test]
+fn only_the_borrower_can_initialize_covenants_and_only_admins_can_monitor() {
+    let (env, contract_id, borrower) = setup();
+    store_loan(&env, &contract_id, &borrower, LOAN_AMOUNT);
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::ActiveLoan(borrower.clone()), &LOAN_ID);
+    });
+    let client = QuorumCreditContractClient::new(&env, &contract_id);
+    let stranger = Address::generate(&env);
+    let types = Vec::new(&env);
+
+    env.set_auths(&[]);
+    assert!(matches!(
+        client.try_initialize_loan_covenants(&borrower, &types, &5000, &5000, &0, &0, &60, &1),
+        Err(Err(_))
+    ));
+
+    env.mock_all_auths();
+    client.initialize_loan_covenants(&borrower, &types, &5000, &5000, &0, &0, &60, &1);
+    let strangers = Vec::from_array(&env, [stranger]);
+    assert!(matches!(
+        client.try_monitor_loan_covenants(&strangers, &borrower),
+        Err(Err(_))
+    ));
+
+    let admins = env.as_contract(&contract_id, || crate::helpers::config(&env).admins);
+    env.set_auths(&[]);
+    assert!(matches!(
+        client.try_monitor_loan_covenants(&admins, &borrower),
+        Err(Err(_))
+    ));
+    env.mock_all_auths();
+    assert_eq!(client.monitor_loan_covenants(&admins, &borrower).loan_id, LOAN_ID);
+}

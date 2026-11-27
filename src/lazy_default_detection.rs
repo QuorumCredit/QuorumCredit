@@ -81,19 +81,27 @@ pub fn borrower_loan_ids(env: &Env, borrower: &Address) -> Vec<u64> {
 
 /// Check if a loan is past its deadline and should be marked as defaulted.
 ///
+/// A loan is only considered defaulted once the grace period (from the contract
+/// config) has also elapsed. This matches the behaviour of `auto_slash`, which
+/// waits for `deadline + cfg.grace_period` before slashing.
+///
 /// # Arguments
 /// * `env` - Soroban environment
 /// * `loan` - The loan record to check
 ///
 /// # Returns
-/// `true` if the loan is past the deadline without full repayment
+/// `true` if the loan is past the deadline **and** grace period without full repayment
 pub fn is_loan_defaulted(env: &Env, loan: &LoanRecord) -> bool {
     if loan.status != LoanStatus::Active {
         return false;
     }
 
+    let grace_period = crate::helpers::try_config(env)
+        .map(|cfg| cfg.grace_period)
+        .unwrap_or(0);
+
     let now = env.ledger().timestamp();
-    now > loan.deadline && loan.amount_repaid < loan.amount
+    now > loan.deadline.saturating_add(grace_period) && loan.amount_repaid < loan.amount
 }
 
 /// Check and mark a loan as defaulted if appropriate.
@@ -141,7 +149,7 @@ pub fn check_and_mark_default(
 
     env.storage().persistent().set(
         &DataKey::DefaultCount(borrower.clone()),
-        &(current_count + 1),
+        &(current_count.checked_add(1).ok_or(ContractError::ArithmeticOverflow)?),
     );
     crate::helpers::increment_total_default_count(env);
 
@@ -361,6 +369,88 @@ mod tests {
         env.as_contract(&contract_id, || {
             let res = get_default_detection_status(&env, 42);
             assert_eq!(res, Err(ContractError::NoActiveLoan));
+        });
+    }
+
+    /// Issue #2132: a loan past its deadline but still inside the grace window
+    /// must NOT be flagged as defaulted.
+    #[test]
+    fn is_loan_defaulted_respects_grace_period() {
+        use crate::types::Config;
+        use crate::QuorumCreditContractClient;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        // Set now to 11_000; deadline = 10_000; grace_period = 2_000.
+        // now (11_000) is past deadline (10_000) but inside deadline + grace (12_000).
+        env.ledger().set_timestamp(11_000);
+
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::Vec::from_array(&env, [admin.clone()]);
+        let token = env.register_stellar_asset_contract_v2(admin).address();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &1_000_000);
+        QuorumCreditContractClient::new(&env, &contract_id).initialize(
+            &deployer, &admins, &1u32, &token,
+        );
+
+        env.as_contract(&contract_id, || {
+            // Set grace_period = 2_000.
+            let mut cfg: Config = env.storage().instance().get(&DataKey::Config).expect("config");
+            cfg.grace_period = 2_000;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+
+            let borrower = Address::generate(&env);
+            let loan = mk_loan(&env, 10, &borrower, 1_000, 0, 10_000, LoanStatus::Active);
+            env.storage().persistent().set(&DataKey::Loan(loan.id), &loan);
+            record_borrower_loan_id(&env, &borrower, loan.id);
+
+            // Inside grace window — must NOT be marked defaulted.
+            let newly = check_all_defaults_for_borrower(&env, &borrower).unwrap();
+            assert_eq!(newly, 0, "loan inside grace period must not be marked defaulted");
+
+            let stored: LoanRecord = env.storage().persistent().get(&DataKey::Loan(10)).unwrap();
+            assert_eq!(stored.status, LoanStatus::Active);
+        });
+    }
+
+    /// Issue #2132: a loan past both the deadline and the grace period IS
+    /// flagged as defaulted.
+    #[test]
+    fn is_loan_defaulted_after_grace_period() {
+        use crate::types::Config;
+        use crate::QuorumCreditContractClient;
+        use soroban_sdk::token::StellarAssetClient;
+
+        let env = Env::default();
+        env.mock_all_auths();
+        // now = 13_000; deadline = 10_000; grace = 2_000 → slash threshold = 12_000.
+        env.ledger().set_timestamp(13_000);
+
+        let deployer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let admins = soroban_sdk::Vec::from_array(&env, [admin.clone()]);
+        let token = env.register_stellar_asset_contract_v2(admin).address();
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        StellarAssetClient::new(&env, &token).mint(&contract_id, &1_000_000);
+        QuorumCreditContractClient::new(&env, &contract_id).initialize(
+            &deployer, &admins, &1u32, &token,
+        );
+
+        env.as_contract(&contract_id, || {
+            let mut cfg: Config = env.storage().instance().get(&DataKey::Config).expect("config");
+            cfg.grace_period = 2_000;
+            env.storage().instance().set(&DataKey::Config, &cfg);
+
+            let borrower = Address::generate(&env);
+            let loan = mk_loan(&env, 11, &borrower, 1_000, 0, 10_000, LoanStatus::Active);
+            env.storage().persistent().set(&DataKey::Loan(loan.id), &loan);
+            record_borrower_loan_id(&env, &borrower, loan.id);
+
+            let newly = check_all_defaults_for_borrower(&env, &borrower).unwrap();
+            assert_eq!(newly, 1, "loan past grace period must be marked defaulted");
         });
     }
 

@@ -5,6 +5,7 @@ Analyzes parameterized gas budget measurements to detect complexity regressions.
 Generates historical reports and complexity-class fitting.
 """
 
+import html
 import json
 import sys
 import os
@@ -18,25 +19,38 @@ class BenchmarkAnalyzer:
             self.data = json.load(f)
         self.operations = self.data.get('operations', {})
         self.thresholds = self.data.get('regression_thresholds', {})
+        self.skipped_non_positive_values: List[Dict[str, object]] = []
 
     def fit_complexity_class(self, sizes: List[int], costs: List[int]) -> Tuple[str, float]:
         """
         Fit empirical complexity class to measurements.
         Returns: (complexity_class: "O(1)|O(n)|O(n log n)|O(n²)", goodness_of_fit: float)
         """
-        if len(sizes) < 2:
+        self.skipped_non_positive_values = []
+        paired = []
+
+        for index, (size, cost) in enumerate(zip(sizes, costs)):
+            if size <= 0 or cost <= 0:
+                self.skipped_non_positive_values.append({
+                    "index": index,
+                    "size": size,
+                    "cost": cost,
+                })
+                continue
+            paired.append((size, cost))
+
+        if len(paired) < 2:
             return ("Unknown", 0.0)
 
-        # Calculate cost-to-size ratios and slopes
-        log_sizes = [math.log(s) for s in sizes]
-        log_costs = [math.log(c) for c in costs]
+        valid_sizes = [size for size, _ in paired]
+        valid_costs = [cost for _, cost in paired]
 
         # Test different complexity models via linear regression on log-log scale
         models = {
-            "O(1)": self._test_constant(costs),
-            "O(n)": self._test_linear(sizes, costs),
-            "O(n log n)": self._test_nlogn(sizes, costs),
-            "O(n²)": self._test_quadratic(sizes, costs),
+            "O(1)": self._test_constant(valid_costs),
+            "O(n)": self._test_linear(valid_sizes, valid_costs),
+            "O(n log n)": self._test_nlogn(valid_sizes, valid_costs),
+            "O(n²)": self._test_quadratic(valid_sizes, valid_costs),
         }
 
         # Pick best fit by R² value
@@ -354,7 +368,7 @@ class BenchmarkAnalyzer:
 </html>
 """
 
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html)
         print(f"Report written to {output_path}")
 
@@ -370,24 +384,26 @@ class BenchmarkAnalyzer:
 """
 
     def _generate_regression_section(self, regressions: Dict) -> str:
-        html = '<div class="warning-box">'
-        html += '<strong>⚠️ Detected Regressions:</strong><ul style="margin-top: 0.5rem;">'
+        html_out = '<div class="warning-box">'
+        html_out += '<strong>⚠️ Detected Regressions:</strong><ul style="margin-top: 0.5rem;">'
 
         for op_name, findings in regressions.items():
+            escaped_op_name = html.escape(str(op_name))
             for finding in findings:
-                html += f"""
-                <li><strong>{op_name}</strong> (n={finding['size']}):
-                    +{finding['increase_pct']:.1f}% ({finding['severity']})</li>
+                html_out += f"""
+                <li><strong>{escaped_op_name}</strong> (n={finding['size']}):
+                    +{finding['increase_pct']:.1f}% ({html.escape(str(finding['severity']))})</li>
 """
 
-        html += '</ul></div>'
-        return html
+        html_out += '</ul></div>'
+        return html_out
 
     def _generate_operation_section(self, op_name: str, op_data: Dict) -> str:
-        html = f'<div class="operation">'
+        escaped_op_name = html.escape(str(op_name))
+        html_out = f'<div class="operation">'
 
-        description = op_data.get('description', 'N/A')
-        expected = op_data.get('expected_complexity', 'Unknown')
+        description = html.escape(str(op_data.get('description', 'N/A')))
+        expected = html.escape(str(op_data.get('expected_complexity', 'Unknown')))
         measurements = op_data.get('measurements', [])
 
         if measurements:
@@ -396,23 +412,34 @@ class BenchmarkAnalyzer:
             costs = [v['cpu_instructions'] for v in latest['size_variants']]
 
             fitted_complexity, goodness = self.fit_complexity_class(sizes, costs)
+            escaped_fitted = html.escape(str(fitted_complexity))
 
             warning = ""
-            if fitted_complexity != expected and expected != "Unknown":
-                warning = f"""
+            if self.skipped_non_positive_values:
+                skipped_details = ", ".join(
+                    f"size={entry['size']}, cost={entry['cost']}"
+                    for entry in self.skipped_non_positive_values
+                )
+                warning += f"""
                 <div class="warning-box" style="margin-bottom: 1rem;">
-                    <strong>⚠️ Complexity Mismatch:</strong> Expected {expected} but detected {fitted_complexity}
+                    <strong>⚠️ Skipped non-positive measurements:</strong> {skipped_details}
+                </div>
+"""
+            if fitted_complexity != expected and expected != "Unknown":
+                warning += f"""
+                <div class="warning-box" style="margin-bottom: 1rem;">
+                    <strong>⚠️ Complexity Mismatch:</strong> Expected {expected} but detected {escaped_fitted}
                 </div>
 """
 
-            html += f"""
+            html_out += f"""
             <div class="operation-header">
                 <div>
-                    <div class="operation-title">{op_name}</div>
+                    <div class="operation-title">{escaped_op_name}</div>
                     <div class="operation-description">{description}</div>
                 </div>
                 <div class="complexity-badge {'detected-quadratic' if 'n²' in fitted_complexity else ''}">
-                    Detected: {fitted_complexity}
+                    Detected: {escaped_fitted}
                 </div>
             </div>
             {warning}
@@ -448,7 +475,7 @@ class BenchmarkAnalyzer:
                 mem = variant['memory_bytes']
                 cost_per_unit = cpu // size if size > 0 else 0
 
-                html += f"""
+                html_out += f"""
                     <tr>
                         <td>{size}</td>
                         <td>{cpu:,}</td>
@@ -457,16 +484,17 @@ class BenchmarkAnalyzer:
                     </tr>
 """
 
-            html += """
+            html_out += """
                 </tbody>
             </table>
 """
 
             if latest.get('notes'):
-                html += f'<div class="note"><strong>Notes:</strong> {latest["notes"]}</div>'
+                escaped_notes = html.escape(str(latest["notes"]))
+                html_out += f'<div class="note"><strong>Notes:</strong> {escaped_notes}</div>'
 
-        html += '</div>'
-        return html
+        html_out += '</div>'
+        return html_out
 
 
 def main():
@@ -486,14 +514,14 @@ def main():
 
     regressions = analyzer.detect_regressions()
     if regressions:
-        print("\n⚠️  REGRESSIONS DETECTED:\n")
+        print("\nWARNING: REGRESSIONS DETECTED:\n")
         for op_name, findings in regressions.items():
             print(f"  {op_name}:")
             for finding in findings:
                 print(f"    @ n={finding['size']}: +{finding['increase_pct']:.1f}% ({finding['severity']})")
         sys.exit(1)
     else:
-        print(f"\n✓ No regressions detected. Report: {output_path}")
+        print(f"\nNo regressions detected. Report: {output_path}")
         sys.exit(0)
 
 

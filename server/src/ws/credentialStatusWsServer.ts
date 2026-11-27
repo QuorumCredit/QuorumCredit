@@ -1,7 +1,10 @@
 /**
  * Issue #1743: Real-time credential status over WebSocket at /ws/credentials/status.
  *
- * Connect with `?token=<jwt>`. Clients then manage subscriptions in-band:
+ * Connect with the bearer token in the `Sec-WebSocket-Protocol` handshake header
+ * (`bearer.<token>`). The legacy `?token=<jwt>` query parameter is deprecated
+ * (warns on use, refused after the sunset date) — see wsAuthToken.ts. Clients then
+ * manage subscriptions in-band:
  *   {type:"subscribe", credentialIds?: string[], holderId?: string}
  *   {type:"unsubscribe", credentialIds?: string[], holderId?: string}
  *
@@ -19,10 +22,12 @@ import {
   type CredentialStatusChange,
 } from "../credentials/credentialStore.js";
 import { metrics as opsMetrics } from "../http/metricsRegistry.js";
+import { extractWsToken, selectAuthSubprotocol } from "./wsAuthToken.js";
 
 export interface CredentialStatusWsOptions {
   httpServer: HttpServer;
   authSecret: string;
+  revocationStore: RevocationStore;
   path?: string;
   /** Max concurrent connections for this instance. Default 1000. */
   maxConnections?: number;
@@ -31,6 +36,13 @@ export interface CredentialStatusWsOptions {
   /** Max credential subscriptions per connection. Default 500. */
   maxSubscriptionsPerConnection?: number;
   heartbeatIntervalMs?: number;
+  /**
+   * Issue #2156: date after which `?token=` query-string auth is refused. Before
+   * it, a query-string token still authenticates but logs a deprecation warning.
+   * Defaults to the standard shared sunset date. Token-in-header auth (the
+   * recommended path) is unaffected.
+   */
+  queryTokenSunsetDate?: Date;
 }
 
 type StatusFields = {
@@ -185,7 +197,7 @@ function currentState(credentialId: string): StatusFields | null {
 export function attachCredentialStatusWsServer(opts: CredentialStatusWsOptions): WebSocketServer {
   const path = opts.path ?? "/ws/credentials/status";
   const maxSubs = opts.maxSubscriptionsPerConnection ?? 500;
-  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: true });
+  const wss = new WebSocketServer({ noServer: true, perMessageDeflate: true, handleProtocols: selectAuthSubprotocol });
   const pool = new CredentialStatusConnectionPool(
     opts.maxConnections ?? 1000,
     opts.maxConnectionsPerClient ?? 5
@@ -241,11 +253,22 @@ export function attachCredentialStatusWsServer(opts: CredentialStatusWsOptions):
     unsubscribeStatus();
   });
 
-  opts.httpServer.on("upgrade", (req: IncomingMessage, socket, head) => {
+  opts.httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = new URL(req.url ?? "", "http://internal");
     if (url.pathname !== path) return;
 
-    const token = url.searchParams.get("token") ?? "";
+    // Issue #2156: prefer the Sec-WebSocket-Protocol header over the deprecated
+    // ?token= query string, which leaks the token into proxy/browser logs.
+    const resolution = extractWsToken(req, { queryTokenSunsetDate: opts.queryTokenSunsetDate });
+    if (resolution.source === "query") {
+      opsMetrics.incLabeledCounter("qc_ws_query_token_auth_total", "server", "credentials");
+    }
+    if (resolution.refused) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+    const token = resolution.token ?? "";
     const result = verifyToken(opts.authSecret, token);
     if (!result.valid) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");

@@ -23,6 +23,7 @@ import { createServer } from "node:http";
 import { WebSocket } from "ws";
 import { attachMetricsWsServer } from "../src/ws/metricsWsServer.js";
 import { LocalBus } from "../src/pubsub/LocalBus.js";
+import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -155,6 +156,7 @@ describe("metricsWsServer — heartbeat / idle-timeout integration", () => {
       bus,
       store,
       authSecret: "test-secret",
+      revocationStore: new LocalRevocationStore(),
       connectionQueueMax: 10,
       heartbeatIntervalMs: 500,   // ping every 500 ms
       idleTimeoutMs: 150,         // disconnect 150 ms after last pong / connect
@@ -184,8 +186,10 @@ describe("metricsWsServer — heartbeat / idle-timeout integration", () => {
     const closed = { code: 0, received: false };
 
     await new Promise<void>((resolve, reject) => {
+      // Issue #2156: token in the Sec-WebSocket-Protocol header, not the URL.
       const ws = new WebSocket(
-        `ws://127.0.0.1:${serverPort}/ws/metrics?token=${encodeURIComponent(token)}`
+        `ws://127.0.0.1:${serverPort}/ws/metrics`,
+        ["bearer", `bearer.${token}`]
       );
 
       ws.on("close", (code) => {
@@ -218,8 +222,10 @@ describe("metricsWsServer — heartbeat / idle-timeout integration", () => {
 
     let closeReceived = false;
 
+    // Issue #2156: token in the Sec-WebSocket-Protocol header, not the URL.
     const ws = new WebSocket(
-      `ws://127.0.0.1:${serverPort}/ws/metrics?token=${encodeURIComponent(token)}`
+      `ws://127.0.0.1:${serverPort}/ws/metrics`,
+      ["bearer", `bearer.${token}`]
     );
 
     ws.on("close", () => {

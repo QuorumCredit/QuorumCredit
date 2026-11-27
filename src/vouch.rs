@@ -2343,13 +2343,17 @@ pub fn estimate_sybil_attack_cost(
 }
 
 pub fn vouch_with_sector(
-    _env: Env,
-    _voucher: Address,
-    _borrower: Address,
-    _stake: i128,
-    _token: Address,
-    _sector: soroban_sdk::String,
+    env: Env,
+    voucher: Address,
+    borrower: Address,
+    stake: i128,
+    token: Address,
+    sector: soroban_sdk::String,
 ) -> Result<(), ContractError> {
+    vouch_with_chain(env.clone(), voucher.clone(), borrower.clone(), stake, token, 0)?;
+    env.storage()
+        .persistent()
+        .set(&DataKey::VouchSector(voucher, borrower), &sector);
     Ok(())
 }
 

@@ -14,6 +14,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { metrics } from "./metricsRegistry.js";
+import { getClientIp } from "./clientIp.js";
 
 export interface DeprecatedEndpoint {
   /** Stable identifier used in metrics and the usage report. */
@@ -179,10 +180,8 @@ function alertLevel(endpoint: DeprecatedEndpoint, now: number): DeprecationAlert
 function clientIdentifier(req: IncomingMessage): string {
   const apiKey = req.headers["x-api-key"];
   if (typeof apiKey === "string" && apiKey) return `key:${apiKey.slice(0, 8)}`;
-  const forwarded = req.headers["x-forwarded-for"];
-  const ip = (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : undefined) ??
-    req.socket.remoteAddress ??
-    "unknown";
+  // Issue #2155: Use secure client IP resolution
+  const ip = getClientIp(req);
   return `ip:${ip}`;
 }
 

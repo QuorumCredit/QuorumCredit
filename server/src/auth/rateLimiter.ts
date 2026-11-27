@@ -48,6 +48,11 @@ export interface RateLimiterOptions {
 
 // ── Local (single-instance) implementation ─────────────────────────────────────
 
+interface LocalRateLimiterOptions extends RateLimiterOptions {
+  /** Maximum distinct IPs retained in this process. Default 10,000. */
+  maxEntries?: number;
+}
+
 /**
  * In-process rate limiter backed by a plain Map.
  * NOT multi-instance-safe — for local dev and unit tests only.
@@ -57,15 +62,40 @@ export class LocalAuthRateLimiter implements AuthRateLimiter {
   private readonly windowMs: number;
   private readonly store = new Map<string, RateLimitEntry>();
 
-  constructor(opts: RateLimiterOptions = {}) {
+  private readonly maxEntries: number;
+  private readonly sweepTimer: ReturnType<typeof setInterval>;
+
+  constructor(opts: LocalRateLimiterOptions = {}) {
     this.maxAttempts = opts.maxAttempts ?? 5;
     this.windowMs = opts.windowMs ?? 60_000;
+    this.maxEntries = opts.maxEntries ?? 10_000;
+    if (!Number.isSafeInteger(this.maxEntries) || this.maxEntries < 1) {
+      throw new RangeError("maxEntries must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(this.windowMs) || this.windowMs < 1) {
+      throw new RangeError("windowMs must be a positive safe integer");
+    }
+    this.sweepTimer = setInterval(() => this.sweepExpired(), Math.min(this.windowMs, 60_000));
+    this.sweepTimer.unref();
+  }
+
+  private sweepExpired(): void {
+    const now = Date.now();
+    for (const [ip, entry] of this.store) {
+      if (now - entry.windowStart >= this.windowMs) this.store.delete(ip);
+    }
   }
 
   private getEntry(ip: string, now: number): RateLimitEntry {
     const existing = this.store.get(ip);
     if (!existing || now - existing.windowStart >= this.windowMs) {
       const fresh: RateLimitEntry = { count: 0, windowStart: now };
+      // A restarted window is a new insertion, so eviction follows window age.
+      this.store.delete(ip);
+      if (this.store.size >= this.maxEntries) {
+        const oldest = this.store.keys().next();
+        if (!oldest.done) this.store.delete(oldest.value);
+      }
       this.store.set(ip, fresh);
       return fresh;
     }
@@ -76,7 +106,6 @@ export class LocalAuthRateLimiter implements AuthRateLimiter {
     const now = Date.now();
     const entry = this.getEntry(ip, now);
     entry.count += 1;
-    this.store.set(ip, entry);
     return entry.count >= this.maxAttempts;
   }
 
@@ -96,6 +125,7 @@ export class LocalAuthRateLimiter implements AuthRateLimiter {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.sweepTimer);
     this.store.clear();
   }
 }

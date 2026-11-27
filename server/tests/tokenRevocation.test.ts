@@ -3,7 +3,7 @@
  *
  * Covers:
  *   - Issued tokens carry a jti claim.
- *   - verifyToken returns valid when no revocation store is supplied (backward compat).
+ *   - verifyToken requires a revocation store.
  *   - A revoked JTI is rejected with reason "revoked".
  *   - Revoking one JTI does not affect other tokens.
  *   - revokeAllForSubject rejects all tokens for that subject.
@@ -12,6 +12,7 @@
 import { describe, it, expect } from "vitest";
 import { issueToken, verifyToken } from "../src/auth/tokens.js";
 import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
+import { createHmac } from "node:crypto";
 
 const SECRET = "test-secret-for-revocation-tests";
 
@@ -23,19 +24,28 @@ describe("token revocation (Issue #1292)", () => {
     expect(issued.jti.length).toBeGreaterThan(0);
   });
 
+  it("rejects a signed token without a jti", async () => {
+    const store = new LocalRevocationStore();
+    const now = Math.floor(Date.now() / 1000);
+    const payload = Buffer.from(JSON.stringify({ sub: "api-key-legacy", iat: now, exp: now + 60 })).toString("base64url");
+    const signature = createHmac("sha256", SECRET).update(payload).digest("base64url");
+    const result = await verifyToken(SECRET, `${payload}.${signature}`, store);
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toBe("malformed");
+  });
+
   it("each issued token has a unique jti", () => {
     const a = issueToken(SECRET, "api-key-1", 60);
     const b = issueToken(SECRET, "api-key-1", 60);
     expect(a.jti).not.toBe(b.jti);
   });
 
-  it("verifyToken without revocationStore accepts a valid token (backward compat)", () => {
+  it("verifyToken with revocationStore accepts a valid token", async () => {
+    const store = new LocalRevocationStore();
     const { token } = issueToken(SECRET, "api-key-1", 60);
-    const result = verifyToken(SECRET, token);
-    // Synchronous path (no store) — result is not a Promise
-    expect(result).not.toBeInstanceOf(Promise);
-    const r = result as Exclude<typeof result, Promise<unknown>>;
-    expect(r.valid).toBe(true);
+    const result = await verifyToken(SECRET, token, store);
+    expect(result.valid).toBe(true);
+    await store.close();
   });
 
   it("verifyToken with revocationStore accepts a non-revoked token", async () => {

@@ -1746,8 +1746,12 @@ pub fn propose_governance_action(
         .ok_or(ContractError::CounterOverflow)?;
 
     // Calculate timelock and expiry
-    let executable_at = now + queue_config.timelock_delay;
-    let expires_at = executable_at + queue_config.execution_window;
+    let executable_at = now
+        .checked_add(queue_config.timelock_delay)
+        .ok_or(ContractError::ArithmeticOverflow)?;
+    let expires_at = executable_at
+        .checked_add(queue_config.execution_window)
+        .ok_or(ContractError::ArithmeticOverflow)?;
 
     // Create proposal
     let proposal = GovernanceProposal {
@@ -2547,23 +2551,82 @@ pub fn is_admin_revoked(env: Env, admin: Address) -> bool {
 }
 
 pub fn enqueue_config_patch(
-    _env: Env,
-    _admin_signers: Vec<Address>,
-    _field: crate::types::ConfigField,
-    _new_value: i128,
-    _apply_after: u64,
-) {}
+    env: Env,
+    admin_signers: Vec<Address>,
+    field: crate::types::ConfigField,
+    new_value: i128,
+    apply_after: u64,
+) {
+    require_admin_approval(&env, &admin_signers);
 
-pub fn apply_next_config_patch(_env: Env) -> bool {
-    false
+    let mut queue: Vec<crate::types::ConfigPatch> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ConfigPatchQueue)
+        .unwrap_or_else(|| Vec::new(&env));
+
+    queue.push_back(crate::types::ConfigPatch {
+        field,
+        new_value,
+        apply_after,
+    });
+
+    env.storage()
+        .instance()
+        .set(&DataKey::ConfigPatchQueue, &queue);
 }
 
-pub fn get_config_patch(_env: Env, _idx: u32) -> Option<crate::types::ConfigPatch> {
-    None
+pub fn apply_next_config_patch(env: Env) -> bool {
+    let mut queue: Vec<crate::types::ConfigPatch> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ConfigPatchQueue)
+        .unwrap_or_else(|| Vec::new(&env));
+
+    if queue.is_empty() {
+        return false;
+    }
+
+    let now = env.ledger().timestamp();
+    let patch = queue.get(0).unwrap();
+
+    if now < patch.apply_after {
+        return false;
+    }
+
+    queue.remove(0);
+    env.storage()
+        .instance()
+        .set(&DataKey::ConfigPatchQueue, &queue);
+
+    // Apply the patch to the live config.
+    // Currently only the Dummy variant exists; real fields are added alongside
+    // new ConfigField variants in the types module.
+    match patch.field {
+        crate::types::ConfigField::Dummy => {}
+    }
+
+    true
 }
 
-pub fn get_config_patch_count(_env: Env) -> u32 {
-    0
+pub fn get_config_patch(env: Env, idx: u32) -> Option<crate::types::ConfigPatch> {
+    let queue: Vec<crate::types::ConfigPatch> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ConfigPatchQueue)
+        .unwrap_or_else(|| Vec::new(&env));
+
+    queue.get(idx)
+}
+
+pub fn get_config_patch_count(env: Env) -> u32 {
+    let queue: Vec<crate::types::ConfigPatch> = env
+        .storage()
+        .instance()
+        .get(&DataKey::ConfigPatchQueue)
+        .unwrap_or_else(|| Vec::new(&env));
+
+    queue.len()
 }
 
 /// Issue #1421 — Phase 2 Backfill: populate `PaymentHistory` for a pre-upgrade loan.
