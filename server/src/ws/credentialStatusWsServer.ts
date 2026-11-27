@@ -27,6 +27,7 @@ import { extractWsToken, selectAuthSubprotocol } from "./wsAuthToken.js";
 export interface CredentialStatusWsOptions {
   httpServer: HttpServer;
   authSecret: string;
+  revocationStore: RevocationStore;
   path?: string;
   /** Max concurrent connections for this instance. Default 1000. */
   maxConnections?: number;
@@ -252,7 +253,7 @@ export function attachCredentialStatusWsServer(opts: CredentialStatusWsOptions):
     unsubscribeStatus();
   });
 
-  opts.httpServer.on("upgrade", (req: IncomingMessage, socket, head) => {
+  opts.httpServer.on("upgrade", async (req: IncomingMessage, socket, head) => {
     const url = new URL(req.url ?? "", "http://internal");
     if (url.pathname !== path) return;
 

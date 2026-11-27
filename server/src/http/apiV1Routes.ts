@@ -28,7 +28,7 @@ import {
   type ApiRateLimiter,
   type ApiTier,
 } from "../auth/apiRateLimiter.js";
-import type { RevocationStore } from "../auth/jtiRevocationStore.js";
+import { LocalRevocationStore, type RevocationStore } from "../auth/jtiRevocationStore.js";
 import { verifyToken } from "../auth/tokens.js";
 import { retryExecutor } from "../resilience/retry.js";
 import {
@@ -54,6 +54,7 @@ const MAX_FEEDBACK_BYTES = 16 * 1024;
 const defaultLimiter = new LocalApiRateLimiter();
 // Estimation is stateless, so one shared scorer is safe across requests.
 const costEstimator = new ComplexityScorer();
+const defaultApiV1RevocationStore = new LocalRevocationStore();
 
 export interface ApiV1Context {
   authSecret: string;
@@ -385,9 +386,11 @@ async function authorizeApiRequest(
     sendJson(res, 401, { error: "bearer token required" });
     return undefined;
   }
-  const verified = context.revocationStore
-    ? await verifyToken(context.authSecret, token, context.revocationStore)
-    : verifyToken(context.authSecret, token);
+  const verified = await verifyToken(
+    context.authSecret,
+    token,
+    context.revocationStore ?? defaultApiV1RevocationStore
+  );
   if (!verified.valid || !verified.payload.sub) {
     sendJson(res, 401, { error: "invalid or expired bearer token" });
     return undefined;

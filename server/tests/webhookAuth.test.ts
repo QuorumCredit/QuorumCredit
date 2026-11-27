@@ -6,6 +6,8 @@ import { handleWebhookRequest, type WebhookRoutesContext } from "../src/http/web
 import { webhookRegistry } from "../src/webhooks/signature.js";
 import { issueToken } from "../src/auth/tokens.js";
 import { buildApiKeyStore } from "../src/auth/apiKeyStore.js";
+import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
+import { EventEmitter } from "node:events";
 
 function sha256(val: string): string {
   return createHash("sha256").update(val, "utf8").digest("hex");
@@ -36,6 +38,7 @@ describe("webhook route auth and owner scoping (#2149)", () => {
 
   const ctx: WebhookRoutesContext = {
     authSecret,
+    revocationStore,
     apiKeyStore,
   };
 

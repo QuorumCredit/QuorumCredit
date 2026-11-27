@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { attachLoanSocketServer } from "../src/ws/loanSocketServer.js";
+import { LocalRevocationStore } from "../src/auth/jtiRevocationStore.js";
 
 describe("loan socket CORS origins", () => {
   let server: Server | undefined;
@@ -18,6 +19,7 @@ describe("loan socket CORS origins", () => {
       bus: {} as never,
       store: {} as never,
       authSecret: "x".repeat(32),
+      revocationStore: new LocalRevocationStore(),
       connectionQueueMax: 10,
       allowedOrigins,
     });
