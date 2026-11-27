@@ -19,25 +19,38 @@ class BenchmarkAnalyzer:
             self.data = json.load(f)
         self.operations = self.data.get('operations', {})
         self.thresholds = self.data.get('regression_thresholds', {})
+        self.skipped_non_positive_values: List[Dict[str, object]] = []
 
     def fit_complexity_class(self, sizes: List[int], costs: List[int]) -> Tuple[str, float]:
         """
         Fit empirical complexity class to measurements.
         Returns: (complexity_class: "O(1)|O(n)|O(n log n)|O(n²)", goodness_of_fit: float)
         """
-        if len(sizes) < 2:
+        self.skipped_non_positive_values = []
+        paired = []
+
+        for index, (size, cost) in enumerate(zip(sizes, costs)):
+            if size <= 0 or cost <= 0:
+                self.skipped_non_positive_values.append({
+                    "index": index,
+                    "size": size,
+                    "cost": cost,
+                })
+                continue
+            paired.append((size, cost))
+
+        if len(paired) < 2:
             return ("Unknown", 0.0)
 
-        # Calculate cost-to-size ratios and slopes
-        log_sizes = [math.log(s) for s in sizes]
-        log_costs = [math.log(c) for c in costs]
+        valid_sizes = [size for size, _ in paired]
+        valid_costs = [cost for _, cost in paired]
 
         # Test different complexity models via linear regression on log-log scale
         models = {
-            "O(1)": self._test_constant(costs),
-            "O(n)": self._test_linear(sizes, costs),
-            "O(n log n)": self._test_nlogn(sizes, costs),
-            "O(n²)": self._test_quadratic(sizes, costs),
+            "O(1)": self._test_constant(valid_costs),
+            "O(n)": self._test_linear(valid_sizes, valid_costs),
+            "O(n log n)": self._test_nlogn(valid_sizes, valid_costs),
+            "O(n²)": self._test_quadratic(valid_sizes, valid_costs),
         }
 
         # Pick best fit by R² value
@@ -355,7 +368,7 @@ class BenchmarkAnalyzer:
 </html>
 """
 
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html)
         print(f"Report written to {output_path}")
 
@@ -402,8 +415,18 @@ class BenchmarkAnalyzer:
             escaped_fitted = html.escape(str(fitted_complexity))
 
             warning = ""
+            if self.skipped_non_positive_values:
+                skipped_details = ", ".join(
+                    f"size={entry['size']}, cost={entry['cost']}"
+                    for entry in self.skipped_non_positive_values
+                )
+                warning += f"""
+                <div class="warning-box" style="margin-bottom: 1rem;">
+                    <strong>⚠️ Skipped non-positive measurements:</strong> {skipped_details}
+                </div>
+"""
             if fitted_complexity != expected and expected != "Unknown":
-                warning = f"""
+                warning += f"""
                 <div class="warning-box" style="margin-bottom: 1rem;">
                     <strong>⚠️ Complexity Mismatch:</strong> Expected {expected} but detected {escaped_fitted}
                 </div>
@@ -491,14 +514,14 @@ def main():
 
     regressions = analyzer.detect_regressions()
     if regressions:
-        print("\n⚠️  REGRESSIONS DETECTED:\n")
+        print("\nWARNING: REGRESSIONS DETECTED:\n")
         for op_name, findings in regressions.items():
             print(f"  {op_name}:")
             for finding in findings:
                 print(f"    @ n={finding['size']}: +{finding['increase_pct']:.1f}% ({finding['severity']})")
         sys.exit(1)
     else:
-        print(f"\n✓ No regressions detected. Report: {output_path}")
+        print(f"\nNo regressions detected. Report: {output_path}")
         sys.exit(0)
 
 
