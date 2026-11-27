@@ -9,6 +9,8 @@
  */
 
 import { createHmac, timingSafeEqual, randomBytes } from 'node:crypto';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import type { Redis } from 'ioredis';
 
 export interface WebhookRegistration {
@@ -472,8 +474,14 @@ const BLOCKED_HOSTNAMES = new Set([
   "metadata.internal",
 ]);
 
-const PRIVATE_IPV4_RE = /^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.)/;
-const LINK_LOCAL_IPV4_RE = /^169\.254\./;
+export interface ResolvedAddress {
+  address: string;
+  family: 4 | 6;
+}
+
+export type DnsLookupFn = (
+  hostname: string
+) => Promise<Array<{ address: string; family: number }>>;
 
 /**
  * Convert IPv4 address string to numeric value for range checking.
@@ -512,8 +520,36 @@ function isBlockedIpRange(ip: string): boolean {
 }
 
 export interface WebhookUrlValidationOptions {
-  /** When true, skip scheme/host validation. Intended for local/dev environments only. */
+  /** When true, skip private-host and DNS IP checks. Intended for local/dev environments only. */
   allowPrivateHosts?: boolean;
+  /** Optional custom DNS lookup function (defaults to dns.promises.lookup with { all: true }). */
+  lookup?: DnsLookupFn;
+}
+
+export interface ValidatedWebhookTarget {
+  url: URL;
+  /** Pinned IP address to connect to (undefined only when allowPrivateHosts=true). */
+  address?: string;
+  /** IP family (4 or 6) for the pinned address. */
+  family?: 4 | 6;
+  /** All resolved addresses that passed validation. */
+  addresses: ResolvedAddress[];
+}
+
+function normalizeHostname(hostname: string): string {
+  const lower = hostname.toLowerCase();
+  if (lower.startsWith("[") && lower.endsWith("]")) {
+    return lower.slice(1, -1);
+  }
+  return lower;
+}
+
+function parseIpv4Octets(ip: string): number[] | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return nums;
 }
 
 /**
@@ -525,10 +561,14 @@ export interface WebhookUrlValidationOptions {
  * - link-local/private IPv4 ranges
  * - cloud metadata endpoints
  *
- * Returns the normalized URL when valid, or throws with a descriptive message.
+ * Returns the validated URL along with the resolved IP address(es) so callers
+ * can pin the connection to the validated address and prevent DNS rebinding.
  */
-export function validateWebhookUrl(rawUrl: string, options: WebhookUrlValidationOptions = {}): URL {
-  const { allowPrivateHosts = false } = options;
+export async function resolveAndValidateWebhookUrl(
+  rawUrl: string,
+  options: WebhookUrlValidationOptions = {}
+): Promise<ValidatedWebhookTarget> {
+  const { allowPrivateHosts = false, lookup = defaultDnsLookup } = options;
 
   const url = new URL(rawUrl);
 
@@ -536,7 +576,9 @@ export function validateWebhookUrl(rawUrl: string, options: WebhookUrlValidation
     throw new Error(`unsupported scheme: ${url.protocol}`);
   }
 
-  if (allowPrivateHosts) return url;
+  if (allowPrivateHosts) {
+    return { url, addresses: [] };
+  }
 
   const rawHostname = url.hostname.toLowerCase();
   const hostname =
@@ -579,5 +621,41 @@ export function validateWebhookUrl(rawUrl: string, options: WebhookUrlValidation
     throw new Error(`link-local IPv6 address not allowed: ${rawHostname}`);
   }
 
+  const records = await lookup(hostname);
+  if (!records || records.length === 0) {
+    throw new Error(`DNS resolution returned no addresses for host: ${hostname}`);
+  }
+
+  const validatedAddresses: ResolvedAddress[] = [];
+  for (const record of records) {
+    assertPublicIpAddress(record.address, hostname);
+    const family: 4 | 6 = record.family === 6 ? 6 : 4;
+    validatedAddresses.push({ address: record.address, family });
+  }
+
+  return {
+    url,
+    address: validatedAddresses[0].address,
+    family: validatedAddresses[0].family,
+    addresses: validatedAddresses,
+  };
+}
+
+/**
+ * Validate a webhook registration URL to prevent SSRF attacks.
+ *
+ * Rejects:
+ * - non-http(s) schemes
+ * - loopback/link-local/private IPv4 and IPv6 ranges
+ * - cloud metadata endpoints
+ * - hostnames that resolve via DNS to any private/loopback/reserved IP
+ *
+ * Returns the normalized URL when valid, or throws with a descriptive message.
+ */
+export async function validateWebhookUrl(
+  rawUrl: string,
+  options: WebhookUrlValidationOptions = {}
+): Promise<URL> {
+  const { url } = await resolveAndValidateWebhookUrl(rawUrl, options);
   return url;
 }
