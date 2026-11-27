@@ -129,6 +129,42 @@ fn save_index(env: &Env, index: &Vec<u64>) {
     );
 }
 
+fn load_tag_index(env: &Env, tag: &Bytes) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SbtMarketplaceTagIndex(tag.clone()))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_tag_index(env: &Env, tag: &Bytes, index: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SbtMarketplaceTagIndex(tag.clone()), index);
+    env.storage().persistent().extend_ttl(
+        &DataKey::SbtMarketplaceTagIndex(tag.clone()),
+        PERSISTENT_TTL_THRESHOLD_LEDGERS,
+        PERSISTENT_TTL_TARGET_LEDGERS,
+    );
+}
+
+fn load_secondary_index(env: &Env) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SbtMarketplaceSecondaryIndex)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn save_secondary_index(env: &Env, index: &Vec<u64>) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::SbtMarketplaceSecondaryIndex, index);
+    env.storage().persistent().extend_ttl(
+        &DataKey::SbtMarketplaceSecondaryIndex,
+        PERSISTENT_TTL_THRESHOLD_LEDGERS,
+        PERSISTENT_TTL_TARGET_LEDGERS,
+    );
+}
+
 fn load_stats(env: &Env) -> SbtMarketplaceStats {
     env.storage()
         .persistent()
@@ -228,10 +264,25 @@ pub fn list_sbt_in_marketplace(
     let mut index = load_index(env);
     if !index.iter().any(|id| id == sbt_id) {
         if index.len() >= SBT_MARKETPLACE_INDEX_LIMIT {
-            index.pop_front(); // evict oldest entry
+            let evicted = index.pop_front();
+            // Issue #2166: Retain evicted active listings in secondary index
+            if let Some(evicted_id) = evicted {
+                let mut secondary = load_secondary_index(env);
+                if !secondary.iter().any(|id| id == evicted_id) {
+                    secondary.push_back(evicted_id);
+                    save_secondary_index(env, &secondary);
+                }
+            }
         }
         index.push_back(sbt_id);
         save_index(env, &index);
+    }
+
+    // Issue #2166: Maintain per-tag index so searches do not depend on a global capped list
+    let mut tag_index = load_tag_index(env, &tag);
+    if !tag_index.iter().any(|id| id == sbt_id) {
+        tag_index.push_back(sbt_id);
+        save_tag_index(env, &tag, &tag_index);
     }
 
     // Update stats
@@ -285,6 +336,20 @@ pub fn update_sbt_marketplace_listing(
         return Err(ContractError::InvalidStateTransition);
     }
 
+    // Issue #2166: If tag changed, update per-tag indexes
+    if listing.tag != tag {
+        let mut old_tag_index = load_tag_index(env, &listing.tag);
+        if let Some(pos) = old_tag_index.iter().position(|id| id == sbt_id) {
+            old_tag_index.remove(pos as u32);
+            save_tag_index(env, &listing.tag, &old_tag_index);
+        }
+        let mut new_tag_index = load_tag_index(env, &tag);
+        if !new_tag_index.iter().any(|id| id == sbt_id) {
+            new_tag_index.push_back(sbt_id);
+            save_tag_index(env, &tag, &new_tag_index);
+        }
+    }
+
     listing.metadata = metadata.clone();
     listing.tag = tag.clone();
     listing.updated_at = env.ledger().timestamp();
@@ -330,6 +395,18 @@ pub fn remove_sbt_marketplace_listing(
     listing.active = false;
     save_listing(env, &listing);
 
+    // Issue #2166: Clean up from per-tag and secondary indexes
+    let mut tag_index = load_tag_index(env, &listing.tag);
+    if let Some(pos) = tag_index.iter().position(|id| id == sbt_id) {
+        tag_index.remove(pos as u32);
+        save_tag_index(env, &listing.tag, &tag_index);
+    }
+    let mut secondary = load_secondary_index(env);
+    if let Some(pos) = secondary.iter().position(|id| id == sbt_id) {
+        secondary.remove(pos as u32);
+        save_secondary_index(env, &secondary);
+    }
+
     // Update stats
     let mut stats = load_stats(env);
     stats.active_count = stats.active_count.saturating_sub(1);
@@ -344,20 +421,44 @@ pub fn remove_sbt_marketplace_listing(
     Ok(())
 }
 
-/// Issue #1736 — Return all active listing `sbt_id`s whose `tag` matches
+/// Issue #1736 / #2166 — Return all active listing `sbt_id`s whose `tag` matches
 /// `query_tag` exactly.
 ///
-/// This performs a linear scan of the global index and is intended for
-/// on-chain eligibility gates.  For full-text or complex queries, use an
-/// off-chain indexer.
+/// Searches both the per-tag index and the global/secondary index so that
+/// listings evicted from the bounded global ring buffer remain discoverable.
 pub fn search_sbt_marketplace(env: &Env, query_tag: Bytes) -> Vec<u64> {
-    let index = load_index(env);
     let mut results: Vec<u64> = Vec::new(env);
 
-    for sbt_id in index.iter() {
+    // 1. Search per-tag index (not subject to global eviction)
+    let tag_index = load_tag_index(env, &query_tag);
+    for sbt_id in tag_index.iter() {
         if let Some(listing) = load_listing(env, sbt_id) {
             if listing.active && listing.tag == query_tag {
                 results.push_back(sbt_id);
+            }
+        }
+    }
+
+    // 2. Also search secondary index for evicted active listings
+    let secondary = load_secondary_index(env);
+    for sbt_id in secondary.iter() {
+        if !results.iter().any(|id| id == sbt_id) {
+            if let Some(listing) = load_listing(env, sbt_id) {
+                if listing.active && listing.tag == query_tag {
+                    results.push_back(sbt_id);
+                }
+            }
+        }
+    }
+
+    // 3. Search global index for backward compatibility
+    let global_index = load_index(env);
+    for sbt_id in global_index.iter() {
+        if !results.iter().any(|id| id == sbt_id) {
+            if let Some(listing) = load_listing(env, sbt_id) {
+                if listing.active && listing.tag == query_tag {
+                    results.push_back(sbt_id);
+                }
             }
         }
     }

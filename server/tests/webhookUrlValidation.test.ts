@@ -25,6 +25,12 @@ describe("validateWebhookUrl", () => {
     { url: "http://169.254.1.1/hook", ok: false, contains: "private IP range" },
     { url: "http://0.0.0.0/hook", ok: false, contains: "blocked host" },
     { url: "http://metadata.google.internal/hook", ok: false, contains: "blocked host" },
+    // Issue #2150: IPv6 loopback, IPv4-mapped, unique-local, link-local addresses
+    { url: "http://[::1]/hook", ok: false, contains: "loopback" },
+    { url: "http://[::ffff:127.0.0.1]/hook", ok: false, contains: "IPv4-mapped" },
+    { url: "http://[fd00::1]/hook", ok: false, contains: "unique-local" },
+    { url: "http://[fc00::1]/hook", ok: false, contains: "unique-local" },
+    { url: "http://[fe80::1]/hook", ok: false, contains: "link-local" },
   ];
 
   for (const c of cases) {

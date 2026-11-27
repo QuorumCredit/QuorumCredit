@@ -1101,6 +1101,10 @@ pub enum DataKey {
     // ── Issue #1735: SBT Insurance Coverage ──────────────────────────────────
     /// sbt_id → SbtInsuranceRecord
     SbtInsurance(u64),
+    /// Issue #2167: Total committed insurance coverage across active policies: i128
+    SbtInsuranceCommittedCoverage,
+    /// Issue #2167: SBT owner record: sbt_id → Address
+    SbtOwner(u64),
 
     // ── Issue #1736: SBT Marketplace Integration ──────────────────────────────
     /// sbt_id → SbtMarketplaceListing
@@ -1109,6 +1113,10 @@ pub enum DataKey {
     SbtMarketplaceIndex,
     /// Global marketplace statistics: SbtMarketplaceStats
     SbtMarketplaceStats,
+    /// Issue #2166: Per-tag marketplace index: tag → Vec<u64>
+    SbtMarketplaceTagIndex(soroban_sdk::Bytes),
+    /// Issue #2166: Secondary marketplace index for evicted active listings: Vec<u64>
+    SbtMarketplaceSecondaryIndex,
 
     // ── Issue #1631 / #1929: Credential Field-Level Permissions ──────────────
     /// (credential_id, field) → u32 permission level
