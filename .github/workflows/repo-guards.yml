@@ -23,3 +23,6 @@ jobs:
 
       - name: Verify test file discovery matches src/tests.rs and lib.rs
         run: python3 scripts/gen_test_includes.py
+
+      - name: Verify all referenced script/tool paths exist
+        run: python3 scripts/check_referenced_paths.py

@@ -50,14 +50,12 @@ jobs:
           python3 tools/gas_optimizer.py profile \
             --input benchmark_output.txt \
             --output docs/gas_profile.json
-        continue-on-error: true
 
       - name: Generate optimization suggestions
         run: |
           python3 tools/gas_optimizer.py suggest \
             --profile docs/gas_profile.json \
             --output docs/gas_suggestions.md
-        continue-on-error: true
 
       - name: Compare against benchmark baseline
         run: |
