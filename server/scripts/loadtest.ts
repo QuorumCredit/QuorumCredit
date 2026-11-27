@@ -51,7 +51,9 @@ async function main(): Promise<void> {
   const connectOne = (): Promise<void> =>
     new Promise((resolve) => {
       const startedAt = Date.now();
-      const ws = new WebSocket(`${wsBase}/ws/metrics?token=${encodeURIComponent(token)}`);
+      // Issue #2156: send the token via the Sec-WebSocket-Protocol header, not the
+      // URL query string, so it is not recorded in proxy/access logs.
+      const ws = new WebSocket(`${wsBase}/ws/metrics`, ["bearer", `bearer.${token}`]);
       let gotFirstMessage = false;
 
       ws.on("open", () => {
